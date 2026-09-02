@@ -1,0 +1,9 @@
+# Godot 4 editor cache
+.godot/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local API keys
+.env
