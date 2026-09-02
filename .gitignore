@@ -1,6 +1,10 @@
 # Godot 4 editor cache
 .godot/
 
+# Local/CI export output
+build/
+*.zip
+
 # OS
 .DS_Store
 Thumbs.db

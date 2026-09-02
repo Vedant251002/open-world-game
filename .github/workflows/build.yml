@@ -1,0 +1,184 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.7.2
+  EXPORT_NAME: NeonBayCity
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "pages-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  export-web:
+    name: Export Web (browser build)
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Move export templates into place
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+
+      - name: Build Web export
+        run: |
+          mkdir -v -p build/web
+          godot --headless --verbose --export-release "Web" "$(pwd)/build/web/index.html"
+
+      - name: Upload web build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build/web
+
+      - name: Upload GitHub Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  export-windows:
+    name: Export Windows
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Move export templates into place
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mkdir -v -p ~/.config/
+          mv /root/.config/godot ~/.config/godot
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+
+      - name: Build Windows export
+        run: |
+          mkdir -v -p build/windows
+          godot --headless --verbose --export-release "Windows Desktop" "$(pwd)/build/windows/${EXPORT_NAME}.exe"
+
+      - name: Package as zip
+        run: |
+          apt-get update -qq && apt-get install -y -qq zip > /dev/null
+          cd build/windows && zip -r "../../${EXPORT_NAME}-windows.zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: ${{ env.EXPORT_NAME }}-windows.zip
+
+  export-linux:
+    name: Export Linux
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Move export templates into place
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+
+      - name: Build Linux export
+        run: |
+          mkdir -v -p build/linux
+          godot --headless --verbose --export-release "Linux" "$(pwd)/build/linux/${EXPORT_NAME}.x86_64"
+
+      - name: Package as zip
+        run: |
+          apt-get update -qq && apt-get install -y -qq zip > /dev/null
+          chmod +x "build/linux/${EXPORT_NAME}.x86_64"
+          cd build/linux && zip -r "../../${EXPORT_NAME}-linux.zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: ${{ env.EXPORT_NAME }}-linux.zip
+
+  export-macos:
+    name: Export macOS
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Move export templates into place
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+
+      - name: Build macOS export
+        run: |
+          mkdir -v -p build/mac
+          godot --headless --verbose --export-release "macOS" "$(pwd)/build/mac/${EXPORT_NAME}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: build/mac/${{ env.EXPORT_NAME }}.zip
+
+  deploy-pages:
+    name: Deploy web build to GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: export-web
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  release:
+    name: Attach builds to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [export-web, export-windows, export-linux, export-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package web build as zip
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq zip > /dev/null
+          cd artifacts/web-build && zip -r "../../${EXPORT_NAME}-web.zip" .
+
+      - name: Create release and attach builds
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/windows-build/*.zip
+            artifacts/linux-build/*.zip
+            artifacts/macos-build/*.zip
+            ${{ env.EXPORT_NAME }}-web.zip
+          generate_release_notes: true
