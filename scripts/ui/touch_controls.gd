@@ -41,6 +41,7 @@ var _button_touch: Dictionary = {}    ## touch index -> action name
 var _held: Dictionary = {}            ## action name -> frames held
 var _wants_release: Dictionary = {}   ## action name -> true
 var _unit := 1.0
+var _last_target: Node = null
 
 
 func _ready() -> void:
@@ -50,6 +51,8 @@ func _ready() -> void:
 	_pad.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pad.draw.connect(_draw_pad)
+	# Rotating the phone moves every button, and redraws are event-driven.
+	_pad.resized.connect(_pad.queue_redraw)
 	add_child(_pad)
 	active = Platform.is_handheld()
 	_pad.visible = active
@@ -226,7 +229,14 @@ func _process(_delta: float) -> void:
 
 	if player != null:
 		player.set_touch_move(_stick_vector())
-	_pad.queue_redraw()
+		# The talk button lights up when the player is looking at somebody, so
+		# the HUD has to repaint when that changes. Nothing else about it moves
+		# on its own, and a phone should not be redrawing a static overlay
+		# sixty times a second.
+		var target := player.looked_at_worker()
+		if target != _last_target:
+			_last_target = target
+			_pad.queue_redraw()
 
 
 func _stick_vector() -> Vector2:
@@ -261,8 +271,9 @@ func _draw_pad() -> void:
 				2.0 * _unit)
 
 	var held := _button_touch.values()
-	for key: String in _buttons():
-		var b: Dictionary = _buttons()[key]
+	var buttons := _buttons()
+	for key: String in buttons:
+		var b: Dictionary = buttons[key]
 		var radius := float(b["radius"])
 		var down: bool = b["action"] in held
 		var lit: bool = down or (key == "talk" and has_target)
