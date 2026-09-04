@@ -1,88 +1,78 @@
-# NEON BAY CITY
+# DELEGATE
 
-Open-world first-person city game (Vice-City-inspired), built 100% free:
-Godot 4.7.2 + Kenney/KayKit CC0 assets + free internet LLM for AI orders.
+> You cannot touch anything. You can only talk to three people.
 
-## Play it now
+A first-person village game in Godot 4.7. The world is voxels, streamed in
+around you and generated from a seed — there are no meshes on disk. You have no
+build key, no placement cursor and no inventory: if you want something to exist,
+somebody else has to make it, and the only way to ask is language.
 
-**[Play in your browser](https://vedant251002.github.io/open-world-game/)** — no install needed
-(builds automatically from `main` via GitHub Actions, see below).
+## Play it
 
-Prefer a native build? Grab the latest zip for your OS from the
-[Releases page](https://github.com/Vedant251002/open-world-game/releases) — Windows, Linux and
-macOS builds are attached to every tagged release. Unzip and run the executable
-(macOS/Linux: `chmod +x` may be required; macOS build is unsigned, so right-click → Open the
-first time to bypass Gatekeeper).
+**[Play in your browser](https://vedant251002.github.io/open-world-game/)** —
+nothing to install, rebuilt from `main` on every push.
 
-## Run it (from source)
+It works on a phone. On iPhone or Android, open that link and use **Share → Add
+to Home Screen**; it installs as a standalone app and launches without the
+browser chrome. Touch controls appear automatically: drag your left thumb
+anywhere on the left of the screen to walk (push to the rim to run), drag on the
+right to look, and use the on-screen TALK / JUMP / MAP buttons.
+
+If the page hangs on a black screen, your browser has refused
+`SharedArrayBuffer` — try the
+**[no-threads build](https://vedant251002.github.io/open-world-game/lite/)**
+instead. It runs everywhere but generates chunks on the main thread, so expect
+it to stutter while the world streams in.
+
+Desktop builds for Windows, Linux and macOS are attached to every tagged
+[release](https://github.com/Vedant251002/open-world-game/releases).
+
+## Controls
+
+|            | Desktop           | Touch                          |
+| ---------- | ----------------- | ------------------------------ |
+| Move       | WASD              | left thumb stick               |
+| Run        | Shift             | push the stick to the rim      |
+| Jump       | Space             | JUMP                           |
+| Look       | mouse             | drag on the right of the screen |
+| Talk       | E                 | TALK                           |
+| Map        | M                 | MAP                            |
+| Menu       | Esc               | ESC                            |
+| Frame stats| F3                | —                              |
+
+## Run from source
 
     godot4 --path .
 
-Or open the folder in the Godot editor and press F5.
+The AI reads `ANTHROPIC_API_KEY` from the environment, or from a `.env` file in
+the project root. Without one the game runs offline and nobody answers you.
+Browser builds have no environment to read, so the deployed version needs a
+proxy holding the key — that is not wired up yet.
 
-## Play
+## Debug flags
 
-- WASD move, SHIFT sprint, SPACE jump, ESC free/capture mouse
-- T = command console. Type plain English, e.g.:
-  "build a cafeteria here" / "build a hotel near the beach"
-- A free AI model (OpenRouter -> OpenCode fallback) parses your order,
-  a worker walks to the site and constructs it autonomously.
+Pass these after `--`, e.g. `godot4 --path . -- --seed=7 --nofar`:
 
-## Verify (automated screenshots + pixel analysis)
+| Flag           | Effect                                              |
+| -------------- | --------------------------------------------------- |
+| `--seed=N`     | fix the world seed                                   |
+| `--nofar`      | skip the far-terrain horizon mesh                    |
+| `--nostream`   | freeze chunk streaming                               |
+| `--buildtest`  | drop the acceptance buildings onto real plots        |
+| `--gentest`    | run generator assertions and exit                    |
+| `--streamtest` | run streaming assertions and exit                    |
+| `--bench`      | walk a fixed route and report frame times            |
+| `--shot`       | capture the showcase views                           |
+| `--mapshot`    | capture the map and exit                             |
 
-    godot4 --path . --resolution 1280x720 -- --autocap
-    python tools/png_stats.py
+## Builds
 
-Screenshots land in %APPDATA%/Godot/app_userdata/Neon Bay City/autocap.
+`.github/workflows/build.yml` exports Web, Windows, Linux and macOS on every
+push to `main`, deploys the web build to GitHub Pages, and attaches the desktop
+builds to any `v*.*.*` tag. The web job exports twice: the threaded PWA at the
+site root and the no-threads fallback under `/lite/`.
 
-## AI chain (scripts/ai_command.gd)
-
-1. OpenRouter free models (nemotron-3-nano-omni / 3.5-lightning / 3-super, :free)
-2. OpenCode Zen gateway glm-5.3-flash (fallback)
-3. Built-in offline keyword parser (last resort — game always works)
-
-Note: the API keys are read from local dev-machine `.env` files, never committed. Exported
-builds (web/downloads) have no keys available, so they always run on the offline parser — the
-build console still works, just without live LLM parsing.
-
-## CI/CD (.github/workflows/build.yml)
-
-Every push to `main` runs [`barichello/godot-ci`](https://hub.docker.com/r/barichello/godot-ci)
-(Godot 4.7.2 + export templates preinstalled) to export the game for **Web, Windows, Linux and
-macOS** in parallel, then:
-
-- the **Web** build auto-deploys to GitHub Pages (see "Play it now" above)
-- all four builds are uploaded as workflow artifacts (Actions tab → a run → Artifacts)
-- pushing a tag like `v1.0.0` additionally zips every platform build and attaches it to a new
-  GitHub Release
-
-Pull requests only build (sanity check), they never deploy or release.
-
-**One-time setup required in the GitHub repo settings:** Settings → Pages → Source →
-select "GitHub Actions" (can't be scripted from here — needs a repo-admin click once).
-Until that's set, the Windows/Linux/macOS/Web build jobs still run and produce artifacts, only
-the Pages deploy step will be skipped/fail.
-
-To cut a versioned release with downloadable builds:
-
-    git tag v1.0.0
-    git push origin v1.0.0
-
-## Layout
-
-- scenes/Main.tscn        entry point
-- scripts/main.gd         boot: environment, city, player, life, HUD, console
-- scripts/city_generator.gd  procedural city: roads, sidewalks, 36 blocks,
-  pastel-tinted buildings, grow-in transitions, pulsing neon signs,
-  shops with furnished interiors, park, beach + parasols + ocean
-- scripts/player_fpp.gd   first-person controller
-- scripts/car_agent.gd    lane-following traffic (colored cars)
-- scripts/pedestrian.gd   sidewalk pedestrians (animated KayKit chars)
-- scripts/worker_agent.gd autonomous builder (status text + progress)
-- scripts/command_ui.gd   T-key order console
-- tools/                  asset curation + screenshot analysis (python)
-
-## Assets
-
-CC0: Kenney (car/city/roads/furniture/nature kits), KayKit characters.
-Full 1,583-model library kept at ../kingdom-city-rawstore/assets_raw.
+GitHub Pages cannot set the `Cross-Origin-Opener-Policy` and
+`Cross-Origin-Embedder-Policy` headers that `SharedArrayBuffer` requires, so the
+main build enables Godot's PWA service worker, which supplies them itself. That
+is why the root build is a PWA and not a plain page.

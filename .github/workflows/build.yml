@@ -10,7 +10,7 @@ on:
 
 env:
   GODOT_VERSION: 4.7.2
-  EXPORT_NAME: NeonBayCity
+  EXPORT_NAME: Delegate
 
 permissions:
   contents: read
@@ -34,10 +34,23 @@ jobs:
           mkdir -v -p ~/.local/share/godot/export_templates/
           mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
 
-      - name: Build Web export
+      - name: Build Web export (threaded PWA)
         run: |
           mkdir -v -p build/web
           godot --headless --verbose --export-release "Web" "$(pwd)/build/web/index.html"
+
+      # Threads on the web need SharedArrayBuffer, which needs cross-origin
+      # isolation. The PWA service worker supplies the headers GitHub Pages
+      # cannot, but if a browser refuses either of those the main build will
+      # not boot at all. This second copy drops threads so there is always a
+      # URL that runs, at the cost of generating chunks on the main thread.
+      - name: Build Web export (no-threads fallback)
+        run: |
+          mkdir -v -p build/web/lite
+          godot --headless --verbose --export-release "Web Lite" "$(pwd)/build/web/lite/index.html"
+
+      - name: Stop Pages from filtering the build
+        run: touch build/web/.nojekyll
 
       - name: Upload web build artifact
         uses: actions/upload-artifact@v4
