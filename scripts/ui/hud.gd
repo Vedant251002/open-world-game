@@ -43,6 +43,9 @@ var _toast_left := 0.0
 var _phrases: HFlowContainer
 ## Sized for a thumb rather than a cursor.
 var _touch := false
+## On the web the text field is a real HTML input laid over the canvas —
+## see WebInput for why a Godot LineEdit cannot raise the keyboard there.
+var _web: WebInput = null
 
 
 func setup(p: Player, c: Crew, gc: GameClock, t: Town) -> void:
@@ -52,6 +55,9 @@ func setup(p: Player, c: Crew, gc: GameClock, t: Town) -> void:
 	town = t
 	layer = 10
 	_touch = Platform.has_touch() or "--touchui" in OS.get_cmdline_user_args()
+	if WebInput.available():
+		_web = WebInput.new()
+		_web.setup()
 	_build()
 	player.looked_at.connect(_on_looked_at)
 	set_process(true)
@@ -276,6 +282,13 @@ func _process(delta: float) -> void:
 		l.add_theme_color_override("font_color",
 			WARN if w.pending_question != "" else (INK if w.busy() else DIM))
 
+	if _web != null and _typing_for != null:
+		var said := _web.take()
+		if said != "":
+			_on_submit(said)
+		elif _web.take_closed():
+			_close_bar()
+
 	if _toast_left > 0.0:
 		_toast_left -= delta
 		if _toast_left <= 0.0:
@@ -325,15 +338,25 @@ func _open_bar(w: Worker) -> void:
 		_barlabel.text = "Telling %s what to do" % w.display_name()
 		_entry.placeholder_text = "tell them what to build…"
 	_entry.text = ""
+	player.set_input_enabled(false)
+	if _web != null:
+		# The browser gets the whole panel: label, phrases and field together,
+		# as real elements. Two fields on screen would be worse than none.
+		_bar.visible = false
+		var hint := "answer them…" if w.pending_question != "" else "tell them what to build…"
+		_web.show_bar(_barlabel.text, hint,
+			REPLIES if w.pending_question != "" else PHRASES)
+		return
 	_entry.grab_focus()
 	_show_keyboard()
 	_fill_phrases(w)
-	player.set_input_enabled(false)
 
 
 func _close_bar() -> void:
 	_typing_for = null
 	_bar.visible = false
+	if _web != null:
+		_web.hide_bar()
 	_entry.release_focus()
 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
 		DisplayServer.virtual_keyboard_hide()
