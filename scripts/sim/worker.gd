@@ -53,10 +53,18 @@ var job_construction: Construction = null
 ## Ploughing and sowing, when the job is a field rather than a building. Only
 ## one of these two is ever set.
 var job_field: FieldWork = null
+## Digging a material out of the world. Only one of the three job kinds is
+## ever set at a time.
+var job_quarry: Quarry = null
 var job_assumptions: Array = []
 var job_started_hour := 0.0
 var job_eta_hours := 0.0
 var pending_question := ""
+## A plan this worker has in hand and cannot start, and what it is short of.
+## They are idle in every mechanical sense — they will follow you, they can be
+## given something else — but they are not free, and the roster has to say so or
+## the player is left wondering why nothing is happening.
+var waiting_for := ""
 var last_line := ""
 
 var _path: PackedVector3Array = PackedVector3Array()
@@ -424,6 +432,11 @@ func _tick_state(delta: float) -> void:
 				state = State.BUILDING
 				_say("Right. Starting now.", "work")
 		State.BUILDING:
+			if job_quarry != null:
+				job_quarry.advance(game_hours)
+				if job_quarry.finished:
+					_finish_quarry()
+				return
 			if job_field != null:
 				job_field.advance(game_hours)
 				if job_field.finished:
@@ -473,16 +486,28 @@ func set_out_for(plot: Plot) -> void:
 		_holding = false
 
 
-## Where a worker stands to work on a plot: off the front of it, on the
-## street side, so they are not inside their own building site.
+## How far off the plot edge they stand. It has to clear the margin the nav
+## grid blocks off around a building site (NavGrid.refresh_world_rect, three
+## cells), or the stand point is inside the block and the worker reports that
+## they cannot reach a plot they are looking straight at.
+const STAND_CLEAR_M := 4.5
+
+
+## Where a worker stands to work on a plot: off the front of it, on the street
+## side, so they are not inside their own building site.
 func _stand_for(plot: Plot) -> Vector3:
-	var stand := plot.centre_m() + Vector3(plot.street_dir) * (plot.size_m().x * 0.5 + 2.0)
+	var dir := plot.street_dir
+	# The plot's extent along the street direction, not always its x.
+	var half := (plot.size_m().x if absi(dir.x) > 0 else plot.size_m().y) * 0.5
+	var stand := plot.centre_m() + Vector3(dir) * (half + STAND_CLEAR_M)
 	stand.y = world.ground_m(stand.x, stand.z)
 	return stand
 
 
+## Returns false if they cannot get there, so the caller can put the material
+## back rather than charging the town for a house nobody can reach.
 func take_job(plot: Plot, spec: Dictionary, patch: VoxelPatch,
-		assumptions: Array, line: String, props_root: Node3D) -> void:
+		assumptions: Array, line: String, props_root: Node3D) -> bool:
 	job_plot = plot
 	job_spec = spec
 	job_patch = patch
@@ -506,9 +531,10 @@ func take_job(plot: Plot, spec: Dictionary, patch: VoxelPatch,
 		job_failed.emit(self, Validator.error("unreachable_plot",
 			"I cannot get to that plot — something is in the way."))
 		_clear_job()
-		return
+		return false
 	if line != "":
 		_say(line, "plan")
+	return true
 
 
 func _finish_job() -> void:
@@ -554,6 +580,39 @@ func take_field_job(work: FieldWork, assumptions: Array, line: String) -> void:
 		_say(line, "plan")
 
 
+## Sends a worker out to dig. The site is outside the town, so fetching is
+## a real errand with a walk at each end rather than a number going up.
+func take_quarry_job(q: Quarry, line: String) -> bool:
+	job_quarry = q
+	job_started_hour = clock.day * 24.0 + clock.hour
+	q.voxels_per_hour = 34.0 * memory.work_rate()
+	job_eta_hours = float(q.total()) / maxf(q.voxels_per_hour, 1.0)
+
+	var stand := Vector3(q.site) * VoxelChunk.VOXEL_M
+	stand.y = world.ground_m(stand.x, stand.z)
+	if not walk_to(stand, "build"):
+		job_quarry = null
+		return false
+	if line != "":
+		_say(line, "plan")
+	return true
+
+
+func _finish_quarry() -> void:
+	var q := job_quarry
+	job_quarry = null
+	var hours := (clock.day * 24.0 + clock.hour) - job_started_hour
+	memory.practise("masonry", 0.3)
+	memory.remember(clock.day, "Went out for %s. Took about %d hours."
+		% [q.summary(), int(hours)], 0.1)
+
+	var back := home
+	back.y = world.ground_m(back.x, back.z)
+	if not walk_to(back, "report"):
+		state = State.REPORTING
+	_say("Back with %s." % q.summary(), "done")
+
+
 func _finish_field() -> void:
 	var work := job_field
 	var hours := (clock.day * 24.0 + clock.hour) - job_started_hour
@@ -571,6 +630,7 @@ func _finish_field() -> void:
 
 func _clear_job() -> void:
 	_holding = false
+	job_quarry = null
 	job_plot = null
 	job_spec = {}
 	job_patch = null
@@ -588,6 +648,8 @@ func _skill_for(patch: VoxelPatch) -> String:
 
 
 func progress() -> float:
+	if job_quarry != null:
+		return job_quarry.progress()
 	if job_field != null:
 		return job_field.progress()
 	if job_construction == null:
@@ -607,12 +669,18 @@ func debug_state() -> String:
 func status_text() -> String:
 	match state:
 		State.IDLE:
+			if waiting_for != "":
+				return "waiting on %s" % waiting_for
 			return "idle"
 		State.WALKING:
+			if job_quarry != null:
+				return "off to fetch %s" % job_quarry.material.replace("_", " ")
 			return "on the way" if (job_patch != null or job_field != null) 				else "walking"
 		State.GATHERING:
 			return "fetching materials"
 		State.BUILDING:
+			if job_quarry != null:
+				return "digging — %d%%" % int(progress() * 100.0)
 			if job_field != null:
 				return "ploughing — %d%%" % int(progress() * 100.0)
 			return "building — %d%%" % int(progress() * 100.0)

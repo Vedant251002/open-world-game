@@ -61,8 +61,13 @@ const WET_FARMLAND := 38
 ## Live fire. Emissive, and the only interior light source that is part of the
 ## world rather than an entity.
 const EMBER := 39
+## Ore, in pockets down in the stone. Not in NAMES: nobody specifies a
+## building "with walls: iron_ore" — it is something a worker digs up and
+## brings back as steel.
+const IRON_ORE := 40
+const CLAY := 41
 
-const COUNT := 40
+const COUNT := 42
 
 ## name -> id. This dictionary IS the closed enum the validator checks against.
 const NAMES := {
@@ -133,6 +138,8 @@ const PROPS := {
 	FARMLAND:          [Color("#6a4c2f"), 1.00, 0.0, 0.0, 1, 0, 5, false],
 	WET_FARMLAND:      [Color("#43301d"), 0.86, 0.0, 0.0, 1, 0, 5, false],
 	EMBER:             [Color("#ff7a2a"), 0.90, 0.0, 0.5, 1, 0, 1, false],
+	IRON_ORE:          [Color("#8a6a52"), 0.82, 0.15, 0.0, 1, 4, 75, false],
+	CLAY:              [Color("#9c6a4e"), 0.95, 0.0, 0.0, 1, 1, 14, false],
 }
 
 ## Surface grain scale for the procedural detail shader — how big the noise
@@ -148,6 +155,7 @@ const GRAIN := {
 	PAINTED_RED: 1.5, CHROME: 2.4, MATTE_BLACK: 1.2, NEON_STRIP: 2.0,
 	WATER: 2.0, STONE: 0.8, ROCK: 0.7, LEAF: 0.14, BARK: 0.22,
 	FARMLAND: 0.22, WET_FARMLAND: 0.22, EMBER: 0.12,
+	IRON_ORE: 0.34, CLAY: 0.40,
 }
 
 
@@ -172,6 +180,8 @@ static func name_of(id: int) -> String:
 		FARMLAND: return "farmland"
 		WET_FARMLAND: return "wet_farmland"
 		EMBER: return "ember"
+		IRON_ORE: return "iron_ore"
+		CLAY: return "clay"
 	return "id_%d" % id
 
 

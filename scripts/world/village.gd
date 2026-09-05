@@ -102,6 +102,20 @@ func is_paved(vx: int, vz: int) -> bool:
 	return is_road(vx, vz) or is_plaza(vx, vz)
 
 
+## Ground the town is not using: no street, no plaza, no plot, with a little
+## room round each building so nobody sinks a shaft against a wall. This is
+## where a quarry is allowed to go when there is no open country in reach.
+func is_diggable(vx: int, vz: int) -> bool:
+	if is_paved(vx, vz):
+		return false
+	var at := Vector2i(vx, vz)
+	for p: Plot in plots:
+		if Rect2i(Vector2i(p.origin.x - 3, p.origin.z - 3),
+				p.size_v + Vector2i(6, 6)).has_point(at):
+			return false
+	return true
+
+
 func _in_grid(vx: int, vz: int) -> bool:
 	return vx >= lines_x[0] - _half_road and vx <= lines_x[BLOCKS - 1] + _half_road \
 		and vz >= lines_z[0] - _half_road and vz <= lines_z[BLOCKS - 1] + _half_road

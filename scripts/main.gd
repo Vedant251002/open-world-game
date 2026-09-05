@@ -5,7 +5,12 @@ extends Node3D
 ## themselves behind him. Only the village is pinned, because it is the one
 ## place the game is actually about.
 
-const WORLD_HEIGHT_CHUNKS := 6      ## 48 m of vertical range at 0.25 m
+## 64 m of vertical range at 0.25 m. Six chunks was 48 m, and with the ground
+## sitting around twelve there was not room over it for the tall archetypes —
+## a ten-floor block is 32 m of wall before the roof goes on. The extra layer
+## is almost all empty sky, which the mesher skips and the streamer barely
+## notices.
+const WORLD_HEIGHT_CHUNKS := 8
 
 var world: VoxelWorld
 var gen: WorldGen
@@ -111,6 +116,15 @@ func _ready() -> void:
 		add_child(st)
 		get_tree().quit(st.run())
 		return
+	if "--plantest" in args:
+		await streamer.first_load_done
+		var pt := PlanTest.new()
+		pt.world = world
+		pt.village = village
+		pt.gen = gen
+		add_child(pt)
+		get_tree().quit(pt.run())
+		return
 	if "--gentest" in args:
 		await streamer.first_load_done
 		var gt := GenTest.new()
@@ -182,6 +196,19 @@ func _on_world_ready(t0: int) -> void:
 			if a.begins_with("--say="):
 				say = a.substr(6)
 		at.begin(say)
+		return
+	if "--econtest" in args:
+		var et := EconomyTest.new()
+		et.world = world
+		et.gen = gen
+		et.village = village
+		et.crew = crew
+		et.dispatch = dispatch
+		et.nav = nav
+		et.clock = clock
+		et.town = town
+		add_child(et)
+		et.begin()
 		return
 	if "--crewtest" in args:
 		var ct := CrewTest.new()
@@ -263,7 +290,10 @@ func _on_world_ready(t0: int) -> void:
 ## you do not give.
 func _raise_crew() -> void:
 	nav = NavGrid.new()
-	nav.build(world, village.nav_bounds_v(64))
+	# 160 voxels — forty metres of open country outside the last plot. The crew
+	# never needed it when all they did was build, but fetching stone is a walk
+	# out of town and back, and there has to be a town to be out of.
+	nav.build(world, village.nav_bounds_v(160))
 
 	crew = Crew.new()
 	crew.name = "Crew"
@@ -294,6 +324,9 @@ func _raise_crew() -> void:
 	dispatch.farm = farm
 	dispatch.livestock = livestock
 	dispatch.player = player
+	# The dispatcher needs the whole crew, not just whoever was spoken to: a
+	# shortfall is answered by sending somebody *else* out to dig.
+	dispatch.crew = crew
 
 	hud = Hud.new()
 	hud.name = "Hud"
@@ -309,6 +342,16 @@ func _raise_crew() -> void:
 	dispatch.plan_accepted.connect(func(w: Worker, a: Array) -> void:
 		hud.show_assumptions(w, a))
 	dispatch.status.connect(func(t: String) -> void: hud.toast(t))
+	# A held plan is the one refusal the player can act on, so it goes up as an
+	# assumption panel rather than a toast that scrolls away.
+	dispatch.short_of.connect(func(w: Worker, missing: Dictionary) -> void:
+		var lines: Array = ["The stores cannot cover this yet."]
+		for mat: String in missing:
+			lines.append("Short %d %s." % [int(missing[mat]),
+				mat.replace("_", " ")])
+		lines.append("%s is holding the plan until it is in."
+			% w.display_name())
+		hud.show_assumptions(w, lines))
 	crew.job_done.connect(_on_job_done)
 	crew.job_failed.connect(func(w: Worker, e: Dictionary) -> void:
 		hud.toast("%s: %s" % [w.display_name(), str(e.get("code", "refused"))], 5.0))

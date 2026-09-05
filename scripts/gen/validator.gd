@@ -6,6 +6,12 @@ class_name Validator
 ## worker walks back and says to your face. That is the difference between a bug
 ## and a gameplay beat, and it is the whole of design pillar P3.
 
+## "a hut", but "an airport". Workers say these out loud.
+static func an(word: String) -> String:
+	var w := word.replace("_", " ")
+	return ("an " if w.substr(0, 1) in ["a", "e", "i", "o", "u"] else "a ") + w
+
+
 static func error(code: String, question: String, detail: String = "") -> Dictionary:
 	return {"code": code, "question": question, "detail": detail}
 
@@ -18,6 +24,22 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 	if str(spec.get("kind", "building")) != "building":
 		return error("unsupported_kind",
 			"I only know how to put up buildings at the moment.")
+
+	# --- is this even a thing we can build yet ---
+	#
+	# Without this an archetype from a tier above us passed straight through
+	# and came out as whatever geometry the fallback happened to hold — ask
+	# for an airport in a village of huts and you got a hut, silently. Being
+	# told we are not up to it yet is the answer; a hut is not.
+	var arch := str(spec.get("archetype", ""))
+	if arch != "" and arch not in Vocabulary.archetypes_for_tier(tier):
+		var known := Vocabulary.archetype_tier(arch)
+		if known > 0:
+			return error("archetype_above_tier",
+				"We are not up to building %s yet — that needs a bigger town."
+				% an(arch), arch)
+		return error("unknown_archetype",
+			"I would not know where to start with %s." % an(arch), arch)
 
 	# --- enums ---
 	var orientation := str(spec.get("orientation", "face_street"))

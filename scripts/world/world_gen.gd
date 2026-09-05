@@ -26,6 +26,7 @@ var _hills := FastNoiseLite.new()
 var _detail := FastNoiseLite.new()
 var _ridged := FastNoiseLite.new()
 var _forest := FastNoiseLite.new()
+var _ore := FastNoiseLite.new()
 
 var _sea_v := 0
 var _bedrock_v := 0
@@ -56,6 +57,12 @@ func setup(world_seed: int, town: Village) -> void:
 	_ridged.fractal_type = FastNoiseLite.FRACTAL_RIDGED
 	_ridged.frequency = 0.0055
 	_ridged.fractal_octaves = 4
+
+	# Ore seams: small pockets rather than veins, at a frequency that puts a
+	# worthwhile pocket within a short walk of anywhere.
+	_ore.seed = world_seed ^ 0x13d7a5
+	_ore.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	_ore.frequency = 0.055
 
 	_forest.seed = world_seed ^ 0x2ab99d
 	_forest.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
@@ -246,6 +253,10 @@ func generate_column(cx: int, cz: int, height_chunks: int) -> Dictionary:
 					mat = surf
 				elif y > h - 4:
 					mat = soil
+				elif y < h - 6:
+					# Ore and clay in pockets, deterministic from position alone
+					# so two players digging the same hill find the same seam.
+					mat = _deep_material(vx, y, vz)
 				_put(chunks, cx, cz, col, y, mat)
 			if h < _sea_v:
 				for y in range(h + 1, _sea_v + 1):
@@ -259,6 +270,21 @@ func generate_column(cx: int, cz: int, height_chunks: int) -> Dictionary:
 		var c2: VoxelChunk = chunks[k]
 		c2.solid_count = VoxelChunk.VOLUME - c2.voxels.count(VoxelTypes.AIR)
 	return chunks
+
+
+## What is in the rock at a given point: mostly stone, with pockets of clay
+## nearer the surface and iron deeper down.
+##
+## A pure function of position, like everything else in the generator, so a seam
+## is in the same place every time the column streams back in — a worker sent to
+## mine it finds what was there before.
+func _deep_material(vx: int, vy: int, vz: int) -> int:
+	var n := _ore.get_noise_3d(float(vx), float(vy) * 1.7, float(vz))
+	if vy < _bedrock_v + 26 and n > 0.52:
+		return VoxelTypes.IRON_ORE
+	if n < -0.58:
+		return VoxelTypes.CLAY
+	return VoxelTypes.STONE
 
 
 static func _put(chunks: Dictionary, cx: int, cz: int, col: int, y: int, mat: int) -> void:

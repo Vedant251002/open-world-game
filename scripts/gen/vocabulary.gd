@@ -40,9 +40,10 @@ const ARCHETYPES := {
 	1: ["hut", "cottage", "workshop", "bakery", "store", "stable", "barn",
 		"tavern", "well_house", "shrine", "guard_post", "smokehouse"],
 	2: ["mill", "forge", "brickworks", "warehouse", "foundry", "inn",
-		"pottery", "tannery", "station", "granary", "pump_house"],
+		"pottery", "tannery", "station", "granary", "pump_house",
+		"apartment"],
 	3: ["clinic", "school", "garage", "shop", "office", "power_house",
-		"fire_station", "market_hall", "library", "depot"],
+		"fire_station", "market_hall", "library", "depot", "tower_block"],
 	4: ["aircraft_hangar", "fabrication_plant", "control_tower", "clean_lab",
 		"reactor_house", "drone_yard", "launch_facility"],
 }
@@ -192,6 +193,14 @@ static func archetypes_for_tier(tier: int) -> PackedStringArray:
 	return out
 
 
+## Which tier first allows this archetype, or 0 if nobody has heard of it.
+static func archetype_tier(arch: String) -> int:
+	for t: int in ARCHETYPES:
+		if arch in ARCHETYPES[t]:
+			return t
+	return 0
+
+
 static func module_tier(module: String) -> int:
 	for t in TIER_MODULES:
 		if module in TIER_MODULES[t]:
@@ -224,5 +233,16 @@ static func size_area(size: String) -> float:
 
 
 ## Max stories the tier allows, per voxel-module-spec.md §3.1.
+## How tall the town can build yet.
+##
+## It climbs with the tier because height is the most legible reward there
+## is: a player who asks for ten floors at tier one is told what the limit
+## is, and that is a goal rather than a refusal. Ten floors is 32.5 m and
+## the world is 64 m deep, so the tallest of these still has its roof well
+## inside the sky.
 static func max_stories(tier: int) -> int:
-	return 4 if tier <= 2 else 8
+	match tier:
+		1: return 2
+		2: return 4
+		3: return 6
+	return 10

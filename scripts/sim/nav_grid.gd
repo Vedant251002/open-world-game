@@ -41,6 +41,12 @@ func build(w: VoxelWorld, area_v: Rect2i) -> void:
 	refresh(Rect2i(Vector2i.ZERO, size))
 
 
+## The walkable world, in voxels. Outside this there is ground but no route to
+## it, so anything that picks a destination has to ask first.
+func bounds_v() -> Rect2i:
+	return Rect2i(origin_v, size * CELL_V)
+
+
 ## Recomputes walkability over a region of nav cells. Called with a small rect
 ## when a building goes up, so the cost is proportional to the change.
 func refresh(region: Rect2i) -> void:

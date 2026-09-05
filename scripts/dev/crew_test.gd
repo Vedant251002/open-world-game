@@ -46,6 +46,19 @@ func begin() -> void:
 		_done_patch = p)
 	crew.worker_spoke.connect(func(w: Worker, line: String, kind: String) -> void:
 		print("[crew]   %s (%s): %s" % [w.display_name(), kind, line]))
+	# The stores are EconomyTest's subject, not this one's. Filling them keeps
+	# a shortfall from masquerading as a broken delegation loop — and if one
+	# happens anyway it says so rather than timing out silently.
+	dispatch.short_of.connect(func(w: Worker, missing: Dictionary) -> void:
+		print("[crew]   !! %s is held short of %s" % [w.display_name(),
+			Resources.describe(missing)]))
+	for mat: String in Resources.SOURCE:
+		town.stock[mat] = 9000
+	# And the plan library rather than the API, which is what the header has
+	# always claimed. A free model takes the better part of two minutes per
+	# call; waiting for it here would turn the loop test into a slow, flaky
+	# copy of --aitest, which already covers the live path properly.
+	dispatch.llm.offline = true
 	set_process(true)
 
 
@@ -71,7 +84,10 @@ func _process(delta: float) -> void:
 			_phase = 1
 			_t = 0.0
 		1:
-			if not _assumptions.is_empty():
+			# Mira's, specifically. A free model can take most of a minute, and
+			# accepting whoever answered first would let a later worker's plan
+			# stand in for hers.
+			if not _assumptions.is_empty() and _assume_worker == "Mira":
 				print("[crew] %s's assumptions (%d):" % [_assume_worker,
 					_assumptions.size()])
 				for a: Variant in _assumptions:

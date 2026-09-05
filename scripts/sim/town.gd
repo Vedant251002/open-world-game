@@ -11,9 +11,16 @@ signal building_added(record: Dictionary)
 signal building_removed(record: Dictionary)
 signal tier_changed(tier: int)
 
+## The yard on day one, in units — roughly a cubic metre and a half of wall
+## each (Resources.VOXELS_PER_UNIT). Enough for two or three cottages in the
+## ordinary materials and nothing at all in the ambitious ones: concrete,
+## steel, asphalt and chrome all start at zero, so the first time the player
+## asks for a tower somebody has to go out and dig for it. That first refusal
+## is the point of the whole economy, and it should arrive early.
 const STARTING_STOCK := {
-	"timber": 4000, "plank": 3000, "thatch": 2500, "cobble": 3000,
-	"gravel": 2000, "sandstone": 1200, "dark_oak": 900,
+	"timber": 620, "plank": 430, "thatch": 340, "cobble": 620,
+	"gravel": 180, "sandstone": 120, "dark_oak": 90,
+	"glass": 60, "brick": 90, "clay_tile": 40, "sand": 60,
 	# The larder. Building materials are spent by the workers; these are what
 	# the fields and the livestock put back, and they are the only numbers the
 	# player earns rather than starts with.
@@ -46,7 +53,8 @@ func register(patch: VoxelPatch, plot: Plot, builder: String, day: int) -> Dicti
 	occupied_rects.append(patch.footprint)
 	built_fronts[plot.id] = patch.front
 	plot.occupied_by = int(rec["id"])
-	spend(patch.cost)
+	# Not charged here: the Dispatcher settles the bill before the worker
+	# leaves, because a half-built house has already eaten its timber.
 	building_added.emit(rec)
 	return rec
 
@@ -87,8 +95,8 @@ func can_afford(cost: Dictionary) -> bool:
 
 ## Idle workers top the stores up. Gathering is flavour, not a management game.
 func gather(hours: float) -> void:
-	for mat_name: String in ["timber", "plank", "thatch", "cobble", "gravel"]:
-		stock[mat_name] = int(stock.get(mat_name, 0)) + int(hours * 60.0)
+	for mat_name: String in ["timber", "plank", "thatch"]:
+		stock[mat_name] = int(stock.get(mat_name, 0)) + int(hours * 3.0)
 
 
 # ---------------------------------------------------------------- progression
@@ -163,9 +171,9 @@ func describe_stock() -> String:
 	for mat_name: String in stock:
 		var n := int(stock[mat_name])
 		var word := "plenty of"
-		if n < 400:
+		if n < 60:
 			word = "almost no"
-		elif n < 1200:
+		elif n < 200:
 			word = "a little"
 		parts.append("%s %s" % [word, mat_name])
 	return ", ".join(parts) + "."

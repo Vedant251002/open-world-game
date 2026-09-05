@@ -43,6 +43,7 @@ const PATTERN := {
 	VoxelTypes.MATTE_BLACK: PLAIN, VoxelTypes.NEON_STRIP: NEON,
 	VoxelTypes.FARMLAND: SCATTER, VoxelTypes.WET_FARMLAND: SCATTER,
 	VoxelTypes.EMBER: SCATTER,
+	VoxelTypes.IRON_ORE: MASONRY, VoxelTypes.CLAY: SCATTER,
 }
 
 static var _cache: Dictionary = {}

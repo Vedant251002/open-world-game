@@ -20,6 +20,31 @@ const BASE := {
 			{"type": "storage", "wall": "right", "size": "small", "priority": "optional"},
 		],
 	},
+	"apartment": {
+		"footprint": [13, 11], "stories": 3, "roof": "flat",
+		"materials": {"walls": "brick", "roof": "clay_tile", "trim": "dark_oak",
+			"foundation": "cobble"},
+		"modules": [
+			{"type": "entrance", "wall": "front", "priority": "required"},
+			{"type": "stairwell", "wall": "centre", "priority": "required"},
+			{"type": "bed_area", "story": "top", "size": "medium", "priority": "required"},
+			{"type": "hearth", "wall": "back", "size": "small", "needs": ["chimney"],
+				"priority": "preferred"},
+			{"type": "storage", "wall": "right", "size": "small", "priority": "optional"},
+		],
+	},
+	"tower_block": {
+		"footprint": [13, 13], "stories": 6, "roof": "flat",
+		"materials": {"walls": "concrete", "roof": "concrete", "trim": "steel_frame",
+			"foundation": "rebar_concrete"},
+		"modules": [
+			{"type": "entrance", "wall": "front", "priority": "required"},
+			{"type": "stairwell", "wall": "centre", "priority": "required"},
+			{"type": "bed_area", "story": "top", "size": "large", "priority": "required"},
+			{"type": "office", "size": "medium", "priority": "preferred"},
+			{"type": "storage", "size": "small", "priority": "optional"},
+		],
+	},
 	"cottage": {
 		"footprint": [9, 7], "stories": 1, "roof": "gable",
 		"materials": {"walls": "timber", "roof": "thatch", "trim": "dark_oak",
@@ -146,17 +171,50 @@ const BASE := {
 
 ## Words a player is likely to use, mapped onto an archetype we can actually
 ## build. This is the offline path only — the model does its own mapping.
+## Words to archetypes, longest first so "tower block" beats "tower".
+##
+## This table is not a nicety on the shipped build — it is the only brain
+## there is when no API key is present, which is every exported build. A
+## word missing from here does not degrade gracefully: it silently becomes
+## a hut, which is how asking for a ten-floor apartment produced a shed.
 const KEYWORDS := {
+	"tower block": "tower_block", "apartment block": "apartment",
+	"aircraft hangar": "aircraft_hangar", "control tower": "control_tower",
+	"fire station": "fire_station", "market hall": "market_hall",
+	"power house": "power_house", "guard post": "guard_post",
+	"well house": "well_house",
+	"apartment": "apartment", "apartments": "apartment", "flat": "apartment",
+	"flats": "apartment", "tenement": "apartment", "block of": "apartment",
+	"skyscraper": "tower_block", "highrise": "tower_block",
+	"high rise": "tower_block", "tower": "tower_block",
+	"airport": "aircraft_hangar", "hangar": "aircraft_hangar",
+	"airfield": "aircraft_hangar", "terminal": "aircraft_hangar",
+	"runway": "aircraft_hangar", "aerodrome": "aircraft_hangar",
+	"factory": "fabrication_plant", "plant": "fabrication_plant",
+	"reactor": "reactor_house", "laboratory": "clean_lab", "lab": "clean_lab",
+	"warehouse": "warehouse", "depot": "depot", "garage": "garage",
+	"office": "office", "library": "library", "school": "school",
+	"clinic": "clinic", "hospital": "clinic", "station": "station",
+	"mill": "mill", "brickworks": "brickworks", "foundry": "foundry",
+	"pottery": "pottery", "tannery": "tannery",
 	"hut": "hut", "shack": "hut", "cabin": "hut", "house": "cottage",
 	"home": "cottage", "cottage": "cottage", "dwelling": "cottage",
 	"bakery": "bakery", "baker": "bakery", "bread": "bakery",
-	"workshop": "workshop", "shop": "store", "store": "store",
-	"market": "store", "smithy": "workshop", "forge": "workshop",
-	"tavern": "tavern", "inn": "tavern", "pub": "tavern", "alehouse": "tavern",
-	"barn": "barn", "granary": "barn", "stable": "stable", "stables": "stable",
-	"smokehouse": "smokehouse", "guard": "guard_post", "watch": "guard_post",
-	"tower": "guard_post", "shrine": "shrine", "temple": "shrine",
-	"chapel": "shrine", "well": "well_house",
+	"workshop": "workshop", "smithy": "workshop", "forge": "forge",
+	"shop": "store", "store": "store", "market": "store",
+	"tavern": "tavern", "inn": "inn", "pub": "tavern", "alehouse": "tavern",
+	"barn": "barn", "granary": "granary", "stable": "stable",
+	"stables": "stable", "smokehouse": "smokehouse",
+	"guard": "guard_post", "watch": "guard_post",
+	"shrine": "shrine", "temple": "shrine", "chapel": "shrine",
+	"well": "well_house",
+}
+
+## Number words, for "a ten floor building". Digits are read directly.
+const NUMBER_WORDS := {
+	"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+	"seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+	"twelve": 12, "single": 1, "double": 2, "triple": 3,
 }
 
 static var _cache: Dictionary = {}
@@ -164,10 +222,41 @@ static var _cache: Dictionary = {}
 
 static func guess_archetype(instruction: String) -> String:
 	var text := instruction.to_lower()
+	# Longest match wins, so "tower block" is not read as "tower" and an
+	# "apartment block" is not read as a "block of".
+	var best := ""
+	var best_len := 0
 	for word: String in KEYWORDS:
-		if text.find(word) >= 0:
-			return KEYWORDS[word]
-	return "hut"
+		if word.length() > best_len and text.find(word) >= 0:
+			best = KEYWORDS[word]
+			best_len = word.length()
+	return best if best != "" else "hut"
+
+
+## How many floors the instruction asked for, or 0 if it did not say.
+##
+## Reads the number next to floor/storey, so "a ten floor building" and
+## "3-storey" both land. Ignoring this was how a request for ten floors
+## came back as one.
+static func floors_in(instruction: String) -> int:
+	var text := instruction.to_lower().replace("-", " ").replace(",", " ")
+	var words := text.split(" ", false)
+	for i in words.size():
+		var w := String(words[i])
+		if not (w.begins_with("floor") or w.begins_with("stor")
+				or w.begins_with("level")):
+			continue
+		# The count sits just before the word, as a digit or as English.
+		for back in range(1, 3):
+			var j := i - back
+			if j < 0:
+				break
+			var n := String(words[j])
+			if n.is_valid_int():
+				return clampi(int(n), 1, 40)
+			if NUMBER_WORDS.has(n):
+				return int(NUMBER_WORDS[n])
+	return 0
 
 
 ## The offline plan. It still produces assumptions, because a building with no
@@ -181,13 +270,34 @@ static func fallback(instruction: String, mem: WorkerMemory, plot: Plot,
 	spec["orientation"] = "face_street"
 	if not spec.has("sign"):
 		spec["sign"] = ""
+	# Honour what the instruction actually asked for. The clamp is deliberate
+	# and only downward to the range the generator can build: exceeding what
+	# the TIER allows is not clamped here at all, because the validator
+	# refuses it and the worker says why, which is the useful answer.
+	var asked := floors_in(instruction)
+	if asked > 0:
+		spec["stories"] = asked
+	var text := instruction.to_lower()
+	var fp: Array = spec["footprint"]
+	if text.find("big") >= 0 or text.find("large") >= 0:
+		spec["footprint"] = [float(fp[0]) * 1.35, float(fp[1]) * 1.35]
+	elif text.find("small") >= 0 or text.find("tiny") >= 0 or text.find("little") >= 0:
+		spec["footprint"] = [float(fp[0]) * 0.75, float(fp[1]) * 0.75]
+
 	_fit_to_plot(spec, plot)
 	_apply_preferences(spec, mem)
+	var dropped := _trim_to_fit(spec)
 
 	var assumptions: Array = [
 		"You did not say which way it should face, so I put the door toward %s."
 			% plot.street_word(),
 	]
+	if asked > 0:
+		assumptions.append("You asked for %d floors, so that is what I planned."
+			% asked)
+	if not dropped.is_empty():
+		assumptions.append("It would not all fit at that size, so I left out the %s."
+			% " and the ".join(dropped))
 	if instruction.to_lower().find("big") < 0 and instruction.to_lower().find("small") < 0:
 		assumptions.append("You did not say how big, so I built it the usual size for a %s."
 			% arch.replace("_", " "))
@@ -205,6 +315,48 @@ static func fallback(instruction: String, mem: WorkerMemory, plot: Plot,
 		"cost_estimate": {},
 		"source": "fallback",
 	}
+
+
+## Drops rooms until the plan fits inside its own walls, and says which.
+##
+## A builder asked for something small does not refuse; they leave the
+## storeroom out and mention it. Without this, "build a small bakery" came
+## back as a refusal about floor area, which is arithmetic the player never
+## asked to be involved in. Required rooms are never dropped — if those
+## alone will not fit then the request really is impossible and the
+## validator should say so.
+static func _trim_to_fit(spec: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	var fp: Array = spec["footprint"]
+	var envelope := float(fp[0]) * float(fp[1]) * float(int(spec.get("stories", 1)))
+	for pass_priority: String in ["optional", "preferred"]:
+		for _guard in 8:
+			if _module_area(spec) <= envelope * 0.8:
+				return out
+			var cut := -1
+			var mods: Array = spec.get("modules", [])
+			for i in mods.size():
+				if str((mods[i] as Dictionary).get("priority", "preferred")) == pass_priority:
+					cut = i
+			if cut < 0:
+				break
+			var gone := str((mods[cut] as Dictionary).get("type", "room"))
+			out.append(gone.replace("_", " "))
+			mods.remove_at(cut)
+			# Anything that wanted to be beside the room we just removed no
+			# longer wants anything. Leaving the reference behind made the
+			# validator reject the plan for naming a room that is not in it.
+			for m: Variant in mods:
+				if str((m as Dictionary).get("adjacent_to", "")) == gone:
+					(m as Dictionary).erase("adjacent_to")
+	return out
+
+
+static func _module_area(spec: Dictionary) -> float:
+	var total := 0.0
+	for m: Variant in spec.get("modules", []):
+		total += Vocabulary.size_area(str((m as Dictionary).get("size", "medium")))
+	return total
 
 
 static func _fit_to_plot(spec: Dictionary, plot: Plot) -> void:

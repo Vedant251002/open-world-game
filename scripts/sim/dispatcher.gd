@@ -7,7 +7,13 @@ class_name Dispatcher
 ##   instruction -> LLM (or the offline library) -> spec
 ##   spec -> pre-validator -> either a typed error or a plan
 ##   plan -> BuildingGenerator -> patch, or a second typed error
+##   patch -> the stores, which either cover the bill or do not
 ##   patch -> the worker, who walks off and lays it down over in-game hours
+##
+## The stores are a gate, not a counter. Nothing is started that the town
+## cannot finish; a plan it cannot pay for is held whole and somebody is sent
+## out to dig for what is missing, and the build begins by itself when the
+## material is in. See _begin().
 ##
 ## Every error on that path is fail-closed and typed, and every typed error
 ## becomes a question the worker asks out loud rather than a message box. That
@@ -17,6 +23,10 @@ signal spoke(worker: Worker, line: String, kind: String)
 signal plan_accepted(worker: Worker, assumptions: Array)
 signal refused(worker: Worker, err: Dictionary)
 signal status(text: String)
+## A plan that is sound but unaffordable. The HUD puts the shortfall on screen;
+## the worker says it out loud. Both, because this is the one refusal the player
+## can actually do something about.
+signal short_of(worker: Worker, missing: Dictionary)
 
 var world: VoxelWorld
 var village: Village
@@ -30,9 +40,17 @@ var map: MapScreen
 var farm: Farm
 var livestock: Livestock
 var player: Node3D
+var crew: Crew
 
 ## worker_id -> {"worker": Worker, "instruction": String, "plot": Plot}
 var _open: Dictionary = {}
+
+## Plans that are finished and correct but cannot be paid for yet. They sit
+## here, whole, until the stores can cover them — the spec is not re-planned,
+## downgraded or quietly swapped for something cheaper, because the player asked
+## for a thing and is owed either that thing or a reason (pillar P3).
+var _held: Array[Dictionary] = []
+var _retry := 0.0
 
 
 func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
@@ -76,6 +94,15 @@ func instruct(worker: Worker, instruction: String) -> void:
 	# says them, so they go through the same text field as everything else
 	# rather than becoming a key nobody would find (pillar P1).
 	if _try_posting(worker, instruction):
+		return
+
+	# A new order replaces whatever this one was still holding out for.
+	_forget_held(worker)
+
+	# "Go and get some stone" is an instruction in its own right, not a badly
+	# worded building. It goes straight to the ground, for the same reason field
+	# work does: there is no spec to argue about, only a hillside.
+	if _try_gather(worker, instruction):
 		return
 
 	# Land work never reaches the model. The building generator emits walls and
@@ -154,21 +181,186 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 	var patch: VoxelPatch = res["patch"]
 	_open.erase(worker_id)
 
+	var ready := {
+		"worker": worker, "plot": plot, "spec": spec, "patch": patch,
+		"assumptions": assumptions,
+		"line": str(plan.get("worker_line", "")),
+	}
+	if not _begin(ready):
+		_held.append(ready)
+
+
+# ---------------------------------------------------------------- the stores
+
+## Everything between a finished plan and a worker walking off with it.
+##
+## The check that matters is the first one. A plan is not a job until the stores
+## can pay for it, because the alternative — starting a wall the town cannot
+## finish — is the worst failure this game can have: it looks like progress for
+## an hour and then stops halfway up, with nothing to tell the player why.
+##
+## So the bill is settled before the first voxel, out loud, and a plan that
+## cannot be paid for is held rather than refused. Held, because the answer is
+## not "no": the answer is "not until somebody fetches the stone", and fetching
+## the stone is a job like any other.
+##
+## Returns false when the plan is being held; the caller keeps it.
+func _begin(job: Dictionary) -> bool:
+	var worker: Worker = job["worker"]
+	var patch: VoxelPatch = job["patch"]
+	var bill := Resources.bill(patch.cost)
+
+	if not town.can_afford(bill):
+		var missing := Resources.shortfall(bill, town.stock)
+		var wanted := Resources.describe(missing)
+		# Said once, not once a second: the shortfall only changes when somebody
+		# comes back with something.
+		var already := worker.waiting_for == wanted
+		worker.waiting_for = wanted
+		if not already:
+			worker.speak("We have not got the material — I am short %s. "
+				% wanted + "I will hold here until it comes in.", "refuse")
+			short_of.emit(worker, missing)
+		# Sent every time, though. The first errand can come up short — a seam
+		# runs out, the only free hand was already busy — and a town that asked
+		# once and then waited forever would just be a hang with dialogue.
+		_send_for(missing, worker, not already)
+		return false
+
+	# Paid for at the start of the work, not at the end of it. A half-built
+	# house has already consumed its timber.
+	town.spend(bill)
+	worker.waiting_for = ""
+
 	# The assumptions go up before the worker leaves, never after the building
 	# is finished. Seeing what they decided while they walk away is what makes
 	# the result fair (design pillar P3).
-	plan_accepted.emit(worker, assumptions)
-
-	var line := str(plan.get("worker_line", ""))
-	if line != "":
-		worker.speak(line, "talk")
+	plan_accepted.emit(worker, job["assumptions"])
 
 	# Nobody paths through a building site.
 	nav.refresh_world_rect(patch.footprint, 3)
 
-	worker.take_job(plot, spec, patch, assumptions, line, props_root)
+	if not worker.take_job(job["plot"], job["spec"], patch, job["assumptions"],
+			str(job["line"]), props_root):
+		# The route was there when the plan was made and is not there now. The
+		# worker has already said so; the town gets its material back, because
+		# a bill for a house that was never started is just a leak.
+		town.refund(bill)
+		(job["plot"] as Plot).reserved = false
+		return true
 	if map != null:
-		map.note_building(patch, str(spec.get("archetype", "building")))
+		map.note_building(patch, str(job["spec"].get("archetype", "building")))
+	return true
+
+
+## Send somebody out for what is missing.
+##
+## One errand at a time, and never the worker who is waiting on the delivery:
+## the point of having three of them is that one can stand at the plot with the
+## plan while another walks to the hillside, which is the shape of delegation
+## the whole game is about.
+func _send_for(missing: Dictionary, asker: Worker, announce: bool) -> void:
+	for mat: String in missing:
+		if not Resources.gatherable(mat):
+			continue
+		if _already_fetching(mat):
+			continue
+		var hand := _free_hand(asker)
+		if hand == null:
+			if announce:
+				status.emit("Nobody free to fetch %s yet." % mat.replace("_", " "))
+			return
+		_dig(hand, mat, int(missing[mat]), announce)
+
+
+func _already_fetching(mat: String) -> bool:
+	if crew == null:
+		return false
+	for w: Worker in crew.workers:
+		if w.job_quarry != null and w.job_quarry.material == mat:
+			return true
+	return false
+
+
+## An idle worker who is not the one holding the plan.
+func _free_hand(exclude: Worker) -> Worker:
+	if crew == null:
+		return null
+	for w: Worker in crew.workers:
+		if w == exclude or w.busy() or w.waiting_for != "":
+			continue
+		if _open.has(w.memory.worker_id):
+			continue
+		return w
+	return null
+
+
+## The errand itself. The site is a real place in the world with real voxels of
+## the right kind in it, so the hole they leave is where the material came from.
+##
+## `announce` is false when a held plan is quietly having another go, because
+## the retry runs on a timer and a worker who said "I cannot find any iron"
+## every second and a half would be worse than one who said nothing.
+func _dig(worker: Worker, mat: String, units: int, announce: bool = true) -> bool:
+	var near := worker.global_position
+	var site := Quarry.find_site(world, village, mat, near, nav.bounds_v())
+	if site == Vector3i.ZERO:
+		if announce:
+			worker.speak("I cannot find any %s within reach of the town."
+				% mat.replace("_", " "), "refuse")
+		return false
+
+	# A margin, so the next order does not send them straight back out.
+	var q := Quarry.new(world, town, mat, int(units * 1.5) + 8, site)
+	if q.total() == 0:
+		if announce:
+			worker.speak("There is no %s left in that seam."
+				% mat.replace("_", " "), "refuse")
+		return false
+
+	var where := Resources.place_of(Resources.source_of(mat))
+	var line := "I will go to %s for the %s." % [where, mat.replace("_", " ")]
+	if not worker.take_quarry_job(q, line):
+		if announce:
+			worker.speak("I cannot get out to %s from here." % where, "refuse")
+		return false
+	status.emit("%s is off to %s for %s." % [worker.display_name(), where,
+		mat.replace("_", " ")])
+	return true
+
+
+## Held plans wake up on their own the moment the stores can cover them. Nobody
+## has to be told twice, and the player does not have to remember to re-ask.
+func _process(delta: float) -> void:
+	if _held.is_empty():
+		return
+	# Once and a half a second is often enough to feel immediate and rare
+	# enough that a town waiting on a two-day errand is not re-costing a
+	# building sixty times a second.
+	_retry -= delta
+	if _retry > 0.0:
+		return
+	_retry = 1.5
+	for i in range(_held.size() - 1, -1, -1):
+		var job: Dictionary = _held[i]
+		var worker: Worker = job["worker"]
+		if worker == null or not is_instance_valid(worker):
+			_held.remove_at(i)
+			continue
+		if worker.busy():
+			continue
+		if _begin(job):
+			_held.remove_at(i)
+
+
+## Drop a held plan — the player asked this worker for something else.
+func _forget_held(worker: Worker) -> void:
+	for i in range(_held.size() - 1, -1, -1):
+		var job: Dictionary = _held[i]
+		if job["worker"] == worker:
+			(job["plot"] as Plot).reserved = false
+			_held.remove_at(i)
+	worker.waiting_for = ""
 
 
 func _on_question_ready(worker_id: String, question: String, line: String) -> void:
@@ -237,6 +429,54 @@ func _try_posting(worker: Worker, instruction: String) -> bool:
 		worker.speak("Right behind you.", "talk")
 		return true
 	return false
+
+
+# ------------------------------------------------------------------ fetching
+
+const DIG_WORDS := ["dig", "fetch", "mine", "quarry", "gather", "collect",
+	"get", "bring", "chop", "fell", "cut"]
+
+## What a player calls a material, mapped to what the stores call it. The left
+## side is the vocabulary of somebody standing in a field; the right side is a
+## key in Town.stock.
+const MATERIAL_WORDS := {
+	"stone": "cobble", "stones": "cobble", "rock": "cobble", "rocks": "cobble",
+	"cobble": "cobble", "granite": "granite", "gravel": "gravel",
+	"concrete": "concrete", "asphalt": "asphalt",
+	"wood": "timber", "timber": "timber", "logs": "timber", "log": "timber",
+	"tree": "timber", "trees": "timber", "lumber": "timber",
+	"plank": "plank", "planks": "plank", "oak": "dark_oak",
+	"thatch": "thatch", "straw": "thatch", "reed": "thatch",
+	"sand": "sand", "sandstone": "sandstone", "glass": "glass",
+	"clay": "brick", "brick": "brick", "bricks": "brick", "tile": "clay_tile",
+	"dirt": "dirt", "soil": "dirt", "earth": "dirt",
+	"iron": "steel_frame", "ore": "steel_frame", "steel": "steel_frame",
+	"metal": "sheet_metal", "chrome": "chrome",
+}
+
+
+## "go and dig up some iron" — a verb about the ground and a material. Both are
+## required: "build a stone wall" has the material and no errand, and "get on
+## with it" has the errand and no material.
+func _try_gather(worker: Worker, instruction: String) -> bool:
+	var text := instruction.to_lower()
+	if not _has_word(text, DIG_WORDS):
+		return false
+	var mat := ""
+	for word: String in MATERIAL_WORDS:
+		if _has_word(text, [word]):
+			mat = str(MATERIAL_WORDS[word])
+			break
+	if mat == "":
+		return false
+
+	var units := 240
+	for token: String in text.replace(",", " ").split(" ", false):
+		if token.is_valid_int():
+			units = clampi(int(token), 10, 4000)
+			break
+	_dig(worker, mat, units)
+	return true
 
 
 # ------------------------------------------------------------------ the land
