@@ -259,7 +259,10 @@ func _find_blockers(node: Node, into: Array[String]) -> void:
 		if child is LineEdit:
 			continue
 		var c := child as Control
-		if c != null and c.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+		# Only what is actually on screen can eat a pointer. The instruction bar
+		# and its phrase buttons are meant to be touched, and they are hidden
+		# except while the player is giving an order.
+		if c != null and c.is_visible_in_tree() 				and c.mouse_filter != Control.MOUSE_FILTER_IGNORE:
 			into.append("%s(%s)" % [c.name, c.get_class()])
 		_find_blockers(child, into)
 

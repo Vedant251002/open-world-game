@@ -7,6 +7,13 @@ class_name SkyEnv
 ## to a finished wall in the low afternoon sun. The day cycle is therefore a
 ## gameplay readout as much as a look.
 
+## How much fill light a full moon is worth. Tuned by measurement: at the
+## old value the town after dark came out at one part in 255.
+const MOON_FILL := 3.4
+## The compatibility renderer needs six times as much to land in the same place.
+## Not a guess: swept and measured against the Forward+ night, which sits at
+## about 33/255 mean. It only applies after dark, so daylight is untouched.
+const MOON_FILL_COMPAT := 20.0
 const SUNRISE := 6.0
 const SUNSET := 20.0
 
@@ -24,6 +31,11 @@ var _no_ssr := false
 var _no_sea := false
 var _no_gi := false
 var _no_clouds := false
+## True on the compatibility renderer, which is what the web and mobile
+## exports run. It is not a lesser version of the same lighting — several
+## things simply are not there, and ambient light is the one that decides
+## whether the game is playable.
+var _compat := false
 
 const SKY_SHADER := preload("res://scripts/core/sky.gdshader")
 
@@ -64,6 +76,7 @@ func _ready() -> void:
 	_no_sea = "--nosea" in args
 	_no_gi = "--nogi" in args
 	_no_clouds = "--noclouds" in args
+	_compat = RenderingServer.get_current_rendering_method() == "gl_compatibility"
 	_build_environment()
 	_build_lights()
 	_apply_time()
@@ -82,11 +95,26 @@ func _build_environment() -> void:
 	sky.process_mode = Sky.PROCESS_MODE_REALTIME
 	env.sky = sky
 
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	# Where the fill light comes from.
+	#
+	# Forward+ can take it from the sky itself, which is free and always
+	# agrees with the horizon. The compatibility renderer cannot: its sky
+	# radiance contributes almost nothing, so everything the sun does not
+	# strike directly goes black. On a phone the plaza came out at seventy
+	# per cent near-black pixels while the sky above it was bright blue.
+	# There, the ambient is an explicit colour, set from the same palette.
+	if _compat:
+		env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	else:
+		env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+		env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = 0.78
+	# The darker exposure is a Forward+ luxury: there, bounce light and sky
+	# ambient fill the shadows back in and the lower exposure reads as
+	# contrast. Without them it just reads as night.
+	env.tonemap_exposure = 1.02 if _compat else 0.78
 	env.tonemap_white = 3.0
 
 	# Contact shadows and bounce. This is what stops a voxel town from reading
@@ -237,11 +265,42 @@ func _apply_time() -> void:
 
 	var night := clampf(1.0 - sun_energy / 0.4, 0.0, 1.0)
 	moon.rotation_degrees = Vector3(-55.0, azimuth + 180.0, 0.0)
-	moon.light_energy = night * 0.22
+	# Moonlight you can actually walk by. At 0.22 the town after eight o'clock
+	# was a black screen on every renderer — measured at two parts in 255,
+	# which is not a dark night, it is a fault.
+	moon.light_energy = night * 0.55
 	moon.visible = night > 0.02
 
-	env.ambient_light_energy = ambient * 0.78
-	env.ambient_light_sky_contribution = 1.0
+	# The colour of the fill light — sky above, horizon at the edges, warmed a
+	# little toward white so a shaded wall reads as shaded rather than as blue.
+	#
+	# After sunset it drifts to moonlight, and that is not a stylistic choice.
+	# Derived from the palette alone it fails at night in a way no amount of
+	# energy can fix: the night sky IS nearly black, so the ambient colour is
+	# nearly black, and a colour of zero times any energy is still zero. The town
+	# at ten in the evening measured half a part in 255 — not a dark night, an
+	# unplayable one. Moonlight is dim and blue, but it is a colour.
+	const MOONLIGHT := Color("#7286b4")
+	env.ambient_light_color = horizon.lerp(sky_top, 0.4) \
+		.lerp(Color.WHITE, 0.3).lerp(MOONLIGHT, night)
+	# Moonlight, faded in as the sun goes rather than applied as a flat floor:
+	# a floor high enough to light the town at ten at night also brightens
+	# nine in the morning, which is not a floor, it is a different palette.
+	var moonfill := (MOON_FILL_COMPAT if _compat else MOON_FILL) * night
+	if _compat:
+		# Scaled by the sun, not flat. A multiplier generous enough to make the
+		# plaza readable at nine in the morning would turn midnight into dusk,
+		# and the whole point of the palette is that the hours feel different.
+		env.ambient_light_energy = maxf(
+			ambient * lerpf(1.5, 7.0, clampf(sun_energy, 0.0, 1.0)), moonfill)
+		env.ambient_light_sky_contribution = 0.0
+	else:
+		# Forward+ takes its fill from the sky in daylight, which is free and
+		# always agrees with the horizon. At night the sky has nothing to give,
+		# so the explicit colour above takes over.
+		env.ambient_light_energy = maxf(ambient * 0.78, moonfill)
+		env.ambient_light_sky_contribution = lerpf(0.15, 1.0,
+			clampf(sun_energy, 0.0, 1.0))
 	if not _no_vol:
 		env.volumetric_fog_density = lerpf(0.0042, 0.0010, clampf(sun_energy, 0.0, 1.0))
 	env.fog_light_color = horizon

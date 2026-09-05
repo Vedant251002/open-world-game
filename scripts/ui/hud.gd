@@ -40,6 +40,9 @@ var _assume_title: Label
 var _assume_body: Label
 var _toast: Label
 var _toast_left := 0.0
+var _phrases: HFlowContainer
+## Sized for a thumb rather than a cursor.
+var _touch := false
 
 
 func setup(p: Player, c: Crew, gc: GameClock, t: Town) -> void:
@@ -48,6 +51,7 @@ func setup(p: Player, c: Crew, gc: GameClock, t: Town) -> void:
 	clock = gc
 	town = t
 	layer = 10
+	_touch = Platform.has_touch() or "--touchui" in OS.get_cmdline_user_args()
 	_build()
 	player.looked_at.connect(_on_looked_at)
 	set_process(true)
@@ -61,22 +65,22 @@ func _build() -> void:
 	add_child(_root)
 	_root.add_child(_make_crosshair())
 
-	_clockline = _label("", 18, INK)
+	_clockline = _label("", 32 if _touch else 18, INK)
 	_clockline.position = Vector2(22, 18)
 	_root.add_child(_clockline)
 
-	_larder = _label("", 15, DIM)
-	_larder.position = Vector2(22, 42)
+	_larder = _label("", 26 if _touch else 15, DIM)
+	_larder.position = Vector2(22, 58 if _touch else 42)
 	_root.add_child(_larder)
 
 	_crewbox = VBoxContainer.new()
-	_crewbox.position = Vector2(22, 70)
+	_crewbox.position = Vector2(22, 100 if _touch else 70)
 	_crewbox.add_theme_constant_override("separation", 3)
 	_root.add_child(_crewbox)
 	for _i in 3:
-		_crewbox.add_child(_label("", 15, DIM))
+		_crewbox.add_child(_label("", 26 if _touch else 15, DIM))
 
-	_prompt = _label("", 19, INK)
+	_prompt = _label("", 34 if _touch else 19, INK)
 	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_prompt.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	_prompt.offset_left = -420
@@ -85,7 +89,7 @@ func _build() -> void:
 	_prompt.offset_bottom = -104
 	_root.add_child(_prompt)
 
-	_toast = _label("", 16, WARN)
+	_toast = _label("", 30 if _touch else 16, WARN)
 	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_toast.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	_toast.offset_left = -460
@@ -96,6 +100,8 @@ func _build() -> void:
 
 	_build_bar()
 	_build_assumptions()
+	get_viewport().size_changed.connect(_reflow)
+	_reflow()
 	# Belt and braces: anything added above that is not the text field must not
 	# be able to claim the pointer.
 	_ignore_mouse(_root)
@@ -103,7 +109,10 @@ func _build() -> void:
 
 static func _ignore_mouse(node: Node) -> void:
 	for child: Node in node.get_children():
-		if child is LineEdit:
+		# The text field and the phrase buttons are the only things here meant
+		# to be touched. They live inside the bar, which is hidden except while
+		# the player is giving an order, so they cannot swallow mouse-look.
+		if child is LineEdit or child is Button:
 			continue
 		if child is Control:
 			(child as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -136,10 +145,7 @@ func _make_crosshair() -> Control:
 
 func _build_bar() -> void:
 	_bar = PanelContainer.new()
-	_bar.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_bar.offset_left = -430
-	_bar.offset_right = 430
-	_bar.offset_top = -96
+	_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_bar.offset_bottom = -22
 	_bar.add_theme_stylebox_override("panel", _panel_style())
 	_bar.visible = false
@@ -149,13 +155,26 @@ func _build_bar() -> void:
 	col.add_theme_constant_override("separation", 6)
 	_bar.add_child(col)
 
-	_barlabel = _label("", 15, DIM)
+	_barlabel = _label("", 28 if _touch else 15, DIM)
 	col.add_child(_barlabel)
+
+	# Tappable phrases, above the field.
+	#
+	# On a phone the system keyboard is not something the game can insist on:
+	# the touch that opens this bar is dispatched a frame later, so by the time
+	# anything asks for a keyboard the browser no longer counts it as the
+	# player having asked, and iOS Safari refuses. These work with no keyboard
+	# at all — and on desktop they double as the answer to "what can I say?",
+	# which a bare text field never tells you.
+	_phrases = HFlowContainer.new()
+	_phrases.add_theme_constant_override("h_separation", 6)
+	_phrases.add_theme_constant_override("v_separation", 6)
+	col.add_child(_phrases)
 
 	_entry = LineEdit.new()
 	_entry.placeholder_text = "tell them what to build…"
-	_entry.custom_minimum_size = Vector2(0, 34)
-	_entry.add_theme_font_size_override("font_size", 18)
+	_entry.custom_minimum_size = Vector2(0, 90.0 if _touch else 34.0)
+	_entry.add_theme_font_size_override("font_size", 34 if _touch else 18)
 	_entry.text_submitted.connect(_on_submit)
 	col.add_child(_entry)
 
@@ -163,10 +182,8 @@ func _build_bar() -> void:
 func _build_assumptions() -> void:
 	_assume = PanelContainer.new()
 	_assume.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_assume.offset_left = -434
-	_assume.offset_right = -20
 	_assume.offset_top = 18
-	_assume.offset_bottom = 200
+	_assume.offset_bottom = 260
 	_assume.add_theme_stylebox_override("panel", _panel_style())
 	_assume.visible = false
 	_root.add_child(_assume)
@@ -174,14 +191,37 @@ func _build_assumptions() -> void:
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 5)
 	_assume.add_child(col)
-	_assume_title = _label("", 15, WARN)
+	_assume_title = _label("", 26 if _touch else 15, WARN)
 	_assume_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_assume_title.custom_minimum_size = Vector2(390, 0)
 	col.add_child(_assume_title)
-	_assume_body = _label("", 15, INK)
+	_assume_body = _label("", 26 if _touch else 15, INK)
 	_assume_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_assume_body.custom_minimum_size = Vector2(390, 0)
 	col.add_child(_assume_body)
+
+
+## Lays the two panels out for the screen actually in front of the player.
+##
+## The offsets were written for a desktop window and put the assumptions
+## panel four hundred pixels in from the right edge, which on a phone held
+## upright is off the left of the screen entirely.
+func _reflow() -> void:
+	var w := get_viewport().get_visible_rect().size.x
+	# The canvas is a fixed 1600 wide however tall the screen is, so this is
+	# never the device width — a phone held upright scales the whole canvas
+	# down by about half. Which means a control sized for a mouse ends up at
+	# twenty physical pixels under a thumb, and the only thing that tells us
+	# is whether there is a touchscreen.
+	var bar_w := 1520.0 if _touch else 900.0
+	_bar.offset_left = maxf((w - bar_w) * 0.5, 16.0)
+	_bar.offset_right = -_bar.offset_left
+	var panel_w := 760.0 if _touch else 414.0
+	_assume.offset_left = -panel_w - 20.0
+	_assume.offset_right = -20.0
+	var body_width := absf(_assume.offset_right - _assume.offset_left) - 30.0
+	_assume_title.custom_minimum_size = Vector2(body_width, 0)
+	_assume_body.custom_minimum_size = Vector2(body_width, 0)
 
 
 static func _panel_style() -> StyleBoxFlat:
@@ -267,6 +307,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+## Opens the instruction bar from outside, for the screenshot rig.
+func open_for(w: Worker) -> void:
+	_open_bar(w)
+
+
 ## Typing and mouse-look cannot both own the input. Releasing the pointer while
 ## the bar is open is also the only cue the player gets that the game is now
 ## waiting for words rather than for movement.
@@ -281,6 +326,8 @@ func _open_bar(w: Worker) -> void:
 		_entry.placeholder_text = "tell them what to build…"
 	_entry.text = ""
 	_entry.grab_focus()
+	_show_keyboard()
+	_fill_phrases(w)
 	player.set_input_enabled(false)
 
 
@@ -288,6 +335,9 @@ func _close_bar() -> void:
 	_typing_for = null
 	_bar.visible = false
 	_entry.release_focus()
+	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		DisplayServer.virtual_keyboard_hide()
+	_bar.offset_bottom = -22
 	player.set_input_enabled(true)
 
 
@@ -302,6 +352,62 @@ func _on_submit(text: String) -> void:
 		answer_given.emit(w, said)
 	else:
 		instruction_given.emit(w, said)
+
+
+## Everything a worker understands, in the words that reach them.
+##
+## Deliberately phrased as instructions rather than as buttons: tapping one
+## sends exactly the sentence shown, so a player learns what kind of thing
+## can be said and then starts typing their own variations on it.
+const PHRASES := [
+	"build a hut", "build a bakery", "build a workshop",
+	"build a tavern", "build a store", "plant a wheat field",
+	"bring some hens", "wait here", "follow me",
+]
+## When a worker has asked something, these are the useful replies.
+const REPLIES := [
+	"yes, go ahead", "use whatever we have", "make it smaller",
+	"a workshop", "a store", "never mind",
+]
+
+
+func _fill_phrases(w: Worker) -> void:
+	for c: Node in _phrases.get_children():
+		c.queue_free()
+	var list: Array = REPLIES if w.pending_question != "" else PHRASES
+	for text: String in list:
+		var b := Button.new()
+		b.text = text
+		b.focus_mode = Control.FOCUS_NONE
+		b.add_theme_font_size_override("font_size", 34 if _touch else 18)
+		# Forty-four physical pixels is the smallest thing a thumb hits
+		# reliably. On the half-scale canvas of a phone that is ninety here.
+		b.custom_minimum_size = Vector2(0, 90.0 if _touch else 44.0)
+		b.pressed.connect(_on_submit.bind(text))
+		_phrases.add_child(b)
+	# The bar is as tall as whatever it is holding. Two rows of phrases on a
+	# narrow screen is twice the height of one row on a wide one.
+	await get_tree().process_frame
+	_bar.offset_top = _bar.offset_bottom - _bar.get_combined_minimum_size().y
+
+
+## Asks the platform for a keyboard, for the platforms that will give one.
+##
+## grab_focus() alone is enough on a desktop and enough on Android; iOS
+## Safari wants the request to arrive inside the touch that caused it, and
+## by the time a synthesised action has been through the input queue it no
+## longer is. Asking explicitly costs nothing and helps where it can; the
+## phrase buttons are what make the bar usable where it cannot.
+func _show_keyboard() -> void:
+	if not DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		return
+	DisplayServer.virtual_keyboard_show(_entry.text, Rect2i(), 
+		DisplayServer.KEYBOARD_TYPE_DEFAULT, -1, _entry.text.length())
+	# Lift the bar clear of the keyboard if one did appear.
+	var kb := DisplayServer.virtual_keyboard_get_height()
+	if kb > 0:
+		_bar.offset_bottom = -22 - kb
+		_bar.offset_top = -160 - kb
 
 
 ## What the worker decided that you never said. Stays up until the next plan

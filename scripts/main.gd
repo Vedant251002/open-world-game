@@ -250,6 +250,8 @@ func _on_world_ready(t0: int) -> void:
 		return
 	if "--cast" in args:
 		_line_up_cast()
+		if "--openbar" in args and not crew.workers.is_empty():
+			hud.open_for(crew.workers[0])
 	for flag in ["--shot", "--inside", "--rooms", "--cast"]:
 		if flag in args:
 			_install_shotter()
@@ -557,6 +559,10 @@ func _install_shotter() -> void:
 		"pitch": -0.09, "hour": 9.5, "name": "crew"})
 	s.views.append({"pos": well + Vector3(0, 34.0, 54), "yaw": 0.0,
 		"pitch": -0.45, "hour": 14.0, "name": "aerial"})
+	# The same view after dark, because a fill light generous enough to make the
+	# morning readable is exactly the one that ruins the night.
+	s.views.append({"pos": well + Vector3(3.0, 1.5, 11.0), "yaw": 0.15,
+		"pitch": -0.09, "hour": 22.0, "name": "night"})
 	if s.views.size() < 3:
 		s.views = [
 			{"pos": well + Vector3(0, 0.2, 13), "yaw": 0.0, "pitch": 0.02,
