@@ -47,10 +47,10 @@ const ENDPOINT := "https://opencode.ai/zen/v1/chat/completions"
 ## secret: it is useless without the key, and the Worker only answers the
 ## game's own origin.
 ##
-## Empty until the Worker is deployed, at which point the deployed URL goes
-## here, is committed, and every platform picks it up. Native builds do not
-## need it — they can call the API directly with a key from the environment.
-const PROXY_URL := ""
+## Deployed from proxy/, and committed here on purpose. Native builds do not
+## need it — they can call the API directly with a key from the environment —
+## but the browser build has no other way to reach a model at all.
+const PROXY_URL := "https://delegate-ai.delegate-ai-proxy.workers.dev"
 const DEFAULT_MODEL := "nemotron-3-ultra-free"
 ## Generous. A full spec with five modules and three assumptions runs past
 ## sixteen hundred tokens, and a truncated reply is not a poor plan, it is no
