@@ -11,3 +11,8 @@ Thumbs.db
 
 # Local API keys
 .env
+
+# The proxy's local secrets, never committed.
+proxy/.dev.vars
+proxy/node_modules/
+proxy/.wrangler/

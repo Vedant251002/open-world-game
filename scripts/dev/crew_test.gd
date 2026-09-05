@@ -33,6 +33,10 @@ var _phase := 0
 var _follow_checked := false
 var _last_beat := -1
 var _before: Array[Vector3] = []
+## Everywhere Mira stood while the bakery went up, and everything she was seen
+## doing there.
+var _stood: Array[Vector3] = []
+var _did: Dictionary = {}
 var _turn_from := 0.0
 var _aim_at: Worker = null
 
@@ -98,6 +102,7 @@ func _process(delta: float) -> void:
 				_fails.append("no plan came back for Mira within 12 s")
 				_phase = 3
 		2:
+			_watch_the_site()
 			if _done_patch != null:
 				_check_built()
 				_phase = 3
@@ -298,10 +303,39 @@ func _check_follow() -> void:
 		_fails.append("%d of the crew never came along" % far)
 
 
+## A worker who stands on one paving stone for the whole build is a prop with
+## an animation on it. Sampled while the bakery goes up: where she stood, and
+## what she was seen doing.
+func _watch_the_site() -> void:
+	var m: Worker = crew.get_worker("mira")
+	if m == null or m.state != Worker.State.BUILDING:
+		return
+	_did[m._gesture] = true
+	var here := m.global_position
+	if _stood.is_empty():
+		_stood.append(here)
+		return
+	for at: Vector3 in _stood:
+		if at.distance_to(here) < 2.0:
+			return
+	_stood.append(here)
+
+
 func _check_built() -> void:
 	var p := _done_patch
 	print("[crew] finished: %s on plot %d, %d voxels" % [
 		p.archetype, p.plot_id, p.touched])
+
+	print("[crew] Mira worked from %d spots and was seen doing: %s" % [
+		_stood.size(), ", ".join(_did.keys())])
+	if _stood.size() < 2:
+		_fails.append("Mira built the whole thing from one spot")
+	if _did.size() < 2:
+		_fails.append("Mira only ever did one thing on the site (%s)"
+			% ", ".join(_did.keys()))
+	for g: String in _did:
+		if g not in Humanoid.GESTURES:
+			_fails.append("Mira was doing '%s', which is not a gesture" % g)
 
 	# The patch is a plan; what matters is whether the world changed. Compare the
 	# world column against the bare terrain the generator would have made there:

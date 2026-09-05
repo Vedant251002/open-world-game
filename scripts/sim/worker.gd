@@ -83,6 +83,11 @@ var _closing := false
 ## never finishes and a player waiting for news that will not come.
 var _stuck_for := 0.0
 var _last_gap := INF
+## What they are doing on the site this minute, and how long until they pick
+## something else and somewhere else to do it.
+var _gesture := "plan"
+var _gesture_left := 0.0
+var _station_left := 0.0
 var _repaths := 0
 ## Standing on a plot waiting for a plan to arrive. Idle, but not free to
 ## wander off after the employer.
@@ -224,7 +229,8 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	if state == State.BUILDING and _path.is_empty():
-		body.work(delta)
+		_face_the_work(delta)
+		body.work(delta, _gesture)
 	else:
 		body.animate(delta, planar, state == State.WALKING and job_patch != null)
 
@@ -382,7 +388,11 @@ func _track_employer(delta: float) -> void:
 	_employer_heading = _employer_heading.lerp(moved.normalized(), 0.18).normalized()
 
 
-func walk_to(target: Vector3, then: String = "") -> bool:
+## `keep_state` is for a worker who is walking somewhere *as part of* what they
+## are already doing — crossing their own building site to work the other
+## corner — rather than setting off on a new job. Their state is still
+## BUILDING, so the wall keeps going up while they cross.
+func walk_to(target: Vector3, then: String = "", keep_state: bool = false) -> bool:
 	_after_arrival = then
 	_path = nav.path(global_position, target)
 	_path_i = 0
@@ -391,7 +401,8 @@ func walk_to(target: Vector3, then: String = "") -> bool:
 	if _path.is_empty():
 		_after_arrival = ""
 		return false
-	state = State.WALKING
+	if not keep_state:
+		state = State.WALKING
 	return true
 
 
@@ -404,6 +415,9 @@ func _on_arrived() -> void:
 		"report":
 			state = State.REPORTING
 			_speak_timer = 0.0
+		"station":
+			# Only crossed the site. Still building, and now facing the work.
+			state = State.BUILDING
 		"hold":
 			# Arrived at the site before the plan did. Wait here.
 			state = State.IDLE
@@ -432,6 +446,7 @@ func _tick_state(delta: float) -> void:
 				state = State.BUILDING
 				_say("Right. Starting now.", "work")
 		State.BUILDING:
+			_work_the_site(game_hours)
 			if job_quarry != null:
 				job_quarry.advance(game_hours)
 				if job_quarry.finished:
@@ -464,6 +479,113 @@ func _tick_idle(delta: float) -> void:
 	var target := home + away
 	target.y = world.ground_m(target.x, target.z)
 	walk_to(target, "idle")
+
+
+# ------------------------------------------------------------- on the site
+
+## How long they keep doing one thing, and how long before they move to work a
+## different part of it — both in game hours, and both ranges rather than
+## fixed numbers so three workers do not switch in lockstep like machinery.
+##
+## Game hours rather than seconds, because a building takes eight or nine of
+## them and the player can wind the clock forward through the wait. On a real
+## timer, a fast-forwarded build would finish with the worker having never once
+## moved off the spot they started on — which is the exact thing this is here
+## to fix.
+const GESTURE_HOURS := Vector2(0.22, 0.50)
+const STATION_HOURS := Vector2(0.80, 1.70)
+
+
+## Working the site rather than standing on one paving stone for a day.
+##
+## Two clocks. One picks what they are doing — reading the drawings, nailing,
+## laying a course, standing back to look at it. The other walks them round to
+## a different part of their own building, because nobody builds a house from a
+## single spot, and a worker rooted to the ground for an in-game day is a prop
+## with an animation on it rather than somebody at work.
+func _work_the_site(hours: float) -> void:
+	_gesture_left -= hours
+	if _gesture_left <= 0.0:
+		_gesture_left = randf_range(GESTURE_HOURS.x, GESTURE_HOURS.y)
+		_gesture = _pick_gesture()
+
+	# Only buildings have a site to walk round. A shaft and a field are one
+	# place by definition, and sending somebody on a lap of a hole in the
+	# ground would look like they had lost it.
+	if job_patch == null or not _path.is_empty():
+		return
+	_station_left -= hours
+	if _station_left > 0.0:
+		return
+	_station_left = randf_range(STATION_HOURS.x, STATION_HOURS.y)
+	_move_station()
+
+
+## What the job looks like depends on how far along it is. Setting out at the
+## start, the trades in the middle, checking and making good at the end —
+## somebody rendering a wall that does not exist yet is worse than no animation
+## at all.
+func _pick_gesture() -> String:
+	if job_quarry != null:
+		return _one_of(["hammer", "hammer", "lift", "lay"])
+	if job_field != null:
+		return _one_of(["lay", "lay", "lift", "survey"])
+	var done := progress()
+	if done < 0.25:
+		return _one_of(["plan", "measure", "plan", "lay", "survey"])
+	if done < 0.75:
+		return _one_of(["hammer", "lay", "saw", "lift", "hammer", "plan"])
+	return _one_of(["hammer", "survey", "plan", "lay", "measure"])
+
+
+## A typed array, deliberately: indexing an untyped literal loses the element
+## type and GDScript then infers Variant for whatever it is assigned to.
+func _one_of(pool: Array[String]) -> String:
+	return pool[randi() % pool.size()]
+
+
+## Somewhere else round the building to work from. Points outside the
+## footprint, a step or two back from the wall, so they are standing on the
+## street rather than inside the room they have not finished yet.
+func _move_station() -> void:
+	var fp := job_patch.footprint
+	var v := VoxelChunk.VOXEL_M
+	var centre := Vector3((fp.position.x + fp.size.x * 0.5) * v, 0.0,
+		(fp.position.y + fp.size.y * 0.5) * v)
+	var out_m := maxf(fp.size.x, fp.size.y) * v * 0.5
+	for _attempt in 8:
+		var ang := randf() * TAU
+		var at := centre + Vector3(cos(ang), 0.0, sin(ang)) 			* (out_m + randf_range(1.8, 3.4))
+		at.y = world.ground_m(at.x, at.z)
+		if at.distance_to(global_position) < 2.0:
+			continue
+		if walk_to(at, "station", true):
+			return
+
+
+## Turn to the work. A worker who walked to the far corner and then hammered
+## with his back to the wall is worse than one who never moved at all.
+func _face_the_work(delta: float) -> void:
+	var at := _work_centre()
+	var to := Vector3(at.x - global_position.x, 0.0, at.z - global_position.z)
+	if to.length() < 0.6:
+		return
+	rotation.y = lerp_angle(rotation.y, atan2(to.x, to.z), delta * 4.0)
+
+
+func _work_centre() -> Vector3:
+	var v := VoxelChunk.VOXEL_M
+	if job_patch != null:
+		var fp := job_patch.footprint
+		return Vector3((fp.position.x + fp.size.x * 0.5) * v, global_position.y,
+			(fp.position.y + fp.size.y * 0.5) * v)
+	if job_quarry != null:
+		return Vector3(job_quarry.site) * v
+	if job_field != null and job_field.rect.size.x > 0:
+		var fr := job_field.rect
+		return Vector3((fr.position.x + fr.size.x * 0.5) * v, global_position.y,
+			(fr.position.y + fr.size.y * 0.5) * v)
+	return global_position
 
 
 # ---------------------------------------------------------------------- jobs

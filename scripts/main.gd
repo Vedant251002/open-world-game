@@ -197,6 +197,16 @@ func _on_world_ready(t0: int) -> void:
 				say = a.substr(6)
 		at.begin(say)
 		return
+	if "--gestures" in args:
+		var gt := GestureTest.new()
+		gt.world = world
+		gt.player = player
+		gt.sky = sky
+		gt.crew = crew
+		gt.village = village
+		add_child(gt)
+		gt.begin()
+		return
 	if "--econtest" in args:
 		var et := EconomyTest.new()
 		et.world = world

@@ -37,6 +37,20 @@ signal status(text: String)
 ## sets off for the plot the moment the order is given, and the call lands while
 ## they are walking. That was always the design (§5.2); it just was not built.
 const ENDPOINT := "https://opencode.ai/zen/v1/chat/completions"
+
+## The browser build cannot call ENDPOINT. OpenCode Zen sends no CORS headers,
+## so the request is refused before it leaves the page — that is a rule of the
+## browser, not a missing setting, and no key in the build would change it.
+##
+## So a browser build goes through proxy/worker.js instead, which holds the key
+## on Cloudflare and adds the headers a browser insists on. This URL is not a
+## secret: it is useless without the key, and the Worker only answers the
+## game's own origin.
+##
+## Empty until the Worker is deployed, at which point the deployed URL goes
+## here, is committed, and every platform picks it up. Native builds do not
+## need it — they can call the API directly with a key from the environment.
+const PROXY_URL := ""
 const DEFAULT_MODEL := "nemotron-3-ultra-free"
 ## Generous. A full spec with five modules and three assumptions runs past
 ## sixteen hundred tokens, and a truncated reply is not a poor plan, it is no
@@ -50,6 +64,7 @@ const TIMEOUT := 90.0
 const LOG_DIR := "user://ai_log"
 
 var api_key := ""
+var proxy_url := ""
 var model := DEFAULT_MODEL
 var last_error := ""
 var offline := false          ## forced by --offline, or by having no key
@@ -68,6 +83,17 @@ func _ready() -> void:
 	if api_key == "":
 		api_key = _read_env("res://.env", "OPENCODE_API_KEY")
 
+	# A local override beats the compiled-in one, so the Worker can be tested
+	# against a dev deployment without editing and rebuilding the game.
+	proxy_url = OS.get_environment("OPENCODE_PROXY_URL")
+	if proxy_url == "":
+		proxy_url = _read_env("res://.env", "OPENCODE_PROXY_URL")
+	if proxy_url == "":
+		proxy_url = PROXY_URL
+	for arg2 in OS.get_cmdline_user_args():
+		if arg2.begins_with("--proxy="):
+			proxy_url = arg2.substr(8)
+
 	model = OS.get_environment("OPENCODE_MODEL")
 	if model == "":
 		model = _read_env("res://.env", "OPENCODE_MODEL")
@@ -84,7 +110,21 @@ func _ready() -> void:
 
 
 func available() -> bool:
-	return api_key != "" and not offline
+	return (api_key != "" or proxy_url != "") and not offline
+
+
+## Where a request goes, and with what on it.
+##
+## Through the proxy whenever there is one, even on desktop where a direct call
+## would work: one path that is exercised every run is worth more than two, one
+## of which is only ever taken by the platform nobody tests on.
+func _route() -> Dictionary:
+	if proxy_url != "":
+		return {"url": proxy_url, "headers": PackedStringArray([
+			"Content-Type: application/json"])}
+	return {"url": ENDPOINT, "headers": PackedStringArray([
+		"Content-Type: application/json",
+		"Authorization: Bearer " + api_key])}
 
 
 func _read_env(path: String, key_name: String) -> String:
@@ -160,10 +200,8 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 				key, attempt),
 		CONNECT_ONE_SHOT)
 
-	var headers := PackedStringArray([
-		"Content-Type: application/json",
-		"Authorization: Bearer " + api_key,
-	])
+	var route := _route()
+	var headers: PackedStringArray = route["headers"]
 
 	# The system prompt is a message with role "system" here rather than a
 	# field of its own, which is the one shape difference that matters.
@@ -185,7 +223,7 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 	_log("request", mem.worker_id, instruction, sys + "\n\n---\n\n" + usr)
 	calls_made += 1
 
-	if http.request(ENDPOINT, headers, HTTPClient.METHOD_POST, payload) != OK:
+	if http.request(str(route["url"]), headers, HTTPClient.METHOD_POST, payload) != OK:
 		http.queue_free()
 		_busy.erase(mem.worker_id)
 		_offline_answer(instruction, mem, plot, ctx)
@@ -396,10 +434,12 @@ func _log(kind: String, worker_id: String, instruction: String, payload: String)
 
 ## What the AI layer is doing, in one line, for the boot log and the HUD.
 func describe() -> String:
-	if api_key == "":
+	if api_key == "" and proxy_url == "":
 		return "offline (no OPENCODE_API_KEY) - using the plan library"
 	if offline:
 		return "offline (--offline) - using the plan library"
+	if proxy_url != "":
+		return "OpenCode Zen via the proxy, model %s" % model
 	return "OpenCode Zen, model %s" % model
 
 
