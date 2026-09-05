@@ -140,6 +140,28 @@ static func context(mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 	if neighbours != "":
 		lines.append("- " + neighbours)
 	lines.append("")
+
+	# The room budget, stated in the same numbers the validator uses.
+	#
+	# Without this the model plans a perfectly sensible seven-room bakery and
+	# the validator refuses it for overrunning the envelope — which becomes a
+	# question the worker has to ask about arithmetic rather than about
+	# anything the player said. Telling it the sum up front turns a routine
+	# refusal into a plan that fits.
+	# The buildable box, not the plot. Given the plot size the model quite
+	# reasonably fills it to the edges, and the building has to stand back from
+	# its own boundary — so state the number it is actually allowed to use.
+	var m := plot.size_m()
+	var build_w := maxf(m.x - 2.0, 4.0)
+	var build_d := maxf(m.y - 2.0, 4.0)
+	lines.append("HOW MUCH WILL FIT")
+	lines.append("- the building may be at most %d by %d metres. The rest of the plot is the ground it stands on."
+		% [int(build_w), int(build_d)])
+	lines.append("- rooms count as: small 5 sq m, medium 12 sq m, large 26 sq m")
+	lines.append("- the rooms must add up to no more than 80%% of footprint width x depth x stories — at the full %d by %d and one story, about %d sq m of rooms"
+		% [int(build_w), int(build_d), int(build_w * build_d * 0.8)])
+	lines.append("- add it up before you answer, and drop or shrink rooms until it fits")
+	lines.append("")
 	lines.append("RESOURCES ON HAND")
 	lines.append(town.describe_stock())
 	lines.append("")

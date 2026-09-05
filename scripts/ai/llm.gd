@@ -15,14 +15,43 @@ signal question_ready(worker_id: String, question: String, line: String)
 signal failed(worker_id: String, reason: String)
 signal status(text: String)
 
-const MODEL := "claude-haiku-4-5"
-const ENDPOINT := "https://api.anthropic.com/v1/messages"
-const MAX_TOKENS := 1600
-const TIMEOUT := 30.0
+## OpenCode Zen, which speaks the OpenAI chat-completions shape.
+##
+## The model is not a constant: it is read from .env at boot so it can be
+## changed without a rebuild. That matters here more than usual, because the
+## gateway carries seventy models, most of them billed, and which of the free
+## ones is answering today is an operational question rather than a design one.
+##
+## The account has no credits, so the model has to be one of the free ids.
+## Measured on the same workshop prompt:
+##
+##   nemotron-3-ultra-free        44 s, complete JSON, every attempt
+##   ling-3.0-flash-fin-free     2.7 s, but capped near 250 output tokens on the
+##                               free tier, so a full spec is always truncated
+##   nemotron-3.5-lightning-free  59 s, spends its whole budget reasoning
+##   mimo-v2.5-free               a daily quota, then 429 for the rest of the day
+##   muse-spark-*-contributor-free, deepseek-v4-flash-free   down upstream
+##
+## So the choice is the slow one that finishes its sentences. Forty seconds
+## would be intolerable if the player watched it — which is why the worker now
+## sets off for the plot the moment the order is given, and the call lands while
+## they are walking. That was always the design (§5.2); it just was not built.
+const ENDPOINT := "https://opencode.ai/zen/v1/chat/completions"
+const DEFAULT_MODEL := "nemotron-3-ultra-free"
+## Generous. A full spec with five modules and three assumptions runs past
+## sixteen hundred tokens, and a truncated reply is not a poor plan, it is no
+## plan at all: the JSON never closes, so nothing can parse it.
+const MAX_TOKENS := 3200
+## Long, because the free models on the gateway are slow: thirty seconds was
+## timing out on a reply that was on its way. The wait is not free — the
+## worker stands there saying they are thinking about it — but a timeout
+## costs the same wait and then throws the answer away.
+const TIMEOUT := 90.0
 const LOG_DIR := "user://ai_log"
 
 var api_key := ""
-var workspace := ""
+var model := DEFAULT_MODEL
+var last_error := ""
 var offline := false          ## forced by --offline, or by having no key
 
 var calls_made := 0
@@ -35,12 +64,20 @@ var _log_index := 0
 
 
 func _ready() -> void:
-	api_key = OS.get_environment("ANTHROPIC_API_KEY")
+	api_key = OS.get_environment("OPENCODE_API_KEY")
 	if api_key == "":
-		api_key = _read_env("res://.env", "ANTHROPIC_API_KEY")
-	workspace = OS.get_environment("ANTHROPIC_WORKSPACE_ID")
-	if workspace == "":
-		workspace = _read_env("res://.env", "ANTHROPIC_WORKSPACE_ID")
+		api_key = _read_env("res://.env", "OPENCODE_API_KEY")
+
+	model = OS.get_environment("OPENCODE_MODEL")
+	if model == "":
+		model = _read_env("res://.env", "OPENCODE_MODEL")
+	if model == "":
+		model = DEFAULT_MODEL
+	# A flag beats the file, so a single run can try another model without
+	# anything being edited.
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--model="):
+			model = arg.substr(8)
 	if "--offline" in OS.get_cmdline_user_args():
 		offline = true
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(LOG_DIR))
@@ -125,17 +162,25 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 
 	var headers := PackedStringArray([
 		"Content-Type: application/json",
-		"x-api-key: " + api_key,
-		"anthropic-version: 2023-06-01",
+		"Authorization: Bearer " + api_key,
 	])
-	if workspace != "":
-		headers.append("anthropic-workspace-id: " + workspace)
 
+	# The system prompt is a message with role "system" here rather than a
+	# field of its own, which is the one shape difference that matters.
 	var payload := JSON.stringify({
-		"model": MODEL,
+		"model": model,
 		"max_tokens": MAX_TOKENS,
-		"system": sys,
-		"messages": [{"role": "user", "content": usr}],
+		"temperature": 0.7,
+		# Several of these models think out loud into a separate field that
+		# shares the token budget with the answer. Left on, the reasoning eats
+		# three thousand tokens and the JSON is cut off mid-string, which is
+		# not a worse plan but no plan at all. Models that do not reason
+		# ignore this.
+		"reasoning": {"exclude": true},
+		"messages": [
+			{"role": "system", "content": sys},
+			{"role": "user", "content": usr},
+		],
 	})
 	_log("request", mem.worker_id, instruction, sys + "\n\n---\n\n" + usr)
 	calls_made += 1
@@ -153,9 +198,30 @@ func _on_reply(result: int, code: int, body: PackedByteArray, instruction: Strin
 	_log("response", mem.worker_id, instruction, "http=%d result=%d\n%s" % [code, result, raw])
 
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		# Say what the gateway actually said. "No reply" sends whoever is
+		# debugging into their own code, when the answer is almost always a
+		# model id or an account balance.
+		if result == HTTPRequest.RESULT_TIMEOUT:
+			last_error = "timed out after %.0f s" % TIMEOUT
+		else:
+			last_error = _gateway_message(raw)
+		push_warning("[llm] %s failed http=%d result=%d: %s" % [
+			model, code, result, last_error])
+
+		# One more go, if the failure is the kind that comes and goes. The free
+		# endpoints on this gateway drop a request now and then, and the cost of
+		# not retrying is that the player gets the stock building instead of the
+		# one they asked for. A retry of the SAME model is not a fallback chain:
+		# it never quietly substitutes a different one.
+		if attempt == 0 and _worth_retrying(result, code):
+			retries += 1
+			status.emit("%s: %s — trying once more." % [model, last_error])
+			_request(instruction, mem, plot, ctx, clock, town, key, 1, "")
+			return
+
 		_busy.erase(mem.worker_id)
-		push_warning("[llm] call failed http=%d result=%d" % [code, result])
-		status.emit("No reply. %s is using a standard plan." % mem.display_name)
+		status.emit("%s: %s" % [model, last_error])
+		failed.emit(mem.worker_id, last_error)
 		_offline_answer(instruction, mem, plot, ctx)
 		return
 
@@ -201,26 +267,92 @@ func _extract(raw: String) -> Dictionary:
 	if json.parse(raw) != OK or not (json.data is Dictionary):
 		return {}
 	var payload: Dictionary = json.data
-	var content: Variant = payload.get("content", [])
-	if not (content is Array) or (content as Array).is_empty():
+	var choices: Variant = payload.get("choices", [])
+	if not (choices is Array) or (choices as Array).is_empty():
 		return {}
-	var text := str((content as Array)[0].get("text", ""))
-	text = text.strip_edges()
+	var first: Variant = (choices as Array)[0]
+	if not (first is Dictionary):
+		return {}
+	var msg: Variant = (first as Dictionary).get("message", {})
+	if not (msg is Dictionary):
+		return {}
+	var text := str((msg as Dictionary).get("content", "")).strip_edges()
+
 	# Models sometimes fence JSON despite being told not to.
 	if text.begins_with("```"):
 		var nl := text.find("\n")
 		text = text.substr(nl + 1) if nl >= 0 else text
 		text = text.trim_suffix("```").strip_edges()
-	# Or wrap it in a sentence.
-	var first := text.find("{")
-	var last := text.rfind("}")
-	if first >= 0 and last > first:
-		text = text.substr(first, last - first + 1)
+	return _first_object(text)
 
-	var j2 := JSON.new()
-	if j2.parse(text) != OK or not (j2.data is Dictionary):
-		return {}
-	return j2.data
+
+## The first balanced {...} in the text that parses and looks like our reply.
+##
+## Cheaper models think out loud before answering, and that thinking is full of
+## braces: quoted schema fragments, worked examples, half-written objects. So
+## take the first candidate that both parses AND carries a "kind" field, rather
+## than trusting the outermost pair of braces in the whole string — which is
+## what the previous version did, and which swallows the reasoning along with
+## the answer.
+static func _first_object(text: String) -> Dictionary:
+	var start := 0
+	while true:
+		var open := text.find("{", start)
+		if open < 0:
+			return {}
+		var depth := 0
+		var in_string := false
+		var escaped := false
+		var i := open
+		while i < text.length():
+			var ch := text[i]
+			if in_string:
+				if escaped:
+					escaped = false
+				elif ch == "\\":
+					escaped = true
+				elif ch == "\"":
+					in_string = false
+			elif ch == "\"":
+				in_string = true
+			elif ch == "{":
+				depth += 1
+			elif ch == "}":
+				depth -= 1
+				if depth == 0:
+					var j := JSON.new()
+					if j.parse(text.substr(open, i - open + 1)) == OK \
+							and j.data is Dictionary \
+							and (j.data as Dictionary).has("kind"):
+						return j.data
+					break
+			i += 1
+		start = open + 1
+	return {}
+
+
+## Whether a failure is worth a second attempt.
+##
+## Server faults, rate limits and dropped connections come and go. A 400 or
+## a 401 will say the same thing every time — a bad model id, or an empty
+## account — and retrying only doubles the wait before the player finds out.
+## A timeout is excluded too: it has already cost ninety seconds.
+static func _worth_retrying(result: int, code: int) -> bool:
+	if result != HTTPRequest.RESULT_SUCCESS:
+		return result != HTTPRequest.RESULT_TIMEOUT
+	return code >= 500 or code == 429
+
+
+## A human-readable reason out of a gateway error body.
+static func _gateway_message(raw: String) -> String:
+	var j := JSON.new()
+	if j.parse(raw) == OK and j.data is Dictionary:
+		var err: Variant = (j.data as Dictionary).get("error", {})
+		if err is Dictionary:
+			var m := str((err as Dictionary).get("message", ""))
+			if m != "":
+				return m
+	return raw.substr(0, 120) if raw != "" else "no response"
 
 
 ## Shape check only. The real vocabulary check is the validator, which runs on
@@ -260,6 +392,15 @@ func _log(kind: String, worker_id: String, instruction: String, payload: String)
 	f.store_string("# %s\n# worker: %s\n# instruction: %s\n\n%s\n" % [
 		Time.get_datetime_string_from_system(), worker_id, instruction, payload])
 	f.close()
+
+
+## What the AI layer is doing, in one line, for the boot log and the HUD.
+func describe() -> String:
+	if api_key == "":
+		return "offline (no OPENCODE_API_KEY) - using the plan library"
+	if offline:
+		return "offline (--offline) - using the plan library"
+	return "OpenCode Zen, model %s" % model
 
 
 func stats_text() -> String:

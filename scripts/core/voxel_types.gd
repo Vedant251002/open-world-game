@@ -54,7 +54,15 @@ const ROCK := 34
 const LEAF := 35
 const BARK := 36
 
-const COUNT := 37
+## Tilled ground. Not in NAMES: a worker makes it with a hoe, nobody specifies a
+## building "with foundation: farmland".
+const FARMLAND := 37
+const WET_FARMLAND := 38
+## Live fire. Emissive, and the only interior light source that is part of the
+## world rather than an entity.
+const EMBER := 39
+
+const COUNT := 40
 
 ## name -> id. This dictionary IS the closed enum the validator checks against.
 const NAMES := {
@@ -122,6 +130,9 @@ const PROPS := {
 	ROCK:              [Color("#6a6560"), 0.95, 0.0, 0.0, 1, 0, 65, false],
 	LEAF:              [Color("#3f6b30"), 0.98, 0.0, 0.0, 1, 0, 2, false],
 	BARK:              [Color("#4f3b28"), 0.98, 0.0, 0.0, 1, 0, 12, false],
+	FARMLAND:          [Color("#6a4c2f"), 1.00, 0.0, 0.0, 1, 0, 5, false],
+	WET_FARMLAND:      [Color("#43301d"), 0.86, 0.0, 0.0, 1, 0, 5, false],
+	EMBER:             [Color("#ff7a2a"), 0.90, 0.0, 0.5, 1, 0, 1, false],
 }
 
 ## Surface grain scale for the procedural detail shader — how big the noise
@@ -130,17 +141,38 @@ const GRAIN := {
 	TIMBER: 0.55, PLANK: 0.50, BRICK: 0.30, SANDSTONE: 0.70, GRANITE: 0.90,
 	CONCRETE: 1.30, REBAR_CONCRETE: 1.30, STEEL_FRAME: 1.60,
 	CORRUGATED_STEEL: 0.22, GLASS: 3.0, REINFORCED_GLASS: 3.0,
-	PLASTIC_PANEL: 1.4, CARBON_COMPOSITE: 0.28, THATCH: 0.18, CLAY_TILE: 0.35,
+	PLASTIC_PANEL: 1.4, CARBON_COMPOSITE: 0.28, THATCH: 0.34, CLAY_TILE: 0.35,
 	ASPHALT_SHINGLE: 0.30, SHEET_METAL: 1.1, SOLAR_PANEL: 0.5, DIRT: 0.60,
 	GRAVEL: 0.09, COBBLE: 0.16, ASPHALT: 0.60, CONCRETE_SLAB: 1.20,
 	GRASS: 0.55, SAND: 0.22, DARK_OAK: 0.50, PAINTED_WHITE: 1.5,
 	PAINTED_RED: 1.5, CHROME: 2.4, MATTE_BLACK: 1.2, NEON_STRIP: 2.0,
 	WATER: 2.0, STONE: 0.8, ROCK: 0.7, LEAF: 0.14, BARK: 0.22,
+	FARMLAND: 0.22, WET_FARMLAND: 0.22, EMBER: 0.12,
 }
 
 
 static func id_of(mat_name: String) -> int:
 	return NAMES.get(mat_name, -1)
+
+
+## The reverse, for logs and diagnostics. Covers the ids that are not in NAMES
+## — air, water, bedrock, farmland — because those are exactly the ones you are
+## looking at when something is wrong.
+static func name_of(id: int) -> String:
+	for n: String in NAMES:
+		if NAMES[n] == id:
+			return n
+	match id:
+		AIR: return "air"
+		WATER: return "water"
+		STONE: return "stone"
+		ROCK: return "rock"
+		LEAF: return "leaf"
+		BARK: return "bark"
+		FARMLAND: return "farmland"
+		WET_FARMLAND: return "wet_farmland"
+		EMBER: return "ember"
+	return "id_%d" % id
 
 
 static func is_transparent(id: int) -> bool:

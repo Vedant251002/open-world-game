@@ -18,6 +18,8 @@ var _placed := false
 
 func _ready() -> void:
 	_t_start = Time.get_ticks_msec()
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	Engine.max_fps = 0
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(out_dir))
 	set_process(true)
 
@@ -50,13 +52,20 @@ func _process(_delta: float) -> void:
 		_settle = 14
 		return
 
+	# Read the frame rate BEFORE the capture. get_image() is a full GPU-to-CPU
+	# readback that stalls the pipeline for most of a frame, and Godot's fps
+	# counter averages over the last second — so sampling it afterwards reports
+	# the cost of taking the screenshot and reads as a catastrophic regression
+	# in a game that is actually running at a hundred and sixty.
+	var fps := Engine.get_frames_per_second()
+	var tris := RenderingServer.get_rendering_info(
+		RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME)
+
 	await RenderingServer.frame_post_draw
 	var img := get_viewport().get_texture().get_image()
 	var path := "%s/%02d_%s.png" % [out_dir, _i, v.get("name", "view")]
 	img.save_png(ProjectSettings.globalize_path(path))
-	print("[shot] %s  fps=%d  tris=%d" % [
-		path, Engine.get_frames_per_second(),
-		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME)])
+	print("[shot] %s  fps=%d  tris=%d" % [path, fps, tris])
 	_i += 1
 	_placed = false
 	_settle = 4

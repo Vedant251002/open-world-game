@@ -247,9 +247,19 @@ VoxelSurface voxel_shade(vec3 vertex_ao, vec3 camera_world) {
 	}
 	vec2 det = sample_pattern(uv);
 
+	// Procedural detail has no mipmaps. Once a feature is smaller than the
+	// pixel drawing it, every frame samples a different part of the pattern
+	// and the surface crawls — which is what the thatch ceilings were doing,
+	// and thatch has the finest grain of anything in the palette. Fade the
+	// pattern out over the last octave the screen can actually resolve. This
+	// is what a mip chain would do for a texture; there is no texture, so it
+	// is done by hand.
+	float footprint = max(fwidth(uv.x), fwidth(uv.y));
+	float legible = 1.0 - smoothstep(grain * 0.35, grain * 1.1, footprint);
+
 	// det.x is centred a little under 1 so the pattern reads as shading on the
 	// material rather than as a brightness gain on top of it.
-	float shade = mix(1.0, det.x * 1.05, detail_strength);
+	float shade = mix(1.0, det.x * 1.05, detail_strength * legible);
 
 	// Two scales of variation. The fine jitter keeps a wall from reading as
 	// plastic; the slow drift shifts the actual hue, which is what a big field
@@ -285,7 +295,7 @@ VoxelSurface voxel_shade(vec3 vertex_ao, vec3 camera_world) {
 		float sd = max(dot(rdir, sun_dir), 0.0);
 		float glitter = pow(sd, 800.0) * 1.6 + pow(sd, 48.0) * 0.08;
 
-		vec3 body = base_albedo * (0.55 + 0.45 * det.x);
+		vec3 body = base_albedo * mix(1.0, 0.55 + 0.45 * det.x, legible);
 		s.albedo = mix(body, sky_ref, clamp(fres, 0.0, 0.62)) * vertex_ao;
 		s.roughness = 0.12;
 		s.specular = 0.35;
@@ -298,23 +308,26 @@ VoxelSurface voxel_shade(vec3 vertex_ao, vec3 camera_world) {
 	}
 
 	s.albedo = col * vertex_ao;        // vertex_ao carries the baked corner AO
-	s.roughness = clamp(base_roughness - det.y * 0.18 + jitter * 0.05, 0.02, 1.0);
+	s.roughness = clamp(base_roughness - det.y * 0.18 * legible + jitter * 0.05, 0.02, 1.0);
 	s.metallic = base_metallic;
 	if (emission_energy > 0.0) {
-		s.emission = emission_color * emission_energy * (0.7 + det.x * 0.5);
+		s.emission = emission_color * emission_energy
+			* mix(1.0, 0.7 + det.x * 0.5, legible);
 	}
 
 	// Derive a normal from the pattern height by finite differences in the
 	// dominant plane. Cheap, and enough to make brick and corrugation catch
 	// grazing light properly.
-	if (bump_strength > 0.001) {
+	// Below the resolving limit the bump is noise too, and the two extra
+	// pattern samples it costs are wasted as well.
+	if (bump_strength * legible > 0.001) {
 		float e2 = 0.012;
 		float ph = det.y;
 		float pu = sample_pattern(uv + vec2(e2, 0.0)).y;
 		float pv = sample_pattern(uv + vec2(0.0, e2)).y;
 		s.normal_world = normalize(world_nrm
-			- tangent * (pu - ph) * bump_strength * 3.0
-			- bitan * (pv - ph) * bump_strength * 3.0);
+			- tangent * (pu - ph) * bump_strength * legible * 3.0
+			- bitan * (pv - ph) * bump_strength * legible * 3.0);
 		s.custom_normal = true;
 	}
 	return s;

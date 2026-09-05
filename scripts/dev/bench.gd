@@ -37,6 +37,14 @@ func _process(delta: float) -> void:
 		return
 	if _warmup > 0:
 		_warmup -= 1
+		if _warmup == 0 and streamer != null:
+			streamer.stat_worst_frame_ms = 0.0
+			streamer.stat_worst_collect_ms = 0.0
+			streamer.stat_worst_ring_ms = 0.0
+			streamer.stat_worst_evict_ms = 0.0
+			world.stat_worst_frame_ms = 0.0
+		world.stat_worst_dispatch_ms = 0.0
+		world.stat_worst_upload_ms = 0.0
 		return
 
 	_t += delta
@@ -58,6 +66,14 @@ func _process(delta: float) -> void:
 		return
 	_report(["still", "streaming"][_phase])
 	_samples.clear()
+	if streamer != null:
+		streamer.stat_worst_frame_ms = 0.0
+		streamer.stat_worst_collect_ms = 0.0
+		streamer.stat_worst_ring_ms = 0.0
+		streamer.stat_worst_evict_ms = 0.0
+		world.stat_worst_frame_ms = 0.0
+		world.stat_worst_dispatch_ms = 0.0
+		world.stat_worst_upload_ms = 0.0
 	_phase += 1
 	_warmup = 60
 	_t = 0.0
@@ -78,6 +94,8 @@ func _report(label: String) -> void:
 		Engine.max_fps, DisplayServer.window_get_vsync_mode()]
 	if streamer != null:
 		extra += "   " + streamer.status_text()
+	if world != null:
+		extra += "  rescues %d" % world.stat_rescues
 	# A median and a p95 that agree to two decimals are not a workload, they are
 	# a frame cap — usually the machine throttling to 30 fps on battery. Say so,
 	# because otherwise the next person reads it as a performance regression.

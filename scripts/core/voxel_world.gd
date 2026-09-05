@@ -20,9 +20,23 @@ const S := VoxelChunk.SIZE
 const VOXEL_M := VoxelChunk.VOXEL_M
 
 ## Mesh and collision upload are the only parts that must run on the main
-## thread, so they are rationed to keep streaming off the frame budget.
-const UPLOADS_PER_FRAME := 4
-const UPLOADS_PER_FRAME_LOADING := 24
+## thread, so they are rationed. A time budget rather than a count: a fixed one
+## chunk per frame capped the world at sixty chunks a second no matter how cheap
+## they were, and a sprinting player outruns that.
+const UPLOAD_BUDGET_MS := 2.5
+const UPLOAD_BUDGET_MS_LOADING := 12.0
+
+## Collision bodies are only attached near the player, because a StaticBody3D
+## per chunk out to the full view distance is a few thousand of them in the
+## broadphase for no benefit. The *shape* is baked for every chunk regardless
+## and cached on the chunk, so coming into range is a node and not a remesh.
+const COLLISION_RADIUS_M := 40.0
+## Beyond here the body is dropped again. The gap is hysteresis: without it a
+## player walking along the boundary adds and removes the same bodies forever.
+const COLLISION_DROP_M := 52.0
+## How much ground a worker carries with him. He is one capsule, not a
+## camera, so he needs a fraction of what the player does.
+const AGENT_RADIUS_M := 14.0
 
 var height_chunks := 6                     ## vertical extent, in chunks
 var chunks: Dictionary = {}                ## Vector3i -> VoxelChunk
@@ -50,10 +64,30 @@ var _meshed: Dictionary = {}
 
 var stat_quads := 0
 var stat_mesh_ms := 0.0
+## Worst main-thread cost this world has imposed on a single frame. Mesh and
+## collision upload are the only work that cannot be threaded, so this is the
+## number that decides whether streaming is felt as a hitch.
+var stat_worst_frame_ms := 0.0
+var stat_frame_ms := 0.0
+var stat_worst_dispatch_ms := 0.0
+var stat_worst_upload_ms := 0.0
+## How many times the streaming budget was overridden to keep a floor under the
+## player. Any number above a handful means the budgets are set too low.
+var stat_rescues := 0
+## Where collision is wanted. Set by the game each frame; cheap to write.
+var collision_focus := Vector3.ZERO
+var _collision_column := Vector2i(1 << 30, 1 << 30)
+## Everyone else who needs ground under them — the crew. A worker sent to a
+## plot on the far side of town walks straight out of the player's collision
+## bubble, and without this the floor stops existing underneath him and he
+## stands in mid-air with is_on_floor() false, forever.
+var _agents: Array[Vector3] = []
+var _agent_columns: Array[Vector2i] = []
 
 
 func _ready() -> void:
 	_opaque = GreedyMesher.opacity_table()
+	VoxelMaterials.prewarm()
 	set_process(true)
 
 
@@ -365,53 +399,136 @@ func _needs_mesh(cpos: Vector3i) -> bool:
 
 
 func _process(_delta: float) -> void:
+	var t0 := Time.get_ticks_usec()
 	_dispatch()
+	var t1 := Time.get_ticks_usec()
 	_collect()
+	var t2 := Time.get_ticks_usec()
+	stat_worst_dispatch_ms = maxf(stat_worst_dispatch_ms, float(t1 - t0) * 0.001)
+	stat_worst_upload_ms = maxf(stat_worst_upload_ms, float(t2 - t1) * 0.001)
+	stat_frame_ms = float(t2 - t0) * 0.001
+	stat_worst_frame_ms = maxf(stat_worst_frame_ms, stat_frame_ms)
 
 
 func _dispatch() -> void:
 	if _dirty.is_empty():
 		return
-	var budget := 12 if _loading else 4
-	var launched := 0
+	var budget := 12 if _loading else 5
+
+	# Nearest first, always. The dirty set is unordered and during streaming it
+	# runs to a few hundred entries; taking them in the order they happened to
+	# be added meant the chunk the player was about to step on could wait behind
+	# eighty metres of scenery, and at a sprint it did.
+	var pick: Array[Vector3i] = []
+	var pick_d: Array[float] = []
 	for cpos: Vector3i in _dirty.keys():
-		if launched >= budget:
-			break
 		if _in_flight.has(cpos):
 			continue
+
+		# Not enough information yet: a neighbouring column has not arrived, so
+		# whatever this chunk meshes to would be wrong. Leave it queued and
+		# leave its existing mesh alone. Clearing it here was the flicker —
+		# during streaming, chunks at the frontier had their geometry destroyed
+		# and rebuilt every time a neighbour came and went.
+		if not column_meshable(cpos.x, cpos.z):
+			continue
+
+		var d := _focus_dist2(cpos)
+		if pick.size() >= budget and d >= pick_d[pick.size() - 1]:
+			continue
+		var at := pick_d.bsearch(d)
+		pick.insert(at, cpos)
+		pick_d.insert(at, d)
+		if pick.size() > budget:
+			pick.resize(budget)
+			pick_d.resize(budget)
+
+	for cpos: Vector3i in pick:
 		_dirty.erase(cpos)
 		if not _needs_mesh(cpos):
 			_clear_chunk_node(cpos)
 			continue
-		var padded := _build_padded(cpos)
+		var neighbourhood := _snapshot(cpos)
 		_in_flight[cpos] = true
-		launched += 1
 		_tasks.append(WorkerThreadPool.add_task(
-			_mesh_job.bind(cpos, padded), true, "voxel_mesh"))
+			_mesh_job.bind(cpos, neighbourhood), true, "voxel_mesh"))
 
 
 ## Runs on a worker thread. Pure: reads only its arguments and the immutable
 ## opacity table, and hands the result back through a mutex.
-func _mesh_job(cpos: Vector3i, padded: PackedByteArray) -> void:
-	var t0 := Time.get_ticks_usec()
-	var res := GreedyMesher.mesh(padded, _opaque)
-	res["cpos"] = cpos
-	res["us"] = Time.get_ticks_usec() - t0
+func _mesh_job(cpos: Vector3i, neighbourhood: Dictionary) -> void:
+	var res := _mesh_and_bake(cpos, neighbourhood)
 	_mutex.lock()
 	_results.append(res)
 	_mutex.unlock()
 
 
+## Meshes a chunk and bakes its render and collision resources. Called on a
+## worker thread for everything, and on the main thread for the one case that
+## cannot wait — see ensure_support().
+func _mesh_and_bake(cpos: Vector3i, neighbourhood: Dictionary) -> Dictionary:
+	var t0 := Time.get_ticks_usec()
+	var res := GreedyMesher.mesh(_pad(cpos, neighbourhood), _opaque)
+
+	# Build the mesh and the collision shape here too. Both are resources rather
+	# than scene nodes, so they can be made off-thread, and between them they
+	# were most of the main thread cost of installing a chunk.
+	var surfaces: Dictionary = res["surfaces"]
+	if not surfaces.is_empty():
+		var mesh := ArrayMesh.new()
+		var i := 0
+		for mat: int in surfaces:
+			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surfaces[mat])
+			mesh.surface_set_material(i, VoxelMaterials.get_material(mat))
+			i += 1
+		res["mesh"] = mesh
+	# Bake the shape whether or not the chunk is close enough to be given a body
+	# right now. This is worker-thread time, it is the expensive half of
+	# collision, and doing it here means the main thread never has to choose
+	# between a floor under the player and a steady frame.
+	var faces: PackedVector3Array = res["collision"]
+	if not faces.is_empty():
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(faces)
+		res["shape"] = shape
+
+	res["cpos"] = cpos
+	res["us"] = Time.get_ticks_usec() - t0
+	return res
+
+
 func _collect() -> void:
 	_mutex.lock()
-	var take: Array = []
-	var limit := UPLOADS_PER_FRAME_LOADING if _loading else UPLOADS_PER_FRAME
-	while _results.size() > 0 and take.size() < limit:
-		take.append(_results.pop_front())
+	var pending: Array = _results
+	_results = []
 	_mutex.unlock()
+	if pending.is_empty():
+		return
 
-	for res: Dictionary in take:
+	# Nearest first. Which chunk gets uploaded this frame decides whether the
+	# ground under the player's next step exists, so finishing order matters far
+	# more than arrival order.
+	_sort_by_distance(pending)
+
+	var budget := UPLOAD_BUDGET_MS_LOADING if _loading else UPLOAD_BUDGET_MS
+	var t0 := Time.get_ticks_usec()
+	var done := 0
+	for res: Dictionary in pending:
 		_apply(res)
+		done += 1
+		# Always take at least one, or a frame that is already over budget for
+		# reasons of its own would starve the world forever.
+		if float(Time.get_ticks_usec() - t0) * 0.001 >= budget:
+			break
+
+	if done < pending.size():
+		var rest := pending.slice(done)
+		_mutex.lock()
+		# Anything that arrived while we were uploading goes behind the backlog.
+		rest.append_array(_results)
+		_results = rest
+		_mutex.unlock()
+
 	if _tasks.size() > 128:
 		var live: Array[int] = []
 		for t: int in _tasks:
@@ -438,17 +555,13 @@ func _apply(res: Dictionary) -> void:
 	if not chunks.has(cpos):
 		return
 
-	var surfaces: Dictionary = res["surfaces"]
-	if surfaces.is_empty():
+	var c: VoxelChunk = chunks[cpos]
+	c.shape = res.get("shape")
+
+	var mesh: ArrayMesh = res.get("mesh")
+	if mesh == null:
 		_clear_chunk_node(cpos)
 		return
-
-	var mesh := ArrayMesh.new()
-	var i := 0
-	for mat: int in surfaces:
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surfaces[mat])
-		mesh.surface_set_material(i, VoxelMaterials.get_material(mat))
-		i += 1
 
 	var mi: MeshInstance3D = _nodes.get(cpos)
 	if mi == null:
@@ -459,10 +572,67 @@ func _apply(res: Dictionary) -> void:
 		add_child(mi)
 		_nodes[cpos] = mi
 	mi.mesh = mesh
+	_sync_body(cpos)
 
-	var faces: PackedVector3Array = res["collision"]
+
+## Squared metres from the collision focus to a chunk's centre.
+func _focus_dist2(cpos: Vector3i) -> float:
+	var centre := (Vector3(cpos) + Vector3(0.5, 0.5, 0.5)) * VoxelChunk.SPAN_M
+	var dx := centre.x - collision_focus.x
+	var dz := centre.z - collision_focus.z
+	return dx * dx + dz * dz
+
+
+func _sort_by_distance(items: Array) -> void:
+	items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return _focus_dist2(a["cpos"]) < _focus_dist2(b["cpos"]))
+
+
+## Whether a chunk is close enough to anyone to be worth colliding with.
+func _wants_collision(cpos: Vector3i) -> bool:
+	var limit := COLLISION_DROP_M if _bodies.has(cpos) else COLLISION_RADIUS_M
+	if _focus_dist2(cpos) < limit * limit:
+		return true
+	# A worker needs far less than the player does: only the ground he is
+	# about to put a boot on.
+	var centre := (Vector3(cpos) + Vector3(0.5, 0.5, 0.5)) * VoxelChunk.SPAN_M
+	for a: Vector3 in _agents:
+		var dx := centre.x - a.x
+		var dz := centre.z - a.z
+		if dx * dx + dz * dz < AGENT_RADIUS_M * AGENT_RADIUS_M:
+			return true
+	return false
+
+
+## Tells the world who else is walking about. Bodies are re-synced only when
+## one of them crosses into a new chunk column, so this is cheap to call on
+## every physics tick.
+func set_agents(points: Array[Vector3]) -> void:
+	_agents = points
+	var cols: Array[Vector2i] = []
+	for a: Vector3 in points:
+		cols.append(column_of(a))
+	if cols == _agent_columns:
+		return
+	_agent_columns = cols
+	var r := int(ceil(AGENT_RADIUS_M / VoxelChunk.SPAN_M)) + 1
+	for c: Vector2i in cols:
+		for dz in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				for cy in height_chunks:
+					var cpos := Vector3i(c.x + dx, cy, c.y + dz)
+					if chunks.has(cpos):
+						_sync_body(cpos)
+
+
+## Attaches or drops a chunk's collision body to match where the player is now.
+## Costs a node and a shape assignment, never a remesh, because the shape was
+## baked on the worker thread when the chunk was meshed.
+func _sync_body(cpos: Vector3i) -> void:
+	var c: VoxelChunk = chunks.get(cpos)
+	var shape: ConcavePolygonShape3D = c.shape if c != null else null
 	var body: StaticBody3D = _bodies.get(cpos)
-	if faces.is_empty():
+	if shape == null or not _wants_collision(cpos):
 		if body != null:
 			body.queue_free()
 			_bodies.erase(cpos)
@@ -476,9 +646,74 @@ func _apply(res: Dictionary) -> void:
 		body.add_child(cs)
 		add_child(body)
 		_bodies[cpos] = body
-	var shape := ConcavePolygonShape3D.new()
-	shape.set_faces(faces)
 	(body.get_node("shape") as CollisionShape3D).shape = shape
+
+
+## Guarantees there is a floor under a position, whatever the queue is doing.
+##
+## Every other path here is a budget — so many chunks per frame, nearest first —
+## and normally that runs comfortably ahead of the player. "Normally" is not
+## good enough for the ground under his feet: one frame without collision there
+## and he is inside the world falling, which is the single worst thing a voxel
+## game can do to you. So the chunks he is actually touching are built here and
+## now, on the main thread, ahead of the queue.
+##
+## This costs a few milliseconds on the frame it fires. It fires almost never,
+## because the streaming path is what stops it being needed; stat_rescues says
+## how often "almost" was.
+func ensure_support(world_m: Vector3) -> void:
+	var here := to_voxel(world_m)
+	var cy := here.y >> 5
+	for dz in [-1, 0, 1]:
+		for dx in [-1, 0, 1]:
+			# Only the chunks the capsule can actually be over. At 8 m a chunk
+			# the player straddles a boundary rarely, and checking a whole 3x3
+			# of columns every frame for nothing is waste.
+			var near := Vector3(world_m.x + dx * 0.45, 0.0, world_m.z + dz * 0.45)
+			var col := column_of(near)
+			for y in [cy, cy - 1]:
+				if y < 0 or y >= height_chunks:
+					continue
+				var cpos := Vector3i(col.x, y, col.y)
+				if _bodies.has(cpos):
+					continue
+				var c: VoxelChunk = chunks.get(cpos)
+				if c == null or c.is_empty():
+					continue
+				if c.shape != null:
+					_sync_body(cpos)   # baked already; this is just a node
+					continue
+				if _meshed.has(cpos) or not column_meshable(cpos.x, cpos.z):
+					continue           # nothing to build, or not buildable yet
+				_build_now(cpos)
+
+
+## Meshes one chunk synchronously and installs it, jumping the queue.
+func _build_now(cpos: Vector3i) -> void:
+	if not _needs_mesh(cpos):
+		_meshed[cpos] = true
+		return
+	stat_rescues += 1
+	_dirty.erase(cpos)
+	_apply(_mesh_and_bake(cpos, _snapshot(cpos)))
+
+
+## Attaches bodies to everything that has just come within reach and drops the
+## ones that have fallen out of it. Runs only when the player crosses into a new
+## chunk column.
+func refresh_collision(focus: Vector3) -> void:
+	collision_focus = focus
+	var col := column_of(focus)
+	if col == _collision_column:
+		return
+	_collision_column = col
+	var r := int(ceil(COLLISION_DROP_M / VoxelChunk.SPAN_M)) + 1
+	for dz in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			for cy in height_chunks:
+				var cpos := Vector3i(col.x + dx, cy, col.y + dz)
+				if chunks.has(cpos):
+					_sync_body(cpos)
 
 
 func _clear_chunk_node(cpos: Vector3i) -> void:
@@ -498,7 +733,37 @@ func _clear_chunk_node(cpos: Vector3i) -> void:
 ## Missing neighbours are treated as solid rock, never as air: above the world
 ## that would be wrong, but nothing is ever above the world, and below or beside
 ## it stops the map growing a skin of faces nobody can see.
+## Grabs references to the 3x3x3 of neighbouring chunks. Copy-on-write means
+## this costs 27 dictionary lookups and no copying at all; the worker turns it
+## into the padded array.
+func _snapshot(cpos: Vector3i) -> Dictionary:
+	var out := {}
+	for dy in range(-1, 2):
+		for dz in range(-1, 2):
+			for dx in range(-1, 2):
+				var n := cpos + Vector3i(dx, dy, dz)
+				var c: VoxelChunk = chunks.get(n)
+				if c != null:
+					out[n] = c.voxels
+	out["_loaded"] = _loaded_flags(cpos)
+	return out
+
+
+func _loaded_flags(cpos: Vector3i) -> PackedByteArray:
+	var f := PackedByteArray()
+	f.resize(9)
+	for dz in 3:
+		for dx in 3:
+			f[dx + dz * 3] = 1 if _htiles.has(
+				Vector2i(cpos.x + dx - 1, cpos.z + dz - 1)) else 0
+	return f
+
+
 func _build_padded(cpos: Vector3i) -> PackedByteArray:
+	return _pad(cpos, _snapshot(cpos))
+
+
+func _pad(cpos: Vector3i, snap: Dictionary) -> PackedByteArray:
 	var out := PackedByteArray()
 	var air_row := PackedByteArray()
 	air_row.resize(S)
@@ -512,12 +777,10 @@ func _build_padded(cpos: Vector3i) -> PackedByteArray:
 	# unknown, and is treated as rock so the mesher does not grow a wall of
 	# faces into it. Getting this backwards culled the faces off every building
 	# wall that faced an empty upper chunk.
-	var col_loaded := PackedByteArray()
-	col_loaded.resize(9)
-	for dz in 3:
-		for dx in 3:
-			col_loaded[dx + dz * 3] = 1 if _htiles.has(
-				Vector2i(cpos.x + dx - 1, cpos.z + dz - 1)) else 0
+	#
+	# Read out of the snapshot, never off the live world: this runs on a worker
+	# thread, and the streamer is installing and evicting columns while it does.
+	var col_loaded: PackedByteArray = snap["_loaded"]
 
 	for py in 34:
 		var wy := py - 1
@@ -548,20 +811,23 @@ func _build_padded(cpos: Vector3i) -> PackedByteArray:
 
 			var row_base := lz * S + ly * S * S
 
-			var left: VoxelChunk = chunks.get(Vector3i(cpos.x - 1, cy, cz))
-			out.append(left.voxels[(S - 1) + row_base] if left != null
+			var left: PackedByteArray = snap.get(Vector3i(cpos.x - 1, cy, cz),
+				PackedByteArray())
+			out.append(left[(S - 1) + row_base] if not left.is_empty()
 				else _absent(below_world, above_world, col_loaded[0 + dz_i * 3] == 1))
 
-			var mid: VoxelChunk = chunks.get(Vector3i(cpos.x, cy, cz))
-			if mid != null:
-				out.append_array(mid.voxels.slice(row_base, row_base + S))
+			var mid: PackedByteArray = snap.get(Vector3i(cpos.x, cy, cz),
+				PackedByteArray())
+			if not mid.is_empty():
+				out.append_array(mid.slice(row_base, row_base + S))
 			elif _absent(below_world, above_world, col_loaded[1 + dz_i * 3] == 1) == VoxelTypes.AIR:
 				out.append_array(air_row)
 			else:
 				out.append_array(rock_row)
 
-			var right: VoxelChunk = chunks.get(Vector3i(cpos.x + 1, cy, cz))
-			out.append(right.voxels[row_base] if right != null
+			var right: PackedByteArray = snap.get(Vector3i(cpos.x + 1, cy, cz),
+				PackedByteArray())
+			out.append(right[row_base] if not right.is_empty()
 				else _absent(below_world, above_world, col_loaded[2 + dz_i * 3] == 1))
 
 	return out
@@ -600,6 +866,23 @@ func unrendered_chunks() -> Array[Vector3i]:
 		if _needs_mesh(cpos):
 			out.append(cpos)
 	return out
+
+
+## Why a position has no floor. Diagnostic only.
+func debug_support(world_m: Vector3) -> String:
+	var v := to_voxel(world_m)
+	var cpos := Vector3i(v.x >> 5, v.y >> 5, v.z >> 5)
+	var parts: Array[String] = []
+	parts.append("chunk %s" % str(cpos))
+	parts.append("chunk=%s" % ("yes" if chunks.has(cpos) else "NO"))
+	parts.append("mesh=%s" % ("yes" if _nodes.has(cpos) else "NO"))
+	parts.append("body=%s" % ("yes" if _bodies.has(cpos) else "NO"))
+	parts.append("dirty=%s" % ("yes" if _dirty.has(cpos) else "no"))
+	parts.append("flight=%s" % ("yes" if _in_flight.has(cpos) else "no"))
+	parts.append("wants=%s" % ("yes" if _wants_collision(cpos) else "NO"))
+	parts.append("meshable=%s" % ("yes" if column_meshable(cpos.x, cpos.z) else "NO"))
+	parts.append("h=%d" % height_at(v.x, v.z))
+	return " ".join(parts)
 
 
 func chunk_count() -> int:

@@ -41,9 +41,22 @@ const PATTERN := {
 	VoxelTypes.ASPHALT: SCATTER,
 	VoxelTypes.PAINTED_WHITE: PLAIN, VoxelTypes.PAINTED_RED: PLAIN,
 	VoxelTypes.MATTE_BLACK: PLAIN, VoxelTypes.NEON_STRIP: NEON,
+	VoxelTypes.FARMLAND: SCATTER, VoxelTypes.WET_FARMLAND: SCATTER,
+	VoxelTypes.EMBER: SCATTER,
 }
 
 static var _cache: Dictionary = {}
+
+
+## Builds every material up front, on the main thread.
+##
+## Mesh jobs run on worker threads and look materials up by id; without this the
+## first chunk of a given material would race several threads through the same
+## lazy construction.
+static func prewarm() -> void:
+	for id in VoxelTypes.COUNT:
+		if id != VoxelTypes.AIR:
+			get_material(id)
 
 
 static func get_material(id: int) -> ShaderMaterial:
@@ -95,8 +108,12 @@ static func get_material(id: int) -> ShaderMaterial:
 			bump = 0.30
 			jitter = 0.10
 		THATCH:
+			# Low bump, deliberately. Thatch has the finest grain in the palette,
+			# and a strong normal on a fine pattern gives every pixel of a
+			# ceiling a different facing — which under a lantern a metre away
+			# shimmers and never settles. It was the last flicker left indoors.
 			strength = 0.60
-			bump = 0.9
+			bump = 0.30
 			jitter = 0.12
 		TILE:
 			strength = 0.48

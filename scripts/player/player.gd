@@ -21,7 +21,18 @@ const REACH := 9.0
 ## reads it back so the sprint ring lights up at exactly the right moment.
 const TOUCH_SPRINT_AT := 0.92
 
+## Swimming. Water is not a solid voxel, so without this the player walks along
+## the lake bed like a diver in boots — which is what the world does today and
+## is the first thing anyone notices when they reach the coast.
+const SWIM_SPEED := 3.1
+const SWIM_RISE := 2.4         ## jump held, or simply floating up
+const SWIM_SINK := -1.1        ## terminal speed while treading water
+const BUOYANCY := 9.0
+
 var camera: Camera3D
+var world: VoxelWorld
+var in_water := false
+var submerged := false
 var yaw := 0.0
 var pitch := 0.0
 var input_enabled := true
@@ -146,8 +157,7 @@ func _physics_process(delta: float) -> void:
 	rotation.y = yaw
 	_head.rotation.x = pitch
 
-	if not is_on_floor():
-		velocity.y -= ProjectSettings.get_setting("physics/3d/default_gravity", 22.0) * delta
+	_sense_water()
 
 	var wish := Vector3.ZERO
 	if input_enabled:
@@ -157,18 +167,41 @@ func _physics_process(delta: float) -> void:
 		wish = (transform.basis * Vector3(dir.x, 0.0, dir.y))
 		if wish.length_squared() > 1.0:
 			wish = wish.normalized()
-		if Input.is_action_just_pressed("move_jump") and is_on_floor():
-			velocity.y = JUMP_SPEED
 
 	var stick_run := _touch_move.length() >= TOUCH_SPRINT_AT
 	var running := Input.is_action_pressed("move_sprint") or stick_run
 	var speed := SPRINT_SPEED if (input_enabled and running) else WALK_SPEED
-	var target := wish * speed
 	var rate := ACCEL if is_on_floor() else AIR_ACCEL
+
+	if in_water:
+		# Float, do not fall. Holding jump climbs; letting go sinks slowly, so
+		# the water is something to be in rather than something to drown in.
+		speed = SWIM_SPEED
+		rate = 6.0
+		var rise := BUOYANCY * delta
+		if input_enabled and Input.is_action_pressed("move_jump"):
+			velocity.y = move_toward(velocity.y, SWIM_RISE, rise * 2.0)
+		elif submerged:
+			velocity.y = move_toward(velocity.y, SWIM_SINK * 0.35, rise)
+		else:
+			# At the surface, bob rather than sink.
+			velocity.y = move_toward(velocity.y, 0.0, rise)
+		# Swimming forward while looking down takes you down, as it should.
+		if wish.length_squared() > 0.01 and pitch < -0.25:
+			velocity.y = minf(velocity.y, sin(pitch) * SWIM_SPEED)
+	else:
+		if not is_on_floor():
+			velocity.y -= ProjectSettings.get_setting(
+				"physics/3d/default_gravity", 22.0) * delta
+		if input_enabled and Input.is_action_just_pressed("move_jump") and is_on_floor():
+			velocity.y = JUMP_SPEED
+
+	var target := wish * speed
 	velocity.x = move_toward(velocity.x, target.x, rate * delta * 10.0)
 	velocity.z = move_toward(velocity.z, target.z, rate * delta * 10.0)
 
 	move_and_slide()
+	_catch_if_fallen()
 
 	# Head bob, scaled by actual ground speed so it stops when you do.
 	var planar := Vector2(velocity.x, velocity.z).length()
@@ -182,6 +215,38 @@ func _physics_process(delta: float) -> void:
 		_head.rotation.z = lerpf(_head.rotation.z, 0.0, delta * 8.0)
 
 	_scan_target()
+
+
+## Two samples: one at the waist, which decides whether you are swimming, and
+## one at the eyes, which decides whether you are under. Reading the voxel grid
+## directly rather than using an Area3D means water needs no collision shapes
+## at all, which matters when there are several square kilometres of it.
+func _sense_water() -> void:
+	if world == null:
+		return
+	var waist := VoxelWorld.to_voxel(global_position + Vector3(0, 0.95, 0))
+	var eyes := VoxelWorld.to_voxel(global_position + Vector3(0, EYE_HEIGHT, 0))
+	in_water = world.get_voxel(waist) == VoxelTypes.WATER
+	submerged = in_water and world.get_voxel(eyes) == VoxelTypes.WATER
+
+
+## Last resort. VoxelWorld.ensure_support() is what actually keeps a floor
+## under the player; this is the net under that, and it only catches the one
+## case that is never legitimate — being below the bottom of the world. Falling
+## through the floor of a building is caught by the ceiling above it, so the
+## test cannot simply be "below the surface": ground_m() reports the roof of a
+## house, and a player standing in his kitchen would be flung onto it.
+func _catch_if_fallen() -> void:
+	if world == null or global_position.y > 0.0:
+		return
+	var g := world.ground_m(global_position.x, global_position.z)
+	# Nothing loaded here yet: hold still rather than teleporting to a guess.
+	if world.height_at(int(floor(global_position.x / VoxelChunk.VOXEL_M)),
+			int(floor(global_position.z / VoxelChunk.VOXEL_M))) < 0:
+		velocity = Vector3.ZERO
+		return
+	global_position.y = g + 0.1
+	velocity = Vector3.ZERO
 
 
 ## Finds the worker the player is looking at, so pressing talk opens the right

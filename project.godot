@@ -21,8 +21,6 @@ config/icon="res://icon.svg"
 window/size/viewport_width=1600
 window/size/viewport_height=900
 window/stretch/mode="canvas_items"
-; A phone is 19.5:9, not 16:9. "keep" would letterbox the game into bars on
-; every handset; "expand" gives the extra width to the world instead.
 window/stretch/aspect="expand"
 window/handheld/orientation=4
 
@@ -85,14 +83,10 @@ debug_stats={
 
 [rendering]
 
-; Forward+ is a desktop-only path. Phones and every browser build run the
-; gl_compatibility renderer, which is stated here rather than left to the
-; exporter so the editor previews what the phone will actually see.
 renderer/rendering_method.mobile="gl_compatibility"
-renderer/rendering_method.web="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
 textures/default_filters/anisotropic_filtering_level=3
 anti_aliasing/quality/msaa_3d=2
 environment/defaults/default_clear_color=Color(0.09, 0.11, 0.14, 1)
-anti_aliasing/quality/screen_space_aa=1
+anti_aliasing/quality/use_taa=true

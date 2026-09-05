@@ -69,13 +69,22 @@ func interpretation_looseness(preference_coverage: float) -> float:
 
 
 ## Whether this worker stops and asks rather than guessing.
+##
+## question_threshold is the bar an instruction has to be murkier than before
+## they will interrupt you, so a LOW threshold is the worker who asks about
+## everything. That is also how Prompt._character() reads it when it describes
+## the worker to the model — and the two were inverted with respect to each
+## other, so Mira's prompt told her she asks a clarifying question before nearly
+## every job, which is Tobias's entire personality and the opposite of hers.
+##
+## Trust and confidence both raise the bar, which is the inversion the design
+## turns on (§4.3): a worker who trusts you fills the gap rather than asking
+## about it, and filling gaps is exactly where the misinterpretation lives.
 func will_ask(ambiguity: float) -> bool:
-	var threshold: float = traits["question_threshold"]
-	var trust: float = disposition["trust_in_player"]
-	# Low trust means more questions; a confident worker asks fewer.
-	var adjusted := threshold * (1.35 - trust * 0.5) \
-		* (1.25 - float(disposition["confidence"]) * 0.4)
-	return ambiguity > (1.0 - clampf(adjusted, 0.05, 0.98))
+	var bar: float = traits["question_threshold"]
+	bar *= 0.75 + float(disposition["trust_in_player"]) * 0.5
+	bar *= 0.80 + float(disposition["confidence"]) * 0.4
+	return ambiguity > clampf(bar, 0.02, 0.98)
 
 
 ## Work rate multiplier. Low morale is visible in the pace, per §4.3.

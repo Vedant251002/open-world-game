@@ -39,6 +39,10 @@ var _scan := 0
 var _first_load := true
 var _awaiting_first := 0
 
+var stat_worst_frame_ms := 0.0
+var stat_worst_collect_ms := 0.0
+var stat_worst_ring_ms := 0.0
+var stat_worst_evict_ms := 0.0
 var stat_generated := 0
 var stat_unloaded := 0
 var stat_gen_ms := 0.0
@@ -86,7 +90,17 @@ func prime(around: Vector3) -> int:
 
 
 func _process(_delta: float) -> void:
+	var t0 := Time.get_ticks_usec()
+	_tick()
+	stat_worst_frame_ms = maxf(stat_worst_frame_ms,
+		float(Time.get_ticks_usec() - t0) * 0.001)
+
+
+func _tick() -> void:
+	var t := Time.get_ticks_usec()
 	_collect()
+	stat_worst_collect_ms = maxf(stat_worst_collect_ms,
+		float(Time.get_ticks_usec() - t) * 0.001)
 	if focus == null:
 		return
 
@@ -96,12 +110,20 @@ func _process(_delta: float) -> void:
 		# One ring past the visible radius: a column needs all eight neighbours
 		# before it can be meshed, so without the spare ring the outermost
 		# visible columns would stay invisible forever.
+		var tr := Time.get_ticks_usec()
 		_wanted = _ring(centre, load_radius + 1)
 		_scan = 0
+		stat_worst_ring_ms = maxf(stat_worst_ring_ms,
+			float(Time.get_ticks_usec() - tr) * 0.001)
+		var te := Time.get_ticks_usec()
 		_evict(centre)
+		stat_worst_evict_ms = maxf(stat_worst_evict_ms,
+			float(Time.get_ticks_usec() - te) * 0.001)
 
 	# Keep the queue topped up, nearest first, resuming where the last frame
 	# stopped rather than rescanning the whole disc.
+	if _first_load:
+		return                      # the prime set is already queued; let it finish
 	if _pending.size() >= jobs_in_flight or _wanted.is_empty():
 		return
 	var looked := 0
@@ -203,5 +225,8 @@ func _evict(centre: Vector2i) -> void:
 
 
 func status_text() -> String:
-	return "cols %d  pending %d  chunks %d  gen %.0f ms" % [
-		world.loaded_columns(), _pending.size(), world.chunk_count(), stat_gen_ms]
+	return "cols %d chunks %d | worst ms: stream %.1f (collect %.1f ring %.1f evict %.1f) world %.1f" % [
+		world.loaded_columns(), world.chunk_count(), stat_worst_frame_ms,
+		stat_worst_collect_ms, stat_worst_ring_ms, stat_worst_evict_ms,
+		world.stat_worst_frame_ms] + " (pad %.1f upload %.1f)" % [
+			world.stat_worst_dispatch_ms, world.stat_worst_upload_ms]

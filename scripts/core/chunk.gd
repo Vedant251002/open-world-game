@@ -20,6 +20,13 @@ var dirty := true
 ## True once anything outside worldgen has written to this chunk. The streamer
 ## keeps modified chunks when a column unloads and regenerates the rest.
 var modified := false
+## The baked collision soup for this chunk's current geometry, or null if it has
+## none. Kept here rather than only on the StaticBody3D so that walking into
+## collision range costs a node and nothing else — before this, a chunk that had
+## been meshed while it was far away had to be meshed a second time to get its
+## floor, and at a sprint the queue of second meshes fell behind the player and
+## he ran out over ground that had no collision yet.
+var shape: ConcavePolygonShape3D = null
 
 
 func _init(chunk_pos: Vector3i = Vector3i.ZERO) -> void:

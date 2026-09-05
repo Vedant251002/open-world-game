@@ -98,7 +98,10 @@ func _build_environment() -> void:
 	env.ssao_detail = 0.7
 	env.ssao_horizon = 0.10
 
-	env.ssil_enabled = true
+	# SSIL is a noisy screen-space effect with no temporal accumulation behind
+	# it here, so it shimmers frame to frame on the voxel edges. Off by default;
+	# --ssil turns it back on for a look.
+	env.ssil_enabled = "--ssil" in OS.get_cmdline_user_args()
 	env.ssil_radius = 4.0
 	env.ssil_intensity = 0.32
 	env.ssil_sharpness = 0.98
@@ -111,7 +114,10 @@ func _build_environment() -> void:
 	# being re-voxelised every time the camera moves, and it showed up as 50 ms
 	# frame spikes. Two tight cascades cover the whole map and cost about a
 	# third as much.
-	env.sdfgi_enabled = true
+	# SDFGI re-voxelises the scene as chunks stream in and out, which makes the
+	# bounce light pulse and costs 50 ms spikes on top. A streaming voxel world
+	# is the workload it handles worst. --gi turns it on for a static look.
+	env.sdfgi_enabled = "--gi" in OS.get_cmdline_user_args()
 	env.sdfgi_energy = 1.0
 	env.sdfgi_cascades = 2
 	env.sdfgi_min_cell_size = 0.5
@@ -234,7 +240,7 @@ func _apply_time() -> void:
 	moon.light_energy = night * 0.22
 	moon.visible = night > 0.02
 
-	env.ambient_light_energy = ambient * 0.58
+	env.ambient_light_energy = ambient * 0.78
 	env.ambient_light_sky_contribution = 1.0
 	if not _no_vol:
 		env.volumetric_fog_density = lerpf(0.0042, 0.0010, clampf(sun_energy, 0.0, 1.0))

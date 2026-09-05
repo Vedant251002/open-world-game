@@ -14,6 +14,10 @@ signal tier_changed(tier: int)
 const STARTING_STOCK := {
 	"timber": 4000, "plank": 3000, "thatch": 2500, "cobble": 3000,
 	"gravel": 2000, "sandstone": 1200, "dark_oak": 900,
+	# The larder. Building materials are spent by the workers; these are what
+	# the fields and the livestock put back, and they are the only numbers the
+	# player earns rather than starts with.
+	"food": 0, "cloth": 0,
 }
 
 var tier := 1
@@ -172,6 +176,13 @@ func stock_line() -> String:
 	for mat_name: String in ["timber", "plank", "thatch", "cobble"]:
 		parts.append("%s %d" % [mat_name.substr(0, 4), int(stock.get(mat_name, 0))])
 	return "   ".join(parts)
+
+
+## The larder, kept separate from the timber yard because it means something
+## different: materials are what you spend, food is what you have made.
+func larder_line() -> String:
+	return "food %d   cloth %d" % [
+		int(stock.get("food", 0)), int(stock.get("cloth", 0))]
 
 
 # --------------------------------------------------------------- persistence
