@@ -31,13 +31,30 @@ npx wrangler deploy
 Wrangler opens a browser for you to log in, then prints the deployed URL —
 something like `https://delegate-ai.<your-subdomain>.workers.dev`.
 
-Then give it the key. **Do this yourself** — it goes straight from your
-terminal to Cloudflare, and paste it at the prompt rather than putting it on
-the command line, where it would land in your shell history:
+Then give it the key. **This step has to be yours** — the key goes straight
+from your machine to Cloudflare and never through anything else.
+
+Pipe it from the `.env` file rather than pasting it at the prompt:
 
 ```bash
-npx wrangler secret put OPENCODE_API_KEY
+grep '^OPENCODE_API_KEY=' ../.env | cut -d= -f2- | npx wrangler secret put OPENCODE_API_KEY
 ```
+
+Pasting at the interactive prompt is what the docs suggest and it is worth
+avoiding: a paste that only half-lands stores a truncated key, and there is no
+error — the gateway answers a malformed `Authorization` header with a bare 400
+and an empty body, which looks exactly like a broken proxy. That happened here
+once, with a stored key one character long. Piping from the file cannot do
+that, and the Worker trims whitespace off whatever it is given.
+
+Check it took:
+
+```
+https://<your-worker>.workers.dev/?check=1
+```
+
+`key_works: true` means the whole path is good. If `key_length` is not 67, the
+secret did not land — run the pipe again.
 
 Finally, put the deployed URL into `PROXY_URL` in
 [`scripts/ai/llm.gd`](../scripts/ai/llm.gd) and push. The URL is not a secret —
@@ -46,6 +63,19 @@ origin — so it belongs in the repository where every platform picks it up.
 
 The next Pages deploy will report `AI: OpenCode Zen via the proxy` in the
 browser console instead of `offline (no OPENCODE_API_KEY)`.
+
+## Is it working?
+
+Open the Worker's URL in a browser. It answers with its own status — whether a
+key is configured, how long it is, a fingerprint of it, which model it will
+use, and which origins it will answer. Nothing there is secret: the key is
+reduced to four bytes of a SHA-256, and the origins are in this repository
+already.
+
+Add `?check=1` and it spends one token proving the key actually works, rather
+than only that something is stored. Every other field can look perfect while
+the stored secret is a string the gateway will not accept — which is exactly
+the failure this hit — so that is the field to trust.
 
 ## Before you trust it
 

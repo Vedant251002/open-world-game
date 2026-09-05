@@ -131,9 +131,61 @@ async function main() {
     ok(empty.status === 400, "an empty conversation is refused too");
     const huge = await worker.fetch(post(GOOD, "x".repeat(70 * 1024)), env);
     ok(huge.status === 413, "an oversized body is refused");
-    const get = await worker.fetch(
-      new Request("https://proxy.example/", { headers: { Origin: GOOD } }), env);
-    ok(get.status === 405, "GET is refused");
+    const put = await worker.fetch(
+      new Request("https://proxy.example/", { method: "PUT", headers: { Origin: GOOD } }), env);
+    ok(put.status === 405, "a method that is neither GET nor POST is refused");
+  }
+
+  console.log("[proxy] opening the address in a browser");
+  {
+    // A browser navigating to the URL sends no Origin at all, so this has to
+    // answer without one — and it has to answer with something worth reading.
+    // "POST only." and a 405 was correct and told nobody anything.
+    const res = await worker.fetch(new Request("https://proxy.example/"), env);
+    ok(res.status === 200, `answers a plain visit (got ${res.status})`);
+    const body = await res.json();
+    ok(body.key_configured === true, "says whether the key is in yet");
+    ok(body.key_length === KEY.length, "says how long the stored key is");
+    ok(typeof body.key_fingerprint === "string" && body.key_fingerprint.length === 8,
+      "fingerprints the key rather than showing it");
+    ok(!JSON.stringify(body).includes(KEY), "and does not leak the key itself");
+
+    const none = await worker.fetch(new Request("https://proxy.example/"),
+      { OPENCODE_MODEL: "m" });
+    const nobody = await none.json();
+    ok(nobody.key_configured === false, "and says so when there is no key");
+  }
+
+  console.log("[proxy] a key that got half-pasted");
+  {
+    // The failure this actually hit: a secret stored with a newline on the end
+    // makes the Authorization header malformed, and the gateway answers a bare
+    // 400 with no body — which looks exactly like a broken proxy.
+    const { seen, restore } = stubUpstream();
+    await worker.fetch(post(GOOD, PLAN), { ...env, OPENCODE_API_KEY: `${KEY}
+` });
+    restore();
+    ok(seen.auth === `Bearer ${KEY}`, "a trailing newline is trimmed off before use");
+
+    const res = await worker.fetch(new Request("https://proxy.example/"),
+      { ...env, OPENCODE_API_KEY: `  ${KEY}  ` });
+    const body = await res.json();
+    ok(body.key_had_stray_whitespace === true, "and the visit page says it happened");
+    ok(body.key_length === KEY.length, "reporting the length as used, not as stored");
+  }
+
+  console.log("[proxy] when the gateway refuses");
+  {
+    // An empty 400 passed straight through tells the game nothing. The status
+    // has to survive into something readable.
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => new Response("", { status: 400 });
+    const res = await worker.fetch(post(GOOD, PLAN), env);
+    globalThis.fetch = real;
+    const body = await res.json();
+    ok(res.status === 400, "the status is passed through");
+    ok(body.error.upstream_status === 400, "and named in the body");
+    ok(String(body.error.message).length > 20, "with something a person can read");
   }
 
   if (process.argv.includes("--live")) {
