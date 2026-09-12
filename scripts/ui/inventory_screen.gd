@@ -44,7 +44,15 @@ const SECTIONS := [
 	{"title": "GROUND AND FOUNDATION", "of": "ground"},
 	{"title": "TRIM AND FINISH", "of": "trim"},
 	{"title": "THE LARDER", "of": "larder"},
+	{"title": "THE ARMOURY", "of": "arms"},
 ]
+## Colours for the things the armoury makes. They are not voxels either.
+const ARMS := {
+	"pistol": Color("#3a3d42"), "musket": Color("#6d4a2c"), "rifle": Color("#4a3b2c"),
+	"grenade": Color("#2b2f2b"), "mortar": Color("#4a4f55"), "launcher": Color("#5a5f66"),
+	"shot": Color("#8a8a80"), "shell": Color("#565b62"), "rocket": Color("#7a4a3a"),
+	"powder": Color("#1e1c1a"),
+}
 ## The two things the town makes rather than digs. They are not voxels, so they
 ## have no entry in the palette and need a colour of their own.
 const LARDER := {
@@ -213,7 +221,7 @@ func _draw_sheet() -> void:
 					y + (i / cols) * (_slot + gap)),
 				Vector2(_slot, _slot))
 			_slots.append({"rect": cell, "mat": names[i],
-				"larder": str(sec["of"]) == "larder"})
+				"larder": str(sec["of"]) == "larder" or str(sec["of"]) == "arms"})
 		var rows := maxi(int(ceil(float(names.size()) / float(cols))), 1)
 		y += rows * (_slot + gap)
 
@@ -235,6 +243,8 @@ func _names_in(group: String) -> PackedStringArray:
 		for k: String in LARDER:
 			l.append(k)
 		return l
+	if group == "arms":
+		return Arsenal.all_keys()
 	var src: Array = VoxelTypes.STRUCTURAL
 	match group:
 		"surface": src = VoxelTypes.SURFACE
@@ -334,6 +344,8 @@ func _draw_cube(at: Vector2, w: float, mat: String, base: Color,
 func _colour_of(mat: String) -> Color:
 	if LARDER.has(mat):
 		return LARDER[mat]
+	if ARMS.has(mat):
+		return ARMS[mat]
 	var id := VoxelTypes.id_of(mat)
 	if id < 0:
 		return Color("#8a8078")
@@ -430,6 +442,16 @@ func _use_note(mat: String) -> String:
 
 
 func _larder_note(mat: String) -> String:
+	if Arsenal.is_item(mat):
+		var it := Arsenal.item(mat)
+		var parts: Array[String] = []
+		for k: String in it["from"]:
+			parts.append("%d %s" % [int(it["from"][k]), k.replace("_", " ")])
+		var what := "A weapon" if str(it["kind"]) == "weapon" else (
+			"Ammunition" if str(it["kind"]) == "ammo" else "The makings of ammunition")
+		return "%s. The armoury makes %d at a time from %s, in about %d hours — "\
+			% [what, int(it["batch"]), ", ".join(parts), int(ceil(float(it["hours"])))] \
+			+ "say \"make some %s\" to anyone free." % Arsenal.label(mat)
 	if mat == "food":
 		return "What the fields and the animals put in. It is the one thing "\
 			+ "here the town earns rather than digs, and it sells the moment "\

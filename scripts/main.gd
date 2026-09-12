@@ -32,12 +32,16 @@ var hud: Hud
 var farm: Farm
 var livestock: Livestock
 var wildlife: Wildlife
+var warfare: Warfare
 
 var _world_seed := 0
 var showcase_views: Array[Dictionary] = []
 var showcase_patches: Array[VoxelPatch] = []
 var _interior_shots := false
 var _room_shots := false
+## The save being loaded, until the town is stood up from it; then empty.
+var _save: Dictionary = {}
+const AUTOSAVE_SECONDS := 120.0
 
 
 func _ready() -> void:
@@ -46,6 +50,27 @@ func _ready() -> void:
 	for arg in args:
 		if arg.begins_with("--seed="):
 			_world_seed = int(arg.substr(7))
+
+	# Tests, benches and screenshots never touch a real save: they neither
+	# start from one nor leave one behind.
+	for arg2 in args:
+		if arg2.find("test") >= 0 or arg2.find("bench") >= 0 or arg2.find("shot") >= 0 \
+				or arg2 == "--nosave" or arg2 == "--probe" or arg2.find("probe") >= 0:
+			SaveGame.enabled = false
+	# Except the save test, which is the one test that is about saves. It gets
+	# a scratch file of its own, wiped before its first boot so a stale one
+	# from a crashed run cannot pass for a fresh save.
+	if "--savetest" in args:
+		SaveGame.path = "user://save/_savetest.save"
+		SaveGame.enabled = true
+		if not SaveTest.second_boot:
+			SaveGame.erase()
+	# The seed is the world; a save carries its own and overrides the clock's.
+	if "--fresh" not in args:
+		_save = SaveGame.read()
+		if not _save.is_empty():
+			_world_seed = int(_save.get("seed", _world_seed))
+			print("[delegate] loading the town saved %s" % str(_save.get("written", "?")))
 
 	sky = SkyEnv.new()
 	add_child(sky)
@@ -60,6 +85,11 @@ func _ready() -> void:
 	world.name = "VoxelWorld"
 	add_child(world)
 	world.configure(WORLD_HEIGHT_CHUNKS)
+	if not _save.is_empty():
+		# Before prime(): every changed chunk is then simply picked up as its
+		# column comes in, the same way a building survives being walked
+		# away from.
+		world.import_edits(_save.get("world", {}))
 
 	props_root = Node3D.new()
 	props_root.name = "Props"
@@ -173,10 +203,35 @@ func _physics_process(_delta: float) -> void:
 	world.refresh_collision(player.global_position)
 	world.ensure_support(player.global_position)
 	if crew != null:
+		# Everyone who walks and is not the player needs a floor: the crew,
+		# the army, the raiders, and the animals out past the streets. The
+		# world only carries collision near the player otherwise, and a body
+		# stood on ground with no collision under it falls out of the game.
 		var here: Array[Vector3] = []
 		for w: Worker in crew.workers:
 			here.append(w.global_position)
+		if warfare != null:
+			for f: Fighter in warfare.soldiers:
+				if is_instance_valid(f):
+					here.append(f.global_position)
+			for f: Fighter in warfare.raiders:
+				if is_instance_valid(f):
+					here.append(f.global_position)
+		if wildlife != null:
+			for a: Animal in wildlife.beasts:
+				if is_instance_valid(a) and a.is_physics_processing():
+					here.append(a.global_position)
+		if livestock != null:
+			for a: Animal in livestock.animals:
+				if is_instance_valid(a) and a.is_physics_processing():
+					here.append(a.global_position)
 		world.set_agents(here)
+		# And the same guarantee the player gets: a chunk whose collision has
+		# not been baked yet is built on the spot. set_agents only attaches
+		# shapes that already exist, which out past the streets is none of
+		# them, and a raider stood on an unbaked chunk fell out of the game.
+		for p: Vector3 in here:
+			world.ensure_support(p)
 
 
 func _on_world_ready(t0: int) -> void:
@@ -190,13 +245,21 @@ func _on_world_ready(t0: int) -> void:
 	var args := OS.get_cmdline_user_args()
 	_room_shots = "--rooms" in args or "--flicker" in args
 	_interior_shots = "--inside" in args or _room_shots
-	if "--empty" not in args:
+	# A saved town has its founding buildings in the world already, and their
+	# records in the save; founding it again would put a second bakery in the
+	# first one.
+	if "--empty" not in args and _save.is_empty():
 		_found_town()
+	elif not _save.is_empty():
+		_restore_town()
 
 	# After the founding buildings: the nav grid reads the world as it stands,
 	# and a crew that pathed through the bakery would look ridiculous.
 	if "--nocrew" not in args:
 		_raise_crew()
+		if not _save.is_empty():
+			_restore_people()
+		_arm_saving()
 	if "--nostream" in args:
 		streamer.set_process(false)
 	if "--nomap" in args:
@@ -240,6 +303,19 @@ func _on_world_ready(t0: int) -> void:
 		add_child(et)
 		et.begin()
 		return
+	if "--savetest" in args:
+		var svt := SaveTest.new()
+		svt.main = self
+		svt.crew = crew
+		svt.dispatch = dispatch
+		svt.clock = clock
+		svt.town = town
+		svt.player = player
+		svt.livestock = livestock
+		svt.world = world
+		add_child(svt)
+		svt.begin()
+		return
 	if "--roletest" in args:
 		var rt := RoleTest.new()
 		rt.crew = crew
@@ -268,6 +344,31 @@ func _on_world_ready(t0: int) -> void:
 		ct.hud = hud
 		add_child(ct)
 		ct.begin()
+		return
+	if "--floorprobe" in args:
+		var fp := FloorProbe.new()
+		fp.world = world
+		fp.village = village
+		fp.warfare = warfare
+		fp.nav = nav
+		add_child(fp)
+		return
+	if "--wartest" in args:
+		var wt2 := WarTest.new()
+		wt2.world = world
+		wt2.village = village
+		wt2.crew = crew
+		wt2.dispatch = dispatch
+		wt2.clock = clock
+		wt2.town = town
+		wt2.player = player
+		wt2.warfare = warfare
+		wt2.props_root = props_root
+		wt2.farm = farm
+		wt2.livestock = livestock
+		wt2.wildlife = wildlife
+		add_child(wt2)
+		wt2.begin()
 		return
 	if "--wildprobe" in args:
 		var wp := WildProbe.new()
@@ -442,6 +543,14 @@ func _raise_crew() -> void:
 	add_child(wildlife)
 	wildlife.setup(world, clock, town, village, player)
 
+	# The army and the enemy. Nothing hostile exists until the town has an
+	# armoury or a barracks to be worth raiding.
+	warfare = Warfare.new()
+	warfare.name = "Warfare"
+	add_child(warfare)
+	warfare.setup(world, nav, town, village, clock, player, crew, livestock, wildlife)
+	player.warfare = warfare
+
 	if "--demo" in OS.get_cmdline_user_args():
 		_demo_field()
 
@@ -452,6 +561,7 @@ func _raise_crew() -> void:
 	dispatch.farm = farm
 	dispatch.livestock = livestock
 	dispatch.wildlife = wildlife
+	dispatch.warfare = warfare
 	dispatch.player = player
 	# The dispatcher needs the whole crew, not just whoever was spoken to: a
 	# shortfall is answered by sending somebody *else* out to dig.
@@ -474,6 +584,8 @@ func _raise_crew() -> void:
 	dispatch.plan_accepted.connect(func(w: Worker, a: Array) -> void:
 		hud.show_assumptions(w, a))
 	dispatch.status.connect(func(t: String) -> void: hud.toast(t))
+	warfare.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
+	hud.warfare = warfare
 	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
 	# assumption panel rather than a toast that scrolls away.
@@ -538,6 +650,102 @@ func build_context() -> Dictionary:
 		"world": world, "village": village, "worldgen": gen, "tier": 1,
 		"occupied_rects": [], "built_fronts": {},
 	}
+
+
+# ------------------------------------------------------------------ saving
+
+## Everything worth keeping, as one dictionary. See SaveGame for what is and
+## is not in it.
+func _snapshot() -> Dictionary:
+	var state := {
+		"seed": _world_seed,
+		"clock": {"day": clock.day, "hour": clock.hour},
+		"player": {"pos": player.global_position, "yaw": player.yaw},
+		"town": town.snapshot(),
+		"world": world.export_edits(),
+	}
+	if crew != null:
+		state["crew"] = crew.snapshot()
+		state["roles"] = crew.roles.to_dict()
+	if farm != null:
+		state["farm"] = farm.snapshot()
+	if livestock != null:
+		state["livestock"] = livestock.snapshot()
+	return state
+
+
+func _save_now(why: String) -> void:
+	if not SaveGame.enabled or crew == null:
+		return
+	var t0 := Time.get_ticks_msec()
+	var state := _snapshot()
+	var t1 := Time.get_ticks_msec()
+	if SaveGame.write(state):
+		print("[delegate] saved (%s) in %d ms: %d gathering, %d writing" % [
+			why, Time.get_ticks_msec() - t0, t1 - t0, Time.get_ticks_msec() - t1])
+		if hud != null and why != "morning":
+			hud.toast("Saved.", 2.0)
+
+
+## The register and the furniture. The buildings' voxels are already in the
+## world, restored with the chunks; this puts the records back so the town
+## knows what they are, and the props back so they are not empty shells.
+func _restore_town() -> void:
+	town.restore(_save.get("town", {}), village)
+	for rec: Dictionary in town.buildings:
+		var patch: VoxelPatch = rec["patch"]
+		Construction.new(patch, world, props_root).respawn_props()
+		map.note_building(patch, str(rec["archetype"]))
+		showcase_patches.append(patch)
+	var c: Dictionary = _save.get("clock", {})
+	clock.day = int(c.get("day", clock.day))
+	clock.hour = float(c.get("hour", clock.hour))
+	print("[delegate] restored %d buildings, day %d" % [town.buildings.size(), clock.day])
+
+
+## The people, their jobs and memories, the fields and the flock. After the
+## crew is raised from the seed, so the same seed gives the same people and
+## each is then told who they had become.
+func _restore_people() -> void:
+	crew.roles.from_dict(_save.get("roles", {}))
+	crew.restore(_save.get("crew", []))
+	if farm != null:
+		farm.restore(_save.get("farm", []))
+	if livestock != null:
+		livestock.restore(_save.get("livestock", []))
+	var pl: Dictionary = _save.get("player", {})
+	if pl.has("pos"):
+		var at: Vector3 = pl["pos"]
+		player.teleport(Vector3(at.x, world.ground_m(at.x, at.z) + 0.4, at.z),
+			float(pl.get("yaw", PI)))
+	print("[delegate] restored %d people (%d hired), %d roles, %d tiles, %d animals" % [
+		crew.workers.size(), crew.hired().size(), crew.roles.custom().size(),
+		farm.tile_count() if farm != null else 0,
+		livestock.total() if livestock != null else 0])
+	_save = {}
+
+
+## When the town is written down: each morning, every couple of minutes, when
+## asked, and on the way out.
+func _arm_saving() -> void:
+	if not SaveGame.enabled:
+		return
+	clock.day_passed.connect(func(_d: int) -> void: _save_now("morning"))
+	var t := Timer.new()
+	t.wait_time = AUTOSAVE_SECONDS
+	t.autostart = true
+	t.timeout.connect(func() -> void: _save_now("autosave"))
+	add_child(t)
+	dispatch.save_requested.connect(func() -> void: _save_now("asked"))
+	dispatch.restart_requested.connect(func() -> void:
+		SaveGame.erase()
+		SaveGame.enabled = false            # do not write the old town on the way out
+		get_tree().reload_current_scene())
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and SaveGame.enabled:
+		_save_now("quit")
 
 
 ## Stands the founding buildings on the plots nearest the well.

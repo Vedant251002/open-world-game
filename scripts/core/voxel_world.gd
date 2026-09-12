@@ -57,6 +57,8 @@ var _completed := 0
 ## Chunks the player's workers have changed. Kept when a column unloads so a
 ## building does not evaporate the moment you walk away from it.
 var _stash: Dictionary = {}                ## Vector3i -> PackedByteArray
+## Serialised loaded chunks, for saving; dropped the moment a chunk changes.
+var _blob_cache: Dictionary = {}
 ## Chunks a mesh job has actually completed for, empty result included. Needed
 ## to tell "produced no faces" from "was never looked at" — only the second is
 ## a hole.
@@ -182,6 +184,7 @@ func set_voxel(v: Vector3i, id: int) -> void:
 		return
 	c.set_voxel(lx, ly, lz, id)
 	c.modified = true
+	_blob_cache.erase(cpos)
 	_dirty[cpos] = true
 	_mark_seam_neighbours(cpos, lx, ly, lz)
 	_update_height(v, id)
@@ -371,6 +374,58 @@ func mark_column_dirty(cx: int, cz: int) -> void:
 
 func loaded_columns() -> int:
 	return _htiles.size()
+
+
+# ------------------------------------------------------------------ saving
+
+## Every chunk the game has changed, as the byte blobs the stash already
+## keeps: the ones parked out of sight, and the ones currently loaded that
+## carry a change. This IS the save of the world — everything else about it
+## comes back from the seed.
+func export_edits() -> Dictionary:
+	var out := {}
+	for cpos: Vector3i in _stash:
+		out[cpos] = _stash[cpos]
+	for cpos2: Vector3i in chunks:
+		var c: VoxelChunk = chunks[cpos2]
+		if c == null or not c.modified:
+			continue
+		# Serialising a chunk is the cost of a save, and most chunks have not
+		# changed since the last one. A blob is kept until the chunk is next
+		# written to.
+		var blob: PackedByteArray = _blob_cache.get(cpos2, PackedByteArray())
+		if blob.is_empty():
+			blob = c.serialize()
+			_blob_cache[cpos2] = blob
+		out[cpos2] = blob
+	return out
+
+
+## Puts saved edits back. Best called before any column is generated, so they
+## are simply picked up as columns install; a chunk that is already loaded is
+## overwritten in place and re-meshed, so it works after as well.
+func import_edits(edits: Dictionary) -> void:
+	var touched_columns := {}
+	for key: Variant in edits:
+		var cpos: Vector3i = key
+		var blob: PackedByteArray = edits[key]
+		if blob.is_empty():
+			continue
+		_stash[cpos] = blob
+		var c: VoxelChunk = chunks.get(cpos)
+		if c == null:
+			if has_column(cpos.x, cpos.z):
+				c = VoxelChunk.new(cpos)
+				chunks[cpos] = c
+			else:
+				continue
+		c.deserialize(blob)
+		c.modified = true
+		_dirty[cpos] = true
+		touched_columns[Vector2i(cpos.x, cpos.z)] = true
+	for col: Vector2i in touched_columns:
+		_rebuild_column_heights(col.x, col.y)
+		mark_column_dirty(col.x, col.y)
 
 
 # ------------------------------------------------------------------- meshing

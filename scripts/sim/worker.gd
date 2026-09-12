@@ -71,6 +71,13 @@ var job_field: FieldWork = null
 ## Digging a material out of the world. Only one of the three job kinds is
 ## ever set at a time.
 var job_quarry: Quarry = null
+## Making shot, powder or a gun at the armoury. Same shape as a quarry job:
+## hours on the clock, then a result in the stores.
+var job_craft: CraftJob = null
+## Getting shot. A worker can be hurt and knocked down; they cannot be
+## killed, because the three of them are the game.
+var health := 100.0
+var _down := 0.0
 ## Driving animals back and turning them out. The one job with no work in it —
 ## the whole of it is the walk — so it has no progress object, only a target.
 var job_stock: Dictionary = {}
@@ -90,6 +97,10 @@ var job_assumptions: Array = []
 ## and they will take a job if you offer them one.
 var role: Role = null
 var hired := true
+## What this person does each morning without being told. Their own, if you
+## have set one ("every morning, bring in the harvest"); otherwise the role's.
+## Empty means nothing — most people wait to be asked.
+var standing := ""
 ## How far an idle person drifts from home. Seven metres keeps the crew at
 ## your elbow; a citizen roams the whole town.
 var wander_m := 7.0
@@ -308,6 +319,15 @@ func _style_body() -> void:
 
 func display_name() -> String:
 	return memory.display_name
+
+
+## The morning's job, if any: the one set on this person, else the role's.
+func standing_task() -> String:
+	if standing != "":
+		return standing
+	if role != null:
+		return role.standing
+	return ""
 
 
 ## Whether this worker's hands are spoken for.
@@ -750,6 +770,11 @@ func _tick_state(delta: float) -> void:
 				if job_quarry.finished:
 					_finish_quarry()
 				return
+			if job_craft != null:
+				job_craft.advance(game_hours)
+				if job_craft.finished:
+					_finish_craft()
+				return
 			if job_field != null:
 				job_field.advance(game_hours)
 				if job_field.finished:
@@ -1179,6 +1204,8 @@ func _work_the_site(hours: float) -> void:
 func _pick_gesture() -> String:
 	if job_quarry != null:
 		return _one_of(["hammer", "hammer", "lift", "lay"])
+	if job_craft != null:
+		return _one_of(["hammer", "measure", "lift"])
 	if job_field != null:
 		return _one_of(["lay", "lay", "lift", "survey"])
 	var done := progress()
@@ -1235,6 +1262,8 @@ func _work_centre() -> Vector3:
 			(fp.position.y + fp.size.y * 0.5) * v)
 	if job_quarry != null:
 		return Vector3(job_quarry.site) * v
+	if job_craft != null:
+		return global_position + Vector3(sin(rotation.y), 0.0, cos(rotation.y)) * 1.5
 	if job_field != null and job_field.rect.size.x > 0:
 		var fr := job_field.rect
 		return Vector3((fr.position.x + fr.size.x * 0.5) * v, global_position.y,
@@ -1521,6 +1550,60 @@ func take_quarry_job(q: Quarry, line: String) -> bool:
 	return true
 
 
+## Goes to the armoury and makes the batch. `stand` is the spot in front of
+## its door; the manager worked it out because it knows which building that is.
+func take_craft_job(job: CraftJob, stand: Vector3, line: String) -> bool:
+	job_craft = job
+	job_started_hour = clock.day * 24.0 + clock.hour
+	job_eta_hours = job.total_hours
+	job_where = "the armoury"
+	if not walk_to(stand, "build"):
+		job_craft = null
+		return false
+	if line != "":
+		_say(line, "plan")
+	return true
+
+
+func _finish_craft() -> void:
+	var job := job_craft
+	job_craft = null
+	memory.remember(clock.day, "Made %s at the armoury." % job.summary(), 0.1, {
+		"kind": "done", "order": current_order, "errand": job.summary(),
+	})
+	var back := home
+	back.y = world.ground_m(back.x, back.z)
+	if not walk_to(back, "report"):
+		state = State.REPORTING
+	_say("%s, in the stores." % job.summary().capitalize(), "done")
+	step_done.emit(self)
+
+
+## Shot, or a blast. Knocks them down at nothing; never kills. They lie where
+## they fell for a while, then get up with the job still theirs.
+func take_hit(dmg: float, _from: Vector3, _who: Node3D) -> void:
+	if _down > 0.0:
+		return
+	health -= dmg
+	if health > 0.0:
+		if randf() < 0.5:
+			_say(_one_of(["Argh!", "They are shooting at us!", "Get down!"]), "refuse")
+		return
+	health = 0.0
+	_down = 25.0
+	_say("I am hit —", "refuse")
+	set_physics_process(false)
+	rotation.x = -PI * 0.5
+	get_tree().create_timer(_down).timeout.connect(func() -> void:
+		if not is_instance_valid(self):
+			return
+		_down = 0.0
+		health = 100.0
+		rotation.x = 0.0
+		set_physics_process(true)
+		_say("On my feet. Where was I.", "talk"))
+
+
 func _finish_quarry() -> void:
 	var q := job_quarry
 	job_quarry = null
@@ -1561,6 +1644,7 @@ func _finish_field() -> void:
 func _clear_job() -> void:
 	_holding = false
 	job_quarry = null
+	job_craft = null
 	job_plot = null
 	job_spec = {}
 	job_patch = null
@@ -1588,6 +1672,8 @@ func progress() -> float:
 		return clampf(1.0 - float(job_errand["left"]) / h, 0.0, 1.0)
 	if job_quarry != null:
 		return job_quarry.progress()
+	if job_craft != null:
+		return job_craft.progress()
 	if job_field != null:
 		return job_field.progress()
 	if job_construction == null:
@@ -1621,6 +1707,8 @@ func status_text() -> String:
 		State.WALKING:
 			if job_quarry != null:
 				return "off to fetch %s" % job_quarry.material.replace("_", " ")
+			if job_craft != null:
+				return "off to the armoury" 
 			if not job_stock.is_empty():
 				return "off for the %s" % str(job_stock["species"])
 			if not job_errand.is_empty():
@@ -1637,6 +1725,8 @@ func status_text() -> String:
 					_: return "working %s — %d%%" % [job_where, int(progress() * 100.0)]
 			if job_quarry != null:
 				return "digging — %d%%" % int(progress() * 100.0)
+			if job_craft != null:
+				return "making %s — %d%%" % [job_craft.summary(), int(progress() * 100.0)]
 			if job_field != null:
 				return "ploughing — %d%%" % int(progress() * 100.0)
 			# A pen has a patch but no plot, which is the only place that

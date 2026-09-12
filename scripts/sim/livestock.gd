@@ -67,6 +67,34 @@ func stock_area(species: String, centre: Vector3, count: int, spread: float) -> 
 	return made
 
 
+## The flock, for a save: what and where. Produce lying about is not kept —
+## an egg on the ground overnight is not an egg anybody wants.
+func snapshot() -> Array:
+	var out: Array = []
+	for a: Animal in animals:
+		if is_instance_valid(a):
+			out.append({"kind": a.kind, "pos": a.global_position, "home": a.home,
+				"roam": a.roam})
+	return out
+
+
+func restore(saved: Array) -> void:
+	for a: Animal in animals:
+		if is_instance_valid(a):
+			a.queue_free()
+	animals.clear()
+	for e: Dictionary in saved:
+		var an := Animal.new()
+		an.name = "%s_%d" % [str(e["kind"]), animals.size()]
+		add_child(an)
+		an.setup(str(e["kind"]), world, clock, e["pos"])
+		an.avoid = player
+		an.home = e.get("home", e["pos"])
+		an.roam = float(e.get("roam", 9.0))
+		an.produced.connect(_on_produced)
+		animals.append(an)
+
+
 func _on_produced(kind: String, at: Vector3) -> void:
 	# One drop per animal at a time is plenty; a field carpeted in eggs is a
 	# performance problem wearing a joke.

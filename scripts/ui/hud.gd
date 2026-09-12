@@ -29,6 +29,9 @@ var _target: Worker = null
 var _crop: Node3D = null
 var _purse: Label
 var _keys: Label
+## What the player is holding, bottom right. Empty when unarmed.
+var _arms: Label
+var warfare: Node = null
 ## What the purse and the roster were last painted, so a colour is only ever
 ## reassigned when it has really changed.
 var _in_debt := false
@@ -138,6 +141,15 @@ func _build() -> void:
 	_toast.offset_top = -166
 	_toast.offset_bottom = -142
 	_root.add_child(_toast)
+
+	_arms = _label("", 30 if _touch else 18, INK)
+	_arms.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_arms.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_arms.offset_left = -640
+	_arms.offset_right = -24
+	_arms.offset_top = -60
+	_arms.offset_bottom = -28
+	_root.add_child(_arms)
 
 	_build_bar()
 	_build_assumptions()
@@ -366,6 +378,11 @@ func _on_looked_at(node: Node) -> void:
 func _process(delta: float) -> void:
 	if clock != null:
 		_clockline.text = clock.clock_text()
+	if warfare != null and warfare.has_method("player_status"):
+		_arms.text = str(warfare.player_status())
+		var hp := float(warfare.get("player_health"))
+		if hp < 100.0:
+			_arms.text = ("health %d     " % int(hp)) + _arms.text
 	if town != null:
 		_purse.text = "%s coins" % town.coin_line()
 		# Only when it actually changes. Setting a theme override marks the

@@ -192,6 +192,36 @@ func advance_days(days: float) -> void:
 				VoxelWorld.centre_metres(Vector3i(key.x, int(t["y"]) + 1, key.y)))
 
 
+## Every tile, for a save. The soil voxel is in the world's stash; this is the
+## crop standing on it and how far along it is.
+func snapshot() -> Array:
+	var out: Array = []
+	for key: Vector2i in tiles:
+		var t: Dictionary = tiles[key]
+		out.append({"key": key, "kind": str(t["kind"]), "stage": int(t["stage"]),
+			"growth": float(t["growth"]), "wet": bool(t["wet"]), "y": int(t["y"]),
+			"watered": float(t.get("watered", 0.0))})
+	return out
+
+
+func restore(saved: Array) -> void:
+	for t: Dictionary in tiles.values():
+		var n: Node = t.get("node", null)
+		if n != null and is_instance_valid(n):
+			n.queue_free()
+	tiles.clear()
+	_wet_cache.clear()
+	for e: Dictionary in saved:
+		var key: Vector2i = e["key"]
+		var t := {"kind": str(e["kind"]), "stage": int(e["stage"]),
+			"growth": float(e["growth"]), "wet": bool(e["wet"]), "node": null,
+			"y": int(e["y"]), "watered": float(e.get("watered", 0.0))}
+		tiles[key] = t
+		if str(t["kind"]) != "" and int(t["stage"]) >= 0:
+			_show_stage(key, t)
+			tiles[key] = t
+
+
 ## Watering a field by hand: every tile in the rectangle grows at the wet rate
 ## for `days`. Returns how many tiles were watered — none, if there is no
 ## field there, which the worker says rather than pretending.

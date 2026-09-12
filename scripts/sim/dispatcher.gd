@@ -33,6 +33,10 @@ signal status(text: String)
 ## the worker says it out loud. Both, because this is the one refusal the player
 ## can actually do something about.
 signal short_of(worker: Worker, missing: Dictionary)
+## The player said "save" or "start over" to somebody. The text field is the
+## only control in the game (pillar P1), so these are sentences too.
+signal save_requested()
+signal restart_requested()
 
 var world: VoxelWorld
 var village: Village
@@ -46,6 +50,7 @@ var map: MapScreen
 var farm: Farm
 var livestock: Livestock
 var wildlife: Wildlife
+var warfare: Warfare
 var player: Node3D
 ## Assigned from outside, which is why it is a setter rather than a plain field:
 ## a multi-step order advances when a worker finishes a step, and there is no
@@ -139,6 +144,12 @@ func instruct(worker: Worker, instruction: String) -> void:
 		_answer(worker, instruction)
 		return
 
+	# "Save" and "start over" are said to whoever is nearest. They are about
+	# the game rather than the town, and they come first so that they work
+	# whoever is asked, busy or not.
+	if _try_game(worker, instruction):
+		return
+
 	# Taking somebody on, letting them go, or writing a job up. These are about
 	# who works for you rather than what gets built, so they go before every
 	# other guard: you can hire somebody who is standing about, and you can
@@ -182,6 +193,8 @@ func instruct(worker: Worker, instruction: String) -> void:
 	# than refused. Both are steps now, and a plan can hold them together.
 	if _try_gather(worker, instruction):
 		return
+	if _try_war(worker, instruction):
+		return
 
 	var plot := _choose_plot(worker)
 	if plot == null:
@@ -215,7 +228,7 @@ func _answer(worker: Worker, question: String) -> void:
 		worker.speak(about, "talk")
 		return
 	var line := Answers.reply(question, worker, town, village, clock, player,
-		farm, livestock, wildlife)
+		farm, livestock, wildlife, warfare)
 	worker.memory.remember(clock.day, "You asked me: \"%s\"" % question, 0.0, {
 		"kind": "told", "question": question,
 	})
@@ -261,6 +274,137 @@ func _on_answered(worker_id: String, text: String) -> void:
 	if worker == null:
 		return
 	worker.speak(text, "talk")
+
+
+# ------------------------------------------------------------------ fighting
+
+const CRAFT_WORDS := ["make", "craft", "forge", "produce", "manufacture", "prepare",
+	"load", "cast", "mould", "build", "assemble"]
+const RECRUIT_WORDS := ["recruit", "enlist", "train", "raise", "hire", "muster", "conscript"]
+const SOLDIER_WORDS := ["soldier", "soldiers", "men", "army", "militia", "guards",
+	"troops", "company", "fighters"]
+const ARM_WORDS := ["arm", "equip", "issue", "hand out", "give the men", "give them", "give everyone"]
+const ATTACK_WORDS := ["attack", "charge", "fight", "engage", "kill", "drive off", "go after"]
+const DEFEND_WORDS := ["defend", "guard", "protect", "hold", "watch"]
+const RAID_WORDS := ["test the defences", "test the defenses", "sound the alarm",
+	"drill", "call a raid", "simulate a raid"]
+const TAKE_WORDS := ["give me", "hand me", "i want", "i will take", "i'll take",
+	"pass me", "let me have"]
+
+
+## Orders about the army, the armoury and the enemy. Keyword routes, like the
+## errands: none of these needs a model to understand and all of them need to
+## happen the moment they are said.
+func _try_war(worker: Worker, instruction: String) -> bool:
+	if warfare == null:
+		return false
+	var text := instruction.to_lower().strip_edges()
+	var item := Arsenal.find_in(text)
+
+	# "test the defences" — a raid, now.
+	if _has_phrase(text, RAID_WORDS):
+		warfare.raid(3 + warfare.soldiers.size() / 2)
+		worker.speak("Here they come. To your posts!", "refuse")
+		return true
+
+	# "give me a rifle" — the player takes one.
+	if _has_phrase(text, TAKE_WORDS) and item != "" and Arsenal.is_weapon(item):
+		var r := warfare.arm_player(item)
+		worker.speak(str(r["line"]), "talk" if r["ok"] else "refuse")
+		return true
+
+	# "recruit five soldiers"
+	if _has_word(text, RECRUIT_WORDS) and _has_word(text, SOLDIER_WORDS):
+		var n := _count_in(text, 3)
+		var r2 := warfare.recruit(n)
+		worker.speak(str(r2["line"]), "done" if r2["ok"] else "refuse")
+		return true
+
+	# "arm the men with rifles"
+	if _has_phrase(text, ARM_WORDS) and item != "" and Arsenal.is_weapon(item):
+		var r3 := warfare.arm_soldiers(item)
+		worker.speak(str(r3["line"]), "done" if r3["ok"] else "refuse")
+		return true
+
+	# "attack the raiders"
+	if _has_word(text, ATTACK_WORDS) and (_has_word(text, ["raiders", "raider", "them",
+			"enemy", "bandits", "attackers", "invaders"]) or warfare.raiders.size() > 0):
+		var r4 := warfare.attack()
+		worker.speak(str(r4["line"]), "done" if r4["ok"] else "refuse")
+		return true
+
+	# "defend the well" / "guard the armoury" / "hold here"
+	if _has_word(text, DEFEND_WORDS) and _has_word(text, ["well", "plaza", "square",
+			"here", "armoury", "armory", "barracks", "town", "gate", "bakery", "store",
+			"tavern", "me"]):
+		var at := _defend_point(text, worker)
+		var r5 := warfare.defend(at)
+		worker.speak(str(r5["line"]), "done" if r5["ok"] else "refuse")
+		return true
+
+	# "make 40 shot" / "forge some rifles" / "load grenades"
+	if item != "" and _has_word(text, CRAFT_WORDS) and not _has_word(text, ["armoury", "armory", "barracks"]):
+		return _craft(worker, item, _count_in(text, int(Arsenal.item(item)["batch"])))
+
+	return false
+
+
+func _craft(worker: Worker, item: String, count: int) -> bool:
+	var stand := warfare.armoury_stand()
+	if stand == Vector3.INF:
+		worker.speak("We have no armoury. Say \"build an armoury\" and I will put one up first.", "refuse")
+		return true
+	var batches := Arsenal.batches_for(item, count)
+	var short := warfare.short_for(item, batches)
+	if not short.is_empty():
+		worker.speak("For %d %s I am short %s." % [
+			batches * int(Arsenal.item(item)["batch"]), Arsenal.label(item),
+			Resources.describe(short)], "refuse")
+		return true
+	if worker.busy():
+		worker.speak("I am in the middle of something.", "refuse")
+		return true
+	var job := warfare.start_craft(item, count)
+	var line := "%d %s — about %d hours at the armoury." % [
+		job.made(), Arsenal.label(item), int(ceil(job.total_hours))]
+	if not worker.take_craft_job(job, stand, line):
+		# Give the materials back; the job never started.
+		town.refund(Arsenal.bill(item, batches))
+		worker.speak("I cannot get to the armoury from here.", "refuse")
+	return true
+
+
+func _defend_point(text: String, worker: Worker) -> Vector3:
+	if _has_word(text, ["here", "me"]) and player != null:
+		return player.global_position
+	for key: String in ["armoury", "barracks", "bakery", "store", "tavern"]:
+		if text.find(key) >= 0:
+			for rec: Dictionary in town.buildings:
+				if str(rec["archetype"]) == key:
+					return warfare.stand_at(rec)
+	return village.well_pos
+
+
+func _has_phrase(text: String, phrases: Array) -> bool:
+	for p: String in phrases:
+		if text.find(p) >= 0:
+			return true
+	return false
+
+
+## The first number in the sentence, or the default. "a dozen" is twelve.
+func _count_in(text: String, fallback: int) -> int:
+	if text.find("dozen") >= 0:
+		return 12
+	var words := {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+		"seven": 7, "eight": 8, "nine": 9, "ten": 10, "twenty": 20, "thirty": 30,
+		"fifty": 50, "hundred": 100}
+	for w: String in text.split(" ", false):
+		if w.is_valid_int():
+			return clampi(int(w), 1, 500)
+		if words.has(w):
+			return int(words[w])
+	return fallback
 
 
 ## The nearest free plot to the worker. The design has the player pointing at a
@@ -1566,6 +1710,25 @@ func _compile_role_patterns() -> void:
 	_re_be_my.compile(BE_MY_RE)
 	_re_define.compile(DEFINE_RE)
 	_re_fire.compile(FIRE_RE)
+
+
+const SAVE_WORDS := ["save", "save the game", "save the town", "write it down",
+	"save game", "save everything"]
+const RESTART_WORDS := ["start over", "start again", "new game", "new town",
+	"wipe the save", "reset the game", "reset everything"]
+
+
+func _try_game(worker: Worker, instruction: String) -> bool:
+	var t := instruction.strip_edges().to_lower().rstrip(".!")
+	if t in SAVE_WORDS:
+		spoke.emit(worker, "Written down.", "talk")
+		save_requested.emit()
+		return true
+	if t in RESTART_WORDS:
+		spoke.emit(worker, "Starting again, then.", "talk")
+		restart_requested.emit()
+		return true
+	return false
 
 
 ## Returns true if the instruction was about hiring or roles, whatever it

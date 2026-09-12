@@ -147,7 +147,11 @@ func refund(amount: Dictionary) -> void:
 func price_of(amount: Dictionary) -> int:
 	var total := 0
 	for mat_name: String in amount:
-		total += int(amount[mat_name]) * int(PRICE.get(mat_name, DEFAULT_PRICE))
+		var each := int(PRICE.get(mat_name, DEFAULT_PRICE))
+		# Guns and powder are priced where they are defined.
+		if Arsenal.is_item(mat_name):
+			each = int(Arsenal.item(mat_name).get("price", DEFAULT_PRICE))
+		total += int(amount[mat_name]) * each
 	return total
 
 
@@ -392,3 +396,47 @@ func to_dict() -> Dictionary:
 		})
 	return {"tier": tier, "stock": stock, "coins": coins, "buildings": recs,
 		"next_id": _next_id}
+
+
+## The whole register, for a save: every record with enough of its patch to
+## stand it up again. The voxels themselves are the world's to keep.
+func snapshot() -> Dictionary:
+	var recs: Array = []
+	for b: Dictionary in buildings:
+		recs.append({
+			"id": b["id"], "archetype": b["archetype"], "plot_id": b["plot_id"],
+			"street": b["street"], "builder": b["builder"], "day": b["day"],
+			"materials": (b["materials"] as Dictionary).duplicate(),
+			"patch": SaveGame.patch_to_dict(b["patch"]),
+		})
+	return {"tier": tier, "stock": stock.duplicate(), "coins": coins,
+		"buildings": recs, "next_id": _next_id}
+
+
+## The register put back from a snapshot. Plots are marked as the records
+## say; the caller respawns the furniture, because it does not live here.
+func restore(d: Dictionary, village: Village) -> void:
+	tier = int(d.get("tier", 1))
+	stock = (d.get("stock", {}) as Dictionary).duplicate()
+	coins = int(d.get("coins", STARTING_COINS))
+	_next_id = int(d.get("next_id", 1))
+	buildings.clear()
+	occupied_rects.clear()
+	built_fronts.clear()
+	for r: Dictionary in d.get("buildings", []):
+		var patch := SaveGame.patch_from_dict(r["patch"])
+		var rec := {
+			"id": int(r["id"]), "archetype": str(r["archetype"]),
+			"plot_id": int(r["plot_id"]), "street": str(r["street"]),
+			"builder": str(r["builder"]), "day": int(r["day"]),
+			"patch": patch, "front": patch.front,
+			"materials": (r.get("materials", {}) as Dictionary).duplicate(),
+		}
+		buildings.append(rec)
+		occupied_rects.append(patch.footprint)
+		for p: Plot in village.plots:
+			if p.id == int(r["plot_id"]):
+				built_fronts[p.id] = patch.front
+				p.occupied_by = int(r["id"])
+				p.reserved = false
+		building_added.emit(rec)

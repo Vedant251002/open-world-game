@@ -72,6 +72,13 @@ func _lay(n: int) -> void:
 		_spawn_props()
 
 
+## The furniture, for a building put back from a save: the voxels came back
+## with the world, the props did not.
+func respawn_props() -> void:
+	props_spawned = false
+	_spawn_props()
+
+
 func _spawn_props() -> void:
 	if props_spawned or prop_parent == null:
 		return

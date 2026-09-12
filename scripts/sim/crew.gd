@@ -253,6 +253,45 @@ func dismiss(w: Worker) -> void:
 	roster_changed.emit()
 
 
+## Everybody, for a save: who they are, what they remember, whether they work
+## for you and as what, and where they were standing.
+func snapshot() -> Array:
+	var out: Array = []
+	for w: Worker in workers:
+		if not is_instance_valid(w):
+			continue
+		out.append({
+			"id": w.memory.worker_id, "name": w.memory.display_name,
+			"hired": w.hired, "role": w.role.id if w.role != null else "citizen",
+			"pos": w.global_position, "home": w.home,
+			"memory": w.memory.to_dict(), "standing": w.standing,
+		})
+	return out
+
+
+## Put back by id. The three and the citizens are raised from the seed first,
+## exactly as they always are, and then told who they had become — so a save
+## from the same seed has the same people, and each one gets their own memory
+## and job back.
+func restore(saved: Array) -> void:
+	for e: Dictionary in saved:
+		var w: Worker = by_id.get(str(e["id"]))
+		if w == null:
+			continue
+		w.memory.from_dict(e.get("memory", {}))
+		w.standing = str(e.get("standing", ""))
+		var role_id := str(e.get("role", "citizen"))
+		if bool(e.get("hired", false)):
+			if not w.hired or (w.role != null and w.role.id != role_id):
+				hire(w, roles.get_role(role_id))
+		elif w.hired and w.memory.worker_id not in ["mira", "tobias", "ren"]:
+			dismiss(w)
+		var at: Vector3 = e.get("pos", w.global_position)
+		w.global_position = Vector3(at.x, _world.ground_m(at.x, at.z) + 0.3, at.z)
+		w.home = e.get("home", w.home)
+	roster_changed.emit()
+
+
 ## Far citizens stop thinking. Same rule as the animals, for the same reason:
 ## a dozen character bodies on the far side of the valley are a dozen bodies
 ## nobody can see, and the frame budget is not free. The crew are never

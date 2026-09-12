@@ -87,7 +87,7 @@ static func is_question(text: String) -> bool:
 ## with "" — ask the model, or say so.
 static func reply(text: String, worker: Worker, town: Town, village: Village,
 		clock: GameClock, player: Node3D, farm: Farm, livestock: Livestock,
-		wildlife: Wildlife = null) -> String:
+		wildlife: Wildlife = null, warfare: Node = null) -> String:
 	var t := _clean(text)
 	var mem := worker.memory
 	var here: Vector3 = player.global_position if player != null \
@@ -137,6 +137,27 @@ static func reply(text: String, worker: Worker, town: Town, village: Village,
 
 	if _any(t, ["what tier", "which tier", "how advanced"]):
 		return _tier(town)
+
+	# --- the army and the armoury ---
+	if warfare != null:
+		if _any(t, ["soldier", "army", "militia", "troops", "the men", "garrison"]) \
+				and _any(t, ["how many", "how big", "do we have", "have we", "is there",
+				"are there", "what", "where"]):
+			return str(warfare.army_line())
+		if _any(t, ["raider", "bandit", "enemy", "attack", "raid"]) \
+				and _any(t, ["any", "how many", "are there", "is there", "when", "coming"]):
+			var n: int = warfare.raiders.size()
+			if n == 0:
+				return "None about. They come at first light when there is something worth taking."
+			return "%d raiders about the place right now." % n
+		var arm := Arsenal.find_in(t)
+		if arm != "" and _any(t, ["how many", "how much", "do we have", "have we",
+				"is there", "are there", "any", "left", "enough"]):
+			var n2: int = town.units_of(arm)
+			if n2 <= 0:
+				return "No %s. The armoury makes them — say \"make some %s\"." % [
+					Arsenal.label(arm), Arsenal.label(arm)]
+			return "%d %s in the stores." % [n2, Arsenal.label(arm)]
 
 	# --- money and the larder ---
 	if _has_word(t, MONEY_WORDS) and _any(t, ["how much", "how many", "what", "do we have", "have we"]):

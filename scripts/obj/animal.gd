@@ -94,6 +94,24 @@ func is_wild() -> bool:
 	return bool(_spec.get("wild", false))
 
 
+## Shot, or caught in a blast. Animals die: they fall where they stood and
+## are gone a few seconds later.
+var _dying := 0.0
+
+
+func take_hit(dmg: float, _from: Vector3, _who: Node3D) -> void:
+	if _dying > 0.0:
+		return
+	_dying = 5.0
+	velocity = Vector3.ZERO
+	collision_mask = 0
+	set_physics_process(false)
+	rotation.z = PI * 0.5
+	get_tree().create_timer(_dying).timeout.connect(func() -> void:
+		if is_instance_valid(self):
+			queue_free())
+
+
 # ------------------------------------------------------------------ movement
 
 func _physics_process(delta: float) -> void:

@@ -38,7 +38,8 @@ const TIER_MODULES := {
 ## worker dialogue — it never selects a prebuilt model.
 const ARCHETYPES := {
 	1: ["hut", "cottage", "workshop", "bakery", "store", "stable", "barn",
-		"tavern", "well_house", "shrine", "guard_post", "smokehouse"],
+		"tavern", "well_house", "shrine", "guard_post", "smokehouse",
+		"armoury", "barracks", "watchtower"],
 	2: ["mill", "forge", "brickworks", "warehouse", "foundry", "inn",
 		"pottery", "tannery", "station", "granary", "pump_house",
 		"apartment"],

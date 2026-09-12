@@ -36,6 +36,11 @@ var submerged := false
 var yaw := 0.0
 var pitch := 0.0
 var input_enabled := true
+## The fighting, when there is any. Set by Main; null in the tests that never
+## raise a crew.
+var warfare: Node = null
+var _kick := Vector3.ZERO
+var _kick_t := 0.0
 
 var _bob := 0.0
 var _touch_move := Vector2.ZERO   ## left stick, -1..1 per axis
@@ -139,7 +144,26 @@ func set_low_spec(on: bool) -> void:
 	camera.far = 900.0   ## the far terrain ends here anyway
 
 
+## A shove to the camera: recoil, or a blast nearby. Decays over a third of
+## a second. Small, because a screen that leaps about is a screen you cannot
+## aim from, and aiming is the whole point of the recoil being there.
+func kick(amount: float) -> void:
+	_kick_t = 0.3
+	_kick = Vector3(randf_range(-1, 1), randf_range(0.6, 1.0), 0.0) * amount * 0.06
+
+
+func take_hit(dmg: float, _from: Vector3, _who: Node3D) -> void:
+	if warfare != null and warfare.has_method("hurt_player"):
+		warfare.hurt_player(dmg)
+
+
 func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("fire") and input_enabled and warfare != null:
+		warfare.player_fire()
+		return
+	if event.is_action_pressed("swap_weapon") and input_enabled and warfare != null:
+		warfare.player_swap()
+		return
 	if not input_enabled:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -213,6 +237,14 @@ func _physics_process(delta: float) -> void:
 		_bob = 0.0
 		_head.position.y = lerpf(_head.position.y, EYE_HEIGHT, delta * 8.0)
 		_head.rotation.z = lerpf(_head.rotation.z, 0.0, delta * 8.0)
+	# Recoil and blast, on top of whatever the bob decided.
+	if _kick_t > 0.0:
+		_kick_t -= delta
+		var k := _kick_t / 0.3
+		_head.position.x = _kick.x * k * k
+		_head.position.y += _kick.y * k * k
+	else:
+		_head.position.x = 0.0
 
 	_scan_target()
 

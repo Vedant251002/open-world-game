@@ -74,6 +74,18 @@ through `proxy/worker.js`, which holds the key on Cloudflare. It speaks to
 either gateway — `wrangler secret put GROQ_API_KEY` is all that is needed to
 move it across.
 
+## Saving
+
+The town saves itself: every morning, every two minutes, when you close the
+window, and whenever you say **save** to anyone. It comes back the next time
+you start — buildings, pens, roads, everyone's job and everything they
+remember about you, the fields, the animals, the clock, where you stood.
+Say **start over** to anyone to wipe it and begin again.
+
+One slot, at `user://save/town.save`. The world itself is not in it; only
+what was changed on top of the seed, which is why a save is a few hundred
+kilobytes and a load is instant.
+
 ## Debug flags
 
 Pass these after `--`, e.g. `godot4 --path . -- --seed=7 --nofar`:
@@ -82,6 +94,10 @@ Pass these after `--`, e.g. `godot4 --path . -- --seed=7 --nofar`:
 | -------------- | --------------------------------------------------- |
 | `--seed=N`     | fix the world seed                                   |
 | `--provider=X` | force `groq` or `opencode` for one run               |
+| `--fresh`      | ignore the save and start a new town                 |
+| `--nosave`     | never write the save                                 |
+| `--savetest`   | save, reload the scene, check it all came back       |
+| `--roletest`   | hire, define jobs, run the trades, check refusals    |
 | `--nofar`      | skip the far-terrain horizon mesh                    |
 | `--nostream`   | freeze chunk streaming                               |
 | `--buildtest`  | drop the acceptance buildings onto real plots        |
