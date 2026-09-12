@@ -40,6 +40,7 @@ var _works: Array[String] = []          ## archetypes of finished patches
 var _buildings_before := 0
 var _foreman: Worker = null
 var _morning_toasts := 0
+var _mira_morning := false
 var _clerk: Worker = null
 var _trader: Worker = null
 
@@ -56,6 +57,8 @@ func begin() -> void:
 	dispatch.status.connect(func(t: String) -> void:
 		if t.begins_with("Morning:"):
 			_morning_toasts += 1
+			if t.find("Mira") >= 0:
+				_mira_morning = true
 			print("[role]   toast: %s" % t))
 	crew.worker_spoke.connect(func(w: Worker, line: String, kind: String) -> void:
 		_lines.append(line)
@@ -421,8 +424,11 @@ func _process(delta: float) -> void:
 			_phase = 26
 			_t = 0.0
 		26:
-			if _morning_toasts >= 2 and m2_went():
-				print("[role] Mira set off for the well without being asked (%d morning toasts)" % _morning_toasts)
+			# Mira reports home by the well, so "go to the well" is over the
+			# moment it starts; the toast is the proof the morning gave it to
+			# her, and _accepted staying at zero is the proof it did so quietly.
+			if _mira_morning and _morning_toasts >= 2:
+				print("[role] Mira was given her morning task without being asked (%d morning toasts)" % _morning_toasts)
 				if _accepted > 0:
 					_fails.append("a morning order put up the assumptions panel")
 				if _morning_toasts == 0:
@@ -433,6 +439,36 @@ func _process(delta: float) -> void:
 					% [_accepted_for, crew.get_worker("mira").status_text()])
 				_phase = 27
 		27:
+			# A correction, live: Mira takes it hard, remembers it, and the
+			# order in the same breath is planned knowing it.
+			var m3: Worker = crew.get_worker("mira")
+			if m3.busy():
+				if _t > 30.0:
+					_fails.append("Mira busy before the correction: %s" % m3.status_text())
+					_phase = 28
+				return
+			var morale_before := float(m3.memory.disposition["morale"])
+			_lines.clear()
+			print("[role] telling Mira: no, I wanted a thatch roof")
+			dispatch.instruct(m3, "no, I wanted a thatch roof")
+			var said := _lines[_lines.size() - 1] if not _lines.is_empty() else ""
+			print("[role] Mira's morale %.2f -> %.2f; wants roof_material=%s" % [
+				morale_before, float(m3.memory.disposition["morale"]), m3.memory.wants("roof_material")])
+			if m3.memory.wants("roof_material") != "thatch":
+				_fails.append("Mira did not learn thatch (%s)" % m3.memory.wants("roof_material"))
+			if float(m3.memory.disposition["morale"]) >= morale_before:
+				_fails.append("the correction did not sting Mira, who is sensitive")
+			if said.find("thatch") < 0:
+				_fails.append("Mira did not say what she learned: %s" % said)
+			# And it is on the record, where "what did I tell you" can find it.
+			var noted := false
+			for e: Dictionary in m3.memory.episodic:
+				if str(e.get("summary", "")).find("thatch") >= 0:
+					noted = true
+			if not noted:
+				_fails.append("the lesson is not in Mira's memory")
+			_phase = 28
+		28:
 			_report()
 			get_tree().quit(1 if not _fails.is_empty() else 0)
 

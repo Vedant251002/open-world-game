@@ -1397,9 +1397,19 @@ func take_enclosure_job(patch: VoxelPatch, where: String, assumptions: Array,
 	job_eta_hours = float(patch.build_order.size()) / maxf(job_construction.voxels_per_hour, 1.0)
 
 	_holding = false
-	var c := patch.footprint.get_center()
-	var stand := Vector3(float(c.x) * VoxelChunk.VOXEL_M, 0.0,
-		float(c.y) * VoxelChunk.VOXEL_M)
+	# A demolition stands at the building's own door, a pace out: its centre is
+	# inside the walls, and a walk to a cell the grid cannot reach fails
+	# quietly, which read as a worker ignoring you. Everything else stands in
+	# the middle of what it is making — open ground when they get there, and
+	# for a pen the inside of the fence, which is where the animals go next
+	# and where a gate the nav grid has just learned about is no obstacle.
+	var stand := Vector3.ZERO
+	if patch.archetype == "demolition" and not patch.doors.is_empty():
+		var d := patch.doors[0]
+		stand = Vector3(float(d.x) * VoxelChunk.VOXEL_M, 0.0, float(d.z) * VoxelChunk.VOXEL_M) 			+ Vector3(patch.front) * 1.5
+	else:
+		var c := patch.footprint.get_center()
+		stand = Vector3(float(c.x) * VoxelChunk.VOXEL_M, 0.0, float(c.y) * VoxelChunk.VOXEL_M)
 	stand.y = world.ground_m(stand.x, stand.z)
 	if Vector2(global_position.x - stand.x, global_position.z - stand.z).length() < 2.5:
 		_path = PackedVector3Array()

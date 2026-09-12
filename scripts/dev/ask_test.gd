@@ -42,6 +42,12 @@ func _ask(w: Worker, q: String) -> String:
 	return a
 
 
+func _realm_ask(w: Worker, q: String) -> String:
+	var a := str(dispatch.realm.answer(w, q))
+	print("[ask] %-42s -> %s" % ["\"" + q + "\"", a if a != "" else "(nothing)"])
+	return a
+
+
 func _expect(q: String, a: String, needles: Array) -> void:
 	for n: String in needles:
 		if a.findn(n) < 0:
@@ -126,8 +132,19 @@ func _run() -> void:
 	a = _ask(w, "remind me what I told you")
 	_expect("remind me what I told you", a, ["plant a wheat field", "big bakery"])
 
+	# --- the kingdom's own records, behind the town's ---
+	if dispatch.realm != null:
+		a = _realm_ask(w, "how many people live here?")
+		_expect("how many people live here?", a, ["people" if dispatch.realm.population.count() != 1 else "person"])
+		a = _realm_ask(w, "what happened today?")
+		_expect("what happened today?", a, ["founded"])
+		a = _realm_ask(w, "what happened on day 40?")
+		_expect("what happened on day 40?", a, ["nothing worth telling"])
+
 	# --- and a question nothing here can answer goes to the model ---
-	a = _ask(w, "what do you think of the weather?")
+	a = _ask(w, "what is your favourite colour?")
+	if a == "" and dispatch.realm != null:
+		a = _realm_ask(w, "what is your favourite colour?")
 	if a != "":
 		_fails.append("an unanswerable question should fall through, got: %s" % a)
 

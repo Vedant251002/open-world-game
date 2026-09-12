@@ -125,6 +125,7 @@ func run() -> int:
 	_check_enclosure(ctx)
 	_check_schema()
 	_check_standing_sentences()
+	_check_learning(plot, ctx)
 
 	print("[plan] ---")
 	for f: String in _fails:
@@ -185,6 +186,95 @@ func _check_standing_sentences() -> void:
 			var places: Array = (plan["steps"][0] as Dictionary).get("places", [])
 			if places.size() != 2:
 				_fails.append("the watchman's round has %d places: %s" % [places.size(), str(places)])
+
+
+## The correction loop: a sentence is read as a preference about one field,
+## it is learned, and the next offline plan honours it. This is what makes
+## the crew get better at a player over time without a key.
+func _check_learning(plot: Plot, ctx: Dictionary) -> void:
+	var cases := {
+		"no, I wanted a thatch roof": ["roof_material", "thatch"],
+		"never use brick": ["walls", "not:brick"],
+		"too big": ["size", "smaller"],
+		"I like a flat roof": ["roof", "flat"],
+		"make them all two floors": ["stories", "2"],
+		"the door should face the plaza": ["orientation", "face_plaza"],
+		"I don't want seating": ["module", "not:seating"],
+		"remember, always put in a chimney": ["module", "hearth"],
+		"no, stone walls": ["walls", "cobble"],
+		"it should have been smaller": ["size", "smaller"],
+	}
+	for say: String in cases:
+		var got := Critique.read(say)
+		var want: Array = cases[say]
+		var ok := str(got.get("about", "")) == str(want[0]) and str(got.get("value", "")) == str(want[1])
+		print("[plan] %-40s -> %s = %s   %s" % ['"' + say + '"', str(got.get("about", "-")),
+			str(got.get("value", "-")), "" if ok else "(wanted %s = %s)" % [want[0], want[1]]])
+		if not ok:
+			_fails.append("'%s' was read as %s=%s, expected %s=%s" % [say,
+				str(got.get("about", "-")), str(got.get("value", "-")), want[0], want[1]])
+		if ok and str(got.get("text", "")) == "":
+			_fails.append("'%s' learned nothing sayable" % say)
+	# Not corrections, and must not be mistaken for them.
+	for say2: String in ["build a hut", "bring some hens", "go to the well", "what do we have?",
+			"i want a hut", "remember to build a hut", "i want six hens", "demolish the hut",
+			"every morning, go to the well", "plant 3 trees", "tell mira to go to the well",
+			"hire you as a shepherd", "sell 20 timber", "feed the sheep", "fence a pen and put 4 sheep in it",
+			"bring in whatever is ripe each morning", "work a shift at the store each day",
+			"walk the round from the well to the edge of town all night", "build a small bakery near the well"]:
+		if not Critique.read(say2).is_empty():
+			_fails.append("'%s' was taken as a correction" % say2)
+	# A bare "no" is a question back, not a lesson.
+	var bare := Critique.read("no")
+	if bare.is_empty() or str(bare.get("about", "x")) != "":
+		_fails.append("a bare 'no' should be a correction with no topic")
+
+	# And then the part that matters: what is learned changes the next plan.
+	var mem := WorkerMemory.make("t", "T",
+		{"speed": 0.5, "literalism": 0.5, "initiative": 0.5, "question_threshold": 0.5,
+			"criticism_sensitivity": 0.5},
+		{"trust_in_player": 0.5, "morale": 0.7, "confidence": 0.5},
+		{"carpentry": 1, "masonry": 1, "machining": 0, "piloting": 0})
+	var before: Dictionary = ArchetypeLibrary.fallback("build a hut", mem, plot, int(ctx["tier"]))["spec"]
+	var base_fp: Array = before["footprint"]
+	for say3: String in ["no, I wanted a thatch roof", "always keep them small",
+			"never use timber", "I don't want storage", "make them all two floors"]:
+		var l := Critique.read(say3)
+		mem.learn_about(str(l["about"]), str(l["value"]), str(l["text"]), float(l["weight"]), 0)
+	var after: Dictionary = ArchetypeLibrary.fallback("build a hut", mem, plot, int(ctx["tier"]))["spec"]
+	var mats: Dictionary = after["materials"]
+	var fp: Array = after["footprint"]
+	var kinds: Array[String] = []
+	for m: Dictionary in after["modules"]:
+		kinds.append(str(m["type"]))
+	print("[plan] after five lessons, a hut is: %s walls, %s roof, %d floors, %.0f x %.0f m, rooms %s" % [
+		str(mats["walls"]), str(mats["roof"]), int(after["stories"]), float(fp[0]), float(fp[1]),
+		", ".join(kinds)])
+	if str(mats["roof"]) != "thatch":
+		_fails.append("the roof is %s, not thatch" % str(mats["roof"]))
+	if str(mats["walls"]) == "timber":
+		_fails.append("the walls are still timber after 'never use timber'")
+	if float(fp[0]) >= float(base_fp[0]):
+		_fails.append("the hut did not get smaller (%.0f vs %.0f)" % [float(fp[0]), float(base_fp[0])])
+	if "storage" in kinds:
+		_fails.append("storage is still in after 'I don't want storage'")
+	if int(after["stories"]) != 2:
+		_fails.append("the hut has %d floors, not 2" % int(after["stories"]))
+	# The prompt says so too.
+	var prose := Prompt.context(mem, plot, ctx, GameClock.new(), Town.new())
+	if prose.find("thatch") < 0:
+		_fails.append("the prompt does not mention thatch after learning it")
+	# A newer wish for the same field replaces the older one.
+	var l2 := Critique.read("no, clay tile roofs")
+	mem.learn_about(str(l2["about"]), str(l2["value"]), str(l2["text"]), float(l2["weight"]), 0)
+	if mem.wants("roof_material") != "clay_tile":
+		_fails.append("the newer roof wish did not replace the older one")
+	var n_roof := 0
+	for p2: Dictionary in mem.learned_preferences:
+		if str(p2.get("about", "")) == "roof_material":
+			n_roof += 1
+	if n_roof != 1:
+		_fails.append("%d roof preferences are held at once" % n_roof)
 
 
 ## A step plan through the pre-validator, which is the only gate between the

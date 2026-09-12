@@ -32,6 +32,10 @@ var _keys: Label
 ## What the player is holding, bottom right. Empty when unarmed.
 var _arms: Label
 var warfare: Node = null
+## The kingdom, for the lines under the roster: people, weather, the rest.
+var realm: Node = null
+var _realm_box: VBoxContainer
+var _realm_labels: Array[Label] = []
 ## What the purse and the roster were last painted, so a colour is only ever
 ## reassigned when it has really changed.
 var _in_debt := false
@@ -112,6 +116,12 @@ func _build() -> void:
 	for _i in 3:
 		_crewbox.add_child(_label("", 26 if _touch else 15, DIM))
 		_crew_tint.append(Color.BLACK)
+
+	# Whatever the kingdom wants to say about itself, under the roster.
+	_realm_box = VBoxContainer.new()
+	_realm_box.position = Vector2(22, 250 if _touch else 166)
+	_realm_box.add_theme_constant_override("separation", 2)
+	_root.add_child(_realm_box)
 
 	# Two keys, said once and left there. A screen nobody can find is a screen
 	# that does not exist, and neither the stores nor the map announce
@@ -378,6 +388,16 @@ func _on_looked_at(node: Node) -> void:
 func _process(delta: float) -> void:
 	if clock != null:
 		_clockline.text = clock.clock_text()
+	if realm != null and realm.has_method("hud_lines"):
+		var lines: Array = realm.hud_lines()
+		while _realm_labels.size() < lines.size():
+			var l := _label("", 24 if _touch else 14, DIM)
+			_realm_box.add_child(l)
+			_realm_labels.append(l)
+		for i in _realm_labels.size():
+			var want := str(lines[i]) if i < lines.size() else ""
+			if _realm_labels[i].text != want:
+				_realm_labels[i].text = want
 	if warfare != null and warfare.has_method("player_status"):
 		_arms.text = str(warfare.player_status())
 		var hp := float(warfare.get("player_health"))

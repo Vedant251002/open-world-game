@@ -51,6 +51,7 @@ var farm: Farm
 var livestock: Livestock
 var wildlife: Wildlife
 var warfare: Warfare
+var realm: Realm
 var player: Node3D
 ## Assigned from outside, which is why it is a setter rather than a plain field:
 ## a multi-step order advances when a worker finishes a step, and there is no
@@ -166,6 +167,12 @@ func instruct(worker: Worker, instruction: String) -> void:
 	if _try_standing(worker, instruction):
 		return
 
+	# Being told they got it wrong, or what you like. Learned first, whatever
+	# else the sentence asks for: "no, thatch — build it again" both teaches
+	# and orders, and the order that follows is planned knowing it.
+	if _try_critique(worker, instruction):
+		return
+
 	# Taking somebody on, letting them go, or writing a job up. These are about
 	# who works for you rather than what gets built, so they go before every
 	# other guard: you can hire somebody who is standing about, and you can
@@ -211,6 +218,9 @@ func instruct(worker: Worker, instruction: String) -> void:
 		return
 	if _try_war(worker, instruction):
 		return
+	# The kingdom's own orders: taxes, decrees, marriages, hunts, the lot.
+	if realm != null and realm.handle(worker, instruction):
+		return
 
 	var plot := _choose_plot(worker)
 	if plot == null:
@@ -245,6 +255,8 @@ func _answer(worker: Worker, question: String) -> void:
 		return
 	var line := Answers.reply(question, worker, town, village, clock, player,
 		farm, livestock, wildlife, warfare)
+	if line == "" and realm != null:
+		line = realm.answer(worker, question)
 	worker.memory.remember(clock.day, "You asked me: \"%s\"" % question, 0.0, {
 		"kind": "told", "question": question,
 	})
@@ -1701,6 +1713,13 @@ func _refuse(worker: Worker, plot: Plot, err: Dictionary) -> void:
 func answer(worker: Worker, reply: String) -> void:
 	var job: Dictionary = _open.get(worker.memory.worker_id, {})
 	worker.resolve_question()
+	# An answer is a preference too, said once and quietly: "use thatch" to
+	# "what should I roof it with?" is worth remembering, if not as much as
+	# being told off for getting it wrong.
+	var learned := Critique.read("i want " + reply)
+	if not learned.is_empty() and str(learned.get("about", "")) != "":
+		worker.memory.learn_about(str(learned["about"]), str(learned["value"]),
+			str(learned["text"]), 0.35, worker.current_order)
 	if job.is_empty():
 		return
 	_open.erase(worker.memory.worker_id)
@@ -1712,6 +1731,53 @@ func answer(worker: Worker, reply: String) -> void:
 	plot.reserved = false
 	instruct(worker, "%s (%s)" % [str(job["instruction"]), reply])
 
+
+
+# ------------------------------------------------------------- corrections
+
+## Words that make a sentence an order as well as a correction, so "no, thatch
+## — build it again" learns and then builds.
+const ORDER_WORDS := ["build", "put up", "make", "fence", "plant", "bring", "fetch",
+	"sow", "go ", "again", "redo", "do it", "start over on"]
+
+
+## Returns true if the sentence was ONLY a correction — learned and answered,
+## nothing left to do. False lets the rest of instruct() have it.
+func _try_critique(worker: Worker, instruction: String) -> bool:
+	var learned := Critique.read(instruction)
+	if learned.is_empty():
+		return false
+	var mem := worker.memory
+	if str(learned.get("about", "")) == "":
+		# A "no" with nothing in it. Asking is the honest move; guessing what
+		# was wrong is how the next one is wrong too.
+		mem.nudge("morale", -float(learned.get("sting", 0.0)) * float(mem.traits.get("criticism_sensitivity", 0.5)))
+		worker.ask_player("What would you have had instead?")
+		return true
+
+	if not worker.hired:
+		spoke.emit(worker, "You are not my employer.", "talk")
+		return true
+
+	mem.learn_about(str(learned["about"]), str(learned["value"]), str(learned["text"]),
+		float(learned["weight"]), worker.current_order)
+	var sting := float(learned.get("sting", 0.0)) * float(mem.traits.get("criticism_sensitivity", 0.5))
+	if sting > 0.0:
+		mem.nudge("morale", -sting)
+	# Being told what you want is being trusted with it, a little.
+	mem.nudge("trust_in_player", 0.03)
+	mem.remember(clock.day, "Learned: %s." % str(learned["text"]), 0.05 if sting == 0.0 else -0.1, {
+		"kind": "learned", "about": str(learned["about"]), "value": str(learned["value"]),
+	})
+	spoke.emit(worker, Critique.reaction(mem, learned), "talk")
+	# Every preference is a plan the cache must not hand back unchanged.
+	ArchetypeLibrary.clear_cache()
+
+	var t := instruction.to_lower()
+	for w: String in ORDER_WORDS:
+		if t.find(w) >= 0:
+			return false                # and on to the order in the same breath
+	return true
 
 
 # ----------------------------------------------------------------- mornings

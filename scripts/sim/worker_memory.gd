@@ -120,6 +120,38 @@ func learn(text: String, weight: float, source_event: int) -> void:
 	_trim_preferences()
 
 
+## A preference about one field of a plan — the roof material, the size, a
+## room. Kept as a sentence for the prompt and as (about, value) for the
+## offline planner, which cannot read sentences. A new value for the same
+## field replaces the old one: somebody who asked for thatch and then for
+## tile wants tile, not a worker torn between them.
+func learn_about(about: String, value: String, text: String, weight: float,
+		source_event: int) -> void:
+	for p in learned_preferences:
+		if str(p.get("about", "")) == about:
+			if str(p.get("value", "")) == value:
+				p["weight"] = clampf(float(p["weight"]) + weight * 0.6, 0.0, 1.0)
+			else:
+				p["value"] = value
+				p["text"] = text
+				p["weight"] = clampf(weight, 0.0, 1.0)
+			p["source_event"] = source_event
+			return
+	learned_preferences.append({
+		"text": text, "weight": clampf(weight, 0.0, 1.0), "source_event": source_event,
+		"about": about, "value": value,
+	})
+	_trim_preferences()
+
+
+## The current wish for one field, or "" if there is none worth acting on.
+func wants(about: String, at_least: float = 0.4) -> String:
+	for p in learned_preferences:
+		if str(p.get("about", "")) == about and float(p["weight"]) >= at_least:
+			return str(p.get("value", ""))
+	return ""
+
+
 func _trim_preferences() -> void:
 	if learned_preferences.size() <= MAX_PREFERENCES:
 		return

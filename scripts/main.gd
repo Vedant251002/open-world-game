@@ -33,6 +33,7 @@ var farm: Farm
 var livestock: Livestock
 var wildlife: Wildlife
 var warfare: Warfare
+var realm: Realm
 
 var _world_seed := 0
 var showcase_views: Array[Dictionary] = []
@@ -403,6 +404,13 @@ func _on_world_ready(t0: int) -> void:
 				ask = a.substr(6)
 		cp.begin(ask)
 		return
+	# One door for the kingdom's own tests: `--realmtest=market` loads
+	# res://scripts/dev/realm/market_test.gd, hands it everything, and lets it
+	# run. A system's test lives beside the system and needs no line here.
+	for a in args:
+		if a.begins_with("--realmtest="):
+			_run_realm_test(a.substr(12))
+			return
 	if "--asktest" in args:
 		var qt := AskTest.new()
 		qt.world = world
@@ -586,6 +594,22 @@ func _raise_crew() -> void:
 	dispatch.status.connect(func(t: String) -> void: hud.toast(t))
 	warfare.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
 	hud.warfare = warfare
+
+	# The kingdom: everything that makes the town a place rather than a
+	# building site. One hub; every system of it plugs into that.
+	realm = Realm.new()
+	realm.name = "Realm"
+	add_child(realm)
+	realm.setup({
+		"world": world, "village": village, "town": town, "clock": clock,
+		"player": player, "crew": crew, "livestock": livestock,
+		"wildlife": wildlife, "warfare": warfare, "nav": nav,
+		"props_root": props_root, "farm": farm, "dispatch": dispatch, "hud": hud,
+		"sky": sky, "map": map, "inventory": inventory,
+	})
+	realm.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
+	dispatch.realm = realm
+	hud.realm = realm
 	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
 	# assumption panel rather than a toast that scrolls away.
@@ -654,6 +678,24 @@ func build_context() -> Dictionary:
 
 # ------------------------------------------------------------------ saving
 
+func _run_realm_test(which: String) -> void:
+	var path := "res://scripts/dev/realm/%s_test.gd" % which
+	if not ResourceLoader.exists(path):
+		printerr("[delegate] no such realm test: %s" % path)
+		get_tree().quit(2)
+		return
+	var script: GDScript = load(path)
+	var t: Node = script.new()
+	for key in ["world", "village", "town", "clock", "player", "crew", "livestock",
+			"wildlife", "warfare", "nav", "farm", "dispatch", "hud", "realm", "map",
+			"sky", "props_root", "inventory"]:
+		if key in t:
+			t.set(key, get(key))
+	add_child(t)
+	if t.has_method("begin"):
+		t.call("begin")
+
+
 ## Everything worth keeping, as one dictionary. See SaveGame for what is and
 ## is not in it.
 func _snapshot() -> Dictionary:
@@ -671,6 +713,8 @@ func _snapshot() -> Dictionary:
 		state["farm"] = farm.snapshot()
 	if livestock != null:
 		state["livestock"] = livestock.snapshot()
+	if realm != null:
+		state["realm"] = realm.snapshot()
 	return state
 
 
@@ -713,6 +757,8 @@ func _restore_people() -> void:
 		farm.restore(_save.get("farm", []))
 	if livestock != null:
 		livestock.restore(_save.get("livestock", []))
+	if realm != null:
+		realm.restore(_save.get("realm", {}))
 	var pl: Dictionary = _save.get("player", {})
 	if pl.has("pos"):
 		var at: Vector3 = pl["pos"]

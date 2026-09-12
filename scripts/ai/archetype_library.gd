@@ -892,8 +892,65 @@ static func _fit_to_plot(spec: Dictionary, plot: Plot) -> void:
 
 
 static func _apply_preferences(spec: Dictionary, mem: WorkerMemory) -> void:
+	# The structured ones first: what the worker has been told, applied to the
+	# field it was about. This is the offline half of the correction loop —
+	# without it, "no, thatch roof" would be learned, said back, and then
+	# ignored by every plan the keyless build makes.
+	var mats: Dictionary = spec["materials"]
+	var roof_mat := mem.wants("roof_material")
+	if roof_mat != "":
+		if roof_mat.begins_with("not:"):
+			if str(mats.get("roof", "")) == roof_mat.trim_prefix("not:"):
+				mats["roof"] = "thatch" if roof_mat != "not:thatch" else "clay_tile"
+		elif VoxelTypes.id_of(roof_mat) >= 0:
+			mats["roof"] = roof_mat
+	var walls := mem.wants("walls")
+	if walls != "":
+		if walls.begins_with("not:"):
+			if str(mats.get("walls", "")) == walls.trim_prefix("not:"):
+				mats["walls"] = "timber" if walls != "not:timber" else "cobble"
+		elif VoxelTypes.id_of(walls) >= 0 and walls in VoxelTypes.STRUCTURAL:
+			mats["walls"] = walls
+	var roof := mem.wants("roof")
+	if roof != "":
+		if roof.begins_with("not:"):
+			if str(spec.get("roof", "")) == roof.trim_prefix("not:"):
+				spec["roof"] = "gable" if roof != "not:gable" else "hip"
+		elif roof in Vocabulary.ROOFS:
+			spec["roof"] = roof
+	var facing := mem.wants("orientation")
+	if facing in Vocabulary.ORIENTATIONS:
+		spec["orientation"] = facing
+	var floors := mem.wants("stories")
+	if floors.is_valid_int():
+		spec["stories"] = clampi(int(floors), 1, 6)
+	var size := mem.wants("size")
+	if size != "":
+		var fp: Array = spec["footprint"]
+		var k := 0.8 if size == "smaller" else 1.25
+		spec["footprint"] = [float(fp[0]) * k, float(fp[1]) * k]
+	var module := mem.wants("module")
+	if module != "":
+		var mods: Array = spec["modules"]
+		if module.begins_with("not:"):
+			var drop := module.trim_prefix("not:")
+			var kept: Array = []
+			for m: Dictionary in mods:
+				if str(m.get("type", "")) != drop or str(m.get("priority", "")) == "required":
+					kept.append(m)
+			spec["modules"] = kept
+		else:
+			var has := false
+			for m2: Dictionary in mods:
+				if str(m2.get("type", "")) == module:
+					has = true
+			if not has:
+				mods.append({"type": module, "size": "small", "priority": "preferred"})
+
+	# And the old free-text ones, for anything learned before there was a
+	# field to file it under.
 	for p: Dictionary in mem.learned_preferences:
-		if float(p["weight"]) < 0.4:
+		if float(p["weight"]) < 0.4 or p.has("about"):
 			continue
 		var t := str(p["text"]).to_lower()
 		if t.find("flat roof") >= 0 and t.find("dislike") >= 0 and spec["roof"] == "flat":

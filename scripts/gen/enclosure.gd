@@ -25,7 +25,11 @@ const POST_EVERY := 8         ## voxels — a post every two metres
 const FENCE_H := 5            ## voxels — 1.25 m, chest high on a person
 const TOP_RAIL := 5           ## local height of the top rail, above ground
 const LOW_RAIL := 2           ## and the lower one, so stock cannot walk under
-const GATE_W := 8             ## voxels — two metres, wide enough to drive cows through
+## Three metres, not two. The nav grid samples four corners of a metre cell,
+## so a two-metre gap between two posts could leave no cell clear and the
+## inside of a finished pen unreachable — a farmhand sent to collect the eggs
+## stood at the fence forever.
+const GATE_W := 12            ## voxels — three metres, wide enough to drive cows through
 const MAX_SLOPE := 3          ## voxels of fall across the site before it is a hillside
 
 

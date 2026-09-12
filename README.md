@@ -74,6 +74,16 @@ through `proxy/worker.js`, which holds the key on Cloudflare. It speaks to
 either gateway — `wrangler secret put GROQ_API_KEY` is all that is needed to
 move it across.
 
+## Corrections
+
+The crew learn what you mean. Tell somebody **no, I wanted a thatch roof**,
+or **never use brick**, or **too big**, or **always put in a chimney**, and
+it sticks: the next plan they make honours it, with or without an API key,
+and the one after that. A newer wish replaces an older one about the same
+thing. Corrections sting — a sensitive worker's morale takes it — and
+standing preferences do not. Say **no, thatch — build it again** and both
+halves happen. A bare **no** gets you asked what you would have had instead.
+
 ## Mornings
 
 Anyone you have hired can be given a standing job: say **every morning, bring
