@@ -124,6 +124,7 @@ func run() -> int:
 		_check_plan(c, plot, ctx)
 	_check_enclosure(ctx)
 	_check_schema()
+	_check_standing_sentences()
 
 	print("[plan] ---")
 	for f: String in _fails:
@@ -157,6 +158,33 @@ func _check(say: String, want: Dictionary, mem: WorkerMemory, plot: Plot,
 		_fails.append("%s gave '%s', expected '%s'" % [
 			say, code if code != "" else "no refusal",
 			str(want["refuse"]) if str(want["refuse"]) != "" else "no refusal"])
+
+
+## Every preset's standing task has to come out of the offline planner as the
+## verb it names. The morning routine hands these sentences to the planner
+## unaided, and one that fell through to the building planner would have the
+## accountant putting up a hut at dawn.
+func _check_standing_sentences() -> void:
+	var want := {
+		"bring in whatever is ripe each morning": "harvest",
+		"cook a shift each morning": "cook",
+		"work a shift at the store each day": "station",
+		"give an account each morning": "report",
+		"walk the round from the well to the edge of town all night": "patrol",
+	}
+	for sentence: String in want:
+		var plan := ArchetypeLibrary.errand_plan(sentence)
+		var verb := ""
+		if not plan.is_empty():
+			verb = str((plan["steps"][0] as Dictionary).get("do", ""))
+		print("[plan] %-58s -> %s" % ['"' + sentence + '"', verb if verb != "" else "(a building)"])
+		if verb != str(want[sentence]):
+			_fails.append("'%s' became %s, expected %s" % [sentence,
+				verb if verb != "" else "a building", str(want[sentence])])
+		if verb == "patrol":
+			var places: Array = (plan["steps"][0] as Dictionary).get("places", [])
+			if places.size() != 2:
+				_fails.append("the watchman's round has %d places: %s" % [places.size(), str(places)])
 
 
 ## A step plan through the pre-validator, which is the only gate between the

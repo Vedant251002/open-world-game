@@ -83,6 +83,19 @@ var _retry := 0.0
 ## is one job, twice.
 var _pending_hires: Dictionary = {}
 
+## The morning's orders, waiting their turn. Each hired person with a standing
+## task is given it at the start of the day — one at a time, a few seconds
+## apart, because five orders in one frame is five model calls in one frame,
+## and the free gateway answers that with a rate limit and four fallbacks.
+var _morning_queue: Array[Worker] = []
+var _morning_wait := 0.0
+## Orders that came from the morning rather than from you, so the plan panel
+## does not go up five times before you have had breakfast; the roster and a
+## toast say what everybody went off to do instead.
+var _from_morning: Dictionary = {}
+const MORNING_STAGGER_ONLINE := 8.0
+const MORNING_STAGGER_OFFLINE := 0.4
+
 
 func _set_crew(c: Crew) -> void:
 	crew = c
@@ -119,6 +132,7 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	llm.answered.connect(_on_answered)
 	llm.role_ready.connect(_on_role_ready)
 	llm.status.connect(func(t2: String) -> void: status.emit(t2))
+	clock.day_passed.connect(_on_morning)
 	# Everything the dispatcher says on a worker's behalf goes out through the
 	# worker's own mouth. This signal was emitted and never connected in the
 	# game itself — only the tests listened — so "I am in the middle of
@@ -148,6 +162,8 @@ func instruct(worker: Worker, instruction: String) -> void:
 	# the game rather than the town, and they come first so that they work
 	# whoever is asked, busy or not.
 	if _try_game(worker, instruction):
+		return
+	if _try_standing(worker, instruction):
 		return
 
 	# Taking somebody on, letting them go, or writing a job up. These are about
@@ -245,10 +261,20 @@ func _answer(worker: Worker, question: String) -> void:
 ## What this person is for, in their own words, from the role.
 func _answer_about_role(worker: Worker, question: String) -> String:
 	var q := question.to_lower()
-	var about_job := q.find("your job") >= 0 or q.find("what do you do") >= 0 		or q.find("what can you do") >= 0 or q.find("your role") >= 0 		or q.find("what are you for") >= 0 or q.find("who are you") >= 0 		or q.find("work for me") >= 0 or q.find("do you work") >= 0
+	var about_job := q.find("your job") >= 0 or q.find("what do you do") >= 0 		or q.find("what can you do") >= 0 or q.find("your role") >= 0 		or q.find("what are you for") >= 0 or q.find("who are you") >= 0 		or q.find("work for me") >= 0 or q.find("do you work") >= 0 \
+		or q.find("each morning") >= 0 or q.find("every morning") >= 0 \
+		or q.find("daily") >= 0 or q.find("each day") >= 0
 	if not about_job:
 		return ""
 	var r := worker.role
+	if q.find("morning") >= 0 or q.find("each day") >= 0 or q.find("every day") >= 0 \
+			or q.find("daily") >= 0:
+		var task := worker.standing_task()
+		if not worker.hired:
+			return "I do not work for anyone, so nothing in particular."
+		if task == "":
+			return "Nothing without being asked. Tell me \"every morning, ...\" and I will."
+		return "Each morning I %s." % task
 	if r == null or not worker.hired:
 		return "I live here. I do not work for anyone — take me on and give me a job, and I will."
 	var can := r.ready_capabilities()
@@ -460,6 +486,10 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 	_open.erase(worker_id)
 	worker.stop_thinking()
 
+	# A morning order is the routine, not a decision of yours; the panel is
+	# for things you asked for. The worker still says their line.
+	var routine: bool = _from_morning.erase(worker_id)
+
 	# Said once, up front, for the whole plan. The assumptions go up while the
 	# worker walks away, which is what makes the result fair (pillar P3) — and
 	# a second panel three steps later would just be the same list again.
@@ -475,7 +505,8 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 		var many: String = counts[mini(steps.size(), 4)]
 		assumptions = ["I took that as %s jobs: %s." % [many,
 			", then ".join(shape)]] + assumptions
-	plan_accepted.emit(worker, assumptions)
+	if not routine:
+		plan_accepted.emit(worker, assumptions)
 	if str(plan.get("worker_line", "")) != "":
 		worker.speak(str(plan["worker_line"]), "plan")
 
@@ -1586,6 +1617,7 @@ func _dig(worker: Worker, mat: String, units: int, announce: bool = true) -> boo
 ## Held plans wake up on their own the moment the stores can cover them. Nobody
 ## has to be told twice, and the player does not have to remember to re-ask.
 func _process(delta: float) -> void:
+	_tick_morning(delta)
 	if _held.is_empty():
 		return
 	# Once and a half a second is often enough to feel immediate and rare
@@ -1680,6 +1712,82 @@ func answer(worker: Worker, reply: String) -> void:
 	plot.reserved = false
 	instruct(worker, "%s (%s)" % [str(job["instruction"]), reply])
 
+
+
+# ----------------------------------------------------------------- mornings
+
+## A new day: everyone with a standing task lines up for it.
+##
+## Not the busy — a night watchman still on the round, a builder halfway up a
+## wall — and not the three unless they have been given one, because the
+## starting crew's job is to wait for you. Somebody who was told to wait
+## somewhere is left waiting.
+func _on_morning(_day: int) -> void:
+	if crew == null:
+		return
+	for w: Worker in crew.hired():
+		if w.standing_task() == "" or w.busy() or w in _morning_queue:
+			continue
+		if _open.has(w.memory.worker_id) or _running.has(w.memory.worker_id):
+			continue
+		_morning_queue.append(w)
+	_morning_wait = 0.0
+
+
+func _tick_morning(delta: float) -> void:
+	if _morning_queue.is_empty():
+		return
+	_morning_wait -= delta
+	if _morning_wait > 0.0:
+		return
+	_morning_wait = MORNING_STAGGER_ONLINE if ai_online() else MORNING_STAGGER_OFFLINE
+	var w: Worker = _morning_queue.pop_front()
+	if w == null or not is_instance_valid(w) or not w.hired or w.busy():
+		return
+	var task := w.standing_task()
+	if task == "":
+		return
+	_from_morning[w.memory.worker_id] = true
+	status.emit("Morning: %s — %s." % [w.display_name(), task])
+	instruct(w, task)
+
+
+## "Every morning, bring in the harvest" and its opposite. Sets the task on
+## the person, over whatever their job says; "stop" clears it, and clears it
+## for good — they go back to waiting to be asked, not to the role's default.
+const EVERY_RE := "^(?:every|each) (?:morning|day|dawn)[,:]?\\s+(?<task>.+)$"
+const DAILY_RE := "^(?:your|the) (?:daily|morning|standing) (?:job|task|work|order) is[,:]?\\s+(?<task>.+)$"
+const STOP_DAILY := ["stop your morning work", "stop your daily work", "no more morning work",
+	"no more daily work", "forget the morning job", "forget your daily job",
+	"stop doing that every morning", "no standing job", "stop your standing job"]
+var _re_every := RegEx.new()
+var _re_daily := RegEx.new()
+
+
+func _try_standing(worker: Worker, instruction: String) -> bool:
+	if _re_every.get_pattern() == "":
+		_re_every.compile(EVERY_RE)
+		_re_daily.compile(DAILY_RE)
+	var t := instruction.strip_edges().to_lower().rstrip(".!")
+	if t in STOP_DAILY:
+		worker.standing = "-"          # set, and empty: nothing, not the role's
+		spoke.emit(worker, "Right. I will wait to be asked, then.", "talk")
+		return true
+	var m := _re_every.search(t)
+	if m == null:
+		m = _re_daily.search(t)
+	if m == null:
+		return false
+	var task := m.get_string("task").strip_edges()
+	if task == "":
+		return false
+	if not worker.hired:
+		spoke.emit(worker, "I do not work for you.", "talk")
+		return true
+	worker.standing = task
+	worker.memory.remember(clock.day, "Told to %s every morning." % task, 0.1)
+	spoke.emit(worker, "Every morning, then: %s." % task, "talk")
+	return true
 
 
 # ------------------------------------------------------------------- roles

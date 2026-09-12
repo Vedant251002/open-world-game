@@ -488,7 +488,8 @@ const STATION_WORDS := ["work at", "shift at", "work the", "man the", "mind the"
 const PATROL_WORDS := ["patrol", "walk the round", "keep watch", "do the rounds",
 	"walk between", "guard the"]
 const HARVEST_WORDS := ["harvest", "bring in the", "reap", "bring in what",
-	"pick the crop", "gather the crop", "bring the harvest"]
+	"bring in whatever", "whatever is ripe", "what is ripe", "pick the crop",
+	"gather the crop", "bring the harvest"]
 const COLLECT_WORDS := ["collect the", "pick up the", "gather the eggs",
 	"get the eggs", "collect eggs", "go round the animals", "milk", "shear"]
 const REST_WORDS := ["rest", "sleep", "go home", "take a break", "turn in", "have a lie down"]
@@ -518,7 +519,7 @@ const DELEGATE_WORDS := ["tell ", "have ", "get ", "ask ", "send "]
 const RECRUIT_WORDS := ["recruit", "find somebody", "find someone", "take somebody on",
 	"take someone on", "hire a ", "hire an ", "hire somebody", "hire someone"]
 const REPORT_WORDS := ["report", "how are we doing", "how do we stand", "give me an account",
-	"the books", "how are the stores"]
+	"give an account", "an account of", "the books", "how are the stores"]
 
 
 static func errand_plan(instruction: String) -> Dictionary:
@@ -709,7 +710,8 @@ static func _place_after(text: String, leads: Array) -> String:
 		if i < 0:
 			continue
 		var rest := text.substr(i + w.length()).strip_edges()
-		for stop: String in [" for ", " until ", " till ", " and ", ",", " then "]:
+		for stop: String in [" for ", " until ", " till ", " and ", ",", " then ",
+				" each ", " every ", " all "]:
 			var j := rest.find(stop)
 			if j >= 0:
 				rest = rest.substr(0, j)
@@ -741,9 +743,11 @@ static func _places_in(text: String) -> Array:
 		var j := t.find(stop)
 		if j >= 0:
 			t = t.substr(0, j)
+	# "from the well to the edge of town" is two places as much as "the well
+	# and the edge of town" is.
 	var out: Array = []
-	for part: String in t.replace(",", " and ").split(" and ", false):
-		var p := part.strip_edges().trim_prefix("the ").trim_prefix("between ").strip_edges()
+	for part: String in t.replace(",", " and ").replace(" from ", " ").replace(" to ", " and ").split(" and ", false):
+		var p := part.strip_edges().trim_prefix("the ").trim_prefix("between ") 			.trim_prefix("from ").strip_edges()
 		if p != "" and p not in out:
 			out.append(p)
 	return out

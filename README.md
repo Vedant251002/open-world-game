@@ -74,6 +74,16 @@ through `proxy/worker.js`, which holds the key on Cloudflare. It speaks to
 either gateway — `wrangler secret put GROQ_API_KEY` is all that is needed to
 move it across.
 
+## Mornings
+
+Anyone you have hired can be given a standing job: say **every morning, bring
+in the harvest** and they will, each day, without being asked. Several of the
+built-in jobs come with one — the farmer harvests, the cook works the oven,
+the accountant reports, the night watchman walks the round. Ask **what do you
+do each morning?** to hear it, and **stop your morning work** to end it. The
+morning's orders go out one at a time, a few seconds apart, so the AI is not
+asked for five plans at once.
+
 ## Saving
 
 The town saves itself: every morning, every two minutes, when you close the

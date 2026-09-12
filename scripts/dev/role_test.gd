@@ -39,6 +39,7 @@ var _coins_before := 0
 var _works: Array[String] = []          ## archetypes of finished patches
 var _buildings_before := 0
 var _foreman: Worker = null
+var _morning_toasts := 0
 var _clerk: Worker = null
 var _trader: Worker = null
 
@@ -52,6 +53,10 @@ func begin() -> void:
 		_accepted_for = w.display_name())
 	crew.job_done.connect(func(_w: Worker, p: VoxelPatch) -> void:
 		_works.append(p.archetype))
+	dispatch.status.connect(func(t: String) -> void:
+		if t.begins_with("Morning:"):
+			_morning_toasts += 1
+			print("[role]   toast: %s" % t))
 	crew.worker_spoke.connect(func(w: Worker, line: String, kind: String) -> void:
 		_lines.append(line)
 		print("[role]   %s (%s): %s" % [w.display_name(), kind, line]))
@@ -386,8 +391,56 @@ func _process(delta: float) -> void:
 					% [town.buildings.size(), str(_works), crew.get_worker("mira").status_text()])
 				_phase = 25
 		25:
+			# Standing tasks: "every morning, go to the well", then a new day.
+			var m2: Worker = crew.get_worker("mira")
+			if m2.busy():
+				if _t > 30.0:
+					_fails.append("Mira still busy before the morning test: %s" % m2.status_text())
+					_phase = 27
+				return
+			_lines.clear()
+			dispatch.instruct(m2, "every morning, go to the well")
+			if m2.standing_task() != "go to the well":
+				_fails.append("the standing task was not set (got '%s')" % m2.standing_task())
+			_lines.clear()
+			dispatch.instruct(m2, "what do you do each morning?")
+			if _lines.is_empty() or _lines[_lines.size() - 1].find("go to the well") < 0:
+				_fails.append("Mira could not say her morning task: %s" % str(_lines))
+			# A preset with a standing task of its own, and a citizen told to stop.
+			var acct: Worker = null
+			for w: Worker in crew.hired():
+				if w.role != null and w.role.id == "accountant":
+					acct = w
+			if acct != null and acct.standing_task() == "":
+				_fails.append("the accountant preset has no standing task")
+			_accepted = 0
+			_accepted_for = ""
+			_morning_toasts = 0
+			print("[role] a new day dawns (day %d -> %d)" % [clock.day, clock.day + 1])
+			clock.advance(24.0)
+			_phase = 26
+			_t = 0.0
+		26:
+			if _morning_toasts >= 2 and m2_went():
+				print("[role] Mira set off for the well without being asked (%d morning toasts)" % _morning_toasts)
+				if _accepted > 0:
+					_fails.append("a morning order put up the assumptions panel")
+				if _morning_toasts == 0:
+					_fails.append("no morning toast was shown")
+				_phase = 27
+			elif _t > 20.0:
+				_fails.append("Mira never got her morning task (accepted for '%s', %s)"
+					% [_accepted_for, crew.get_worker("mira").status_text()])
+				_phase = 27
+		27:
 			_report()
 			get_tree().quit(1 if not _fails.is_empty() else 0)
+
+
+## Whether Mira is on, or has finished, a go errand this morning.
+func m2_went() -> bool:
+	var m: Worker = crew.get_worker("mira")
+	return not m.job_errand.is_empty() and str(m.job_errand.get("kind", "")) == "go"
 
 
 func _check_catalogue() -> void:

@@ -323,6 +323,10 @@ func display_name() -> String:
 
 ## The morning's job, if any: the one set on this person, else the role's.
 func standing_task() -> String:
+	# "-" is the player having said "stop": deliberately nothing, and not the
+	# role's default either.
+	if standing == "-":
+		return ""
 	if standing != "":
 		return standing
 	if role != null:
