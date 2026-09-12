@@ -4,11 +4,17 @@ class_name Dispatcher
 ##
 ## The pipeline is the whole game (voxel-module-spec.md §0):
 ##
-##   instruction -> LLM (or the offline library) -> spec
-##   spec -> pre-validator -> either a typed error or a plan
-##   plan -> BuildingGenerator -> patch, or a second typed error
+##   instruction -> LLM (or the offline library) -> plan
+##   plan -> pre-validator -> a typed error, or a list of one to four steps
+##   step -> the part of the town that already does that work
 ##   patch -> the stores, which either cover the bill or do not
 ##   patch -> the worker, who walks off and lays it down over in-game hours
+##
+## A plan is a short list rather than a single building because an order often
+## has parts that have to happen in order — a pen has to stand before anything
+## can go in it — and because the alternative, which this had, was a growing
+## pile of keyword matches in instruct() that could each hear one kind of order
+## and none of them hear two. See Steps for the verbs and _advance for the loop.
 ##
 ## The stores are a gate, not a counter. Nothing is started that the town
 ## cannot finish; a plan it cannot pay for is held whole and somebody is sent
@@ -39,11 +45,26 @@ var llm: LLM
 var map: MapScreen
 var farm: Farm
 var livestock: Livestock
+var wildlife: Wildlife
 var player: Node3D
-var crew: Crew
+## Assigned from outside, which is why it is a setter rather than a plain field:
+## a multi-step order advances when a worker finishes a step, and there is no
+## other moment at which every worker is known to exist.
+var crew: Crew: set = _set_crew
 
 ## worker_id -> {"worker": Worker, "instruction": String, "plot": Plot}
 var _open: Dictionary = {}
+
+## worker_id -> an accepted plan being carried out, one step at a time.
+##
+##   {"worker", "steps", "at", "sites", "assumptions", "plot", "instruction"}
+##
+## `sites` is what makes this a plan rather than a list: a step that claims
+## ground records it under its id, and a later step's "into" / "in" / "near"
+## resolves through here. It is the entire mechanism behind "fence the top
+## corner and put the hens in it", and it is forty lines, because the steps
+## themselves are all things the town already knew how to do.
+var _running: Dictionary = {}
 
 ## Plans that are finished and correct but cannot be paid for yet. They sit
 ## here, whole, until the stores can cover them — the spec is not re-planned,
@@ -51,6 +72,26 @@ var _open: Dictionary = {}
 ## for a thing and is owed either that thing or a reason (pillar P3).
 var _held: Array[Dictionary] = []
 var _retry := 0.0
+
+## Hires waiting on a job to be written up: role key -> the people who asked
+## for it. One composition can serve several — "hire Ada and Bram as guards"
+## is one job, twice.
+var _pending_hires: Dictionary = {}
+
+
+func _set_crew(c: Crew) -> void:
+	crew = c
+	if crew == null:
+		return
+	for w: Worker in crew.workers:
+		if not w.step_done.is_connected(_on_step_done):
+			w.step_done.connect(_on_step_done)
+		# A step that fails after the worker has taken it — no route to the
+		# ground, the way blocked since the plan was made — ends the plan too.
+		# Without this the run sits in _running waiting for a step_done that
+		# cannot arrive, and the rest of the order is neither done nor refused.
+		if not w.job_failed.is_connected(_on_step_failed):
+			w.job_failed.connect(_on_step_failed)
 
 
 func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
@@ -70,7 +111,15 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	llm.plan_ready.connect(_on_plan_ready)
 	llm.question_ready.connect(_on_question_ready)
 	llm.failed.connect(_on_llm_failed)
+	llm.answered.connect(_on_answered)
+	llm.role_ready.connect(_on_role_ready)
 	llm.status.connect(func(t2: String) -> void: status.emit(t2))
+	# Everything the dispatcher says on a worker's behalf goes out through the
+	# worker's own mouth. This signal was emitted and never connected in the
+	# game itself — only the tests listened — so "I am in the middle of
+	# something" and "there is nowhere left to put it" were never heard.
+	spoke.connect(func(w: Worker, line: String, kind: String) -> void:
+		w.speak(line, kind))
 
 
 ## Whether the AI is answering for real or the offline library is standing in.
@@ -83,11 +132,32 @@ func describe_ai() -> String:
 
 
 func instruct(worker: Worker, instruction: String) -> void:
-	if worker.busy():
-		spoke.emit(worker, "I am in the middle of something.", "refuse")
+	# A question is not an order, and it does not matter how busy they are: a
+	# worker halfway up a wall can still tell you what they are doing. This
+	# comes before every guard below for exactly that reason.
+	if Answers.is_question(instruction):
+		_answer(worker, instruction)
 		return
+
+	# Taking somebody on, letting them go, or writing a job up. These are about
+	# who works for you rather than what gets built, so they go before every
+	# other guard: you can hire somebody who is standing about, and you can
+	# define a job while the whole crew is busy.
+	if _try_roles(worker, instruction):
+		return
+
+	# Somebody who does not work for you does not take your orders. They will
+	# talk — the question path above still runs — and they will tell you how
+	# to change that.
+	if not worker.hired:
+		spoke.emit(worker, "I do not work for you. Take me on and I might.", "talk")
+		return
+
 	if _open.has(worker.memory.worker_id):
 		status.emit("%s is still thinking." % worker.display_name())
+		return
+	if worker.busy():
+		spoke.emit(worker, "I am in the middle of something.", "refuse")
 		return
 
 	# "Wait here" and "follow me" are instructions like any other — the player
@@ -99,20 +169,18 @@ func instruct(worker: Worker, instruction: String) -> void:
 	# A new order replaces whatever this one was still holding out for.
 	_forget_held(worker)
 
-	# "Go and get some stone" is an instruction in its own right, not a badly
-	# worded building. It goes straight to the ground, for the same reason field
-	# work does: there is no spec to argue about, only a hillside.
+	# "Go and get some stone" does not need a model to understand it, and the
+	# model costs the better part of a minute. This is the one keyword route
+	# left, and it is a shortcut rather than a translation: it produces the same
+	# gather step the model would have produced, and anything it is not certain
+	# about it declines and lets the model have.
+	#
+	# The field and livestock routes that used to sit here are gone. They were
+	# doing the model's job with a word list, which meant "fence the top corner
+	# and put the hens in it" matched on "hens", went straight to the flock, and
+	# the fence was never built or mentioned — the order was half-heard rather
+	# than refused. Both are steps now, and a plan can hold them together.
 	if _try_gather(worker, instruction):
-		return
-
-	# Land work never reaches the model. The building generator emits walls and
-	# roofs; a field is forty columns of soil and has no spec to argue about, so
-	# routing it through the plan pipeline would only add a way to fail.
-	if farm != null and _is_field_work(instruction):
-		_send_to_field(worker, instruction)
-		return
-	if livestock != null and _is_livestock(instruction):
-		_fetch_livestock(worker, instruction)
 		return
 
 	var plot := _choose_plot(worker)
@@ -128,9 +196,71 @@ func instruct(worker: Worker, instruction: String) -> void:
 	worker.speak("Right — let me think about that.", "talk")
 	# Off you go. The plan will catch up on the way (§5.2): a free model takes
 	# the better part of a minute, and none of that should be spent watching
-	# somebody stand still.
-	worker.set_out_for(plot)
-	llm.submit(instruction, worker.memory, plot, _ctx(), clock, town)
+	# somebody stand still — or, worse, watching them wander.
+	worker.start_thinking(instruction, plot)
+	llm.submit(instruction, worker.memory, plot, _ctx(worker), clock, town)
+
+
+## Something the player wants to know rather than have done.
+##
+## The town's own records first, and the model only for what they cannot
+## cover. The records are right every time and cost nothing; the model is
+## right most of the time and costs a round trip, and for "how many bricks
+## have we got" that is the wrong trade in both directions.
+func _answer(worker: Worker, question: String) -> void:
+	# About themselves first. "What do you do" has one right answer and the
+	# role holds it; the records and the model are for everything else.
+	var about := _answer_about_role(worker, question)
+	if about != "":
+		worker.speak(about, "talk")
+		return
+	var line := Answers.reply(question, worker, town, village, clock, player,
+		farm, livestock, wildlife)
+	worker.memory.remember(clock.day, "You asked me: \"%s\"" % question, 0.0, {
+		"kind": "told", "question": question,
+	})
+	if line != "":
+		worker.speak(line, "talk")
+		return
+	if llm != null and llm.available():
+		worker.speak("Let me think.", "talk")
+		llm.ask(question, worker.memory, _ctx(worker), clock, town)
+		return
+	worker.speak("I could not tell you, sorry.", "talk")
+
+
+## What this person is for, in their own words, from the role.
+func _answer_about_role(worker: Worker, question: String) -> String:
+	var q := question.to_lower()
+	var about_job := q.find("your job") >= 0 or q.find("what do you do") >= 0 		or q.find("what can you do") >= 0 or q.find("your role") >= 0 		or q.find("what are you for") >= 0 or q.find("who are you") >= 0 		or q.find("work for me") >= 0 or q.find("do you work") >= 0
+	if not about_job:
+		return ""
+	var r := worker.role
+	if r == null or not worker.hired:
+		return "I live here. I do not work for anyone — take me on and give me a job, and I will."
+	var can := r.ready_capabilities()
+	var later := r.planned_capabilities()
+	var line := "I am your %s. I can %s." % [r.name, _list_words(can)]
+	if not later.is_empty():
+		line += " The town has no means yet for me to %s." % _list_words(later)
+	return line
+
+
+static func _list_words(ids: Array) -> String:
+	var words: Array[String] = []
+	for id: Variant in ids:
+		words.append(str(id).replace("_", " "))
+	if words.size() <= 1:
+		return "".join(words)
+	var last: String = words.pop_back()
+	return ", ".join(words) + " and " + last
+
+
+func _on_answered(worker_id: String, text: String) -> void:
+	var worker := crew.get_worker(worker_id) if crew != null else null
+	if worker == null:
+		return
+	worker.speak(text, "talk")
 
 
 ## The nearest free plot to the worker. The design has the player pointing at a
@@ -148,13 +278,19 @@ func _choose_plot(worker: Worker) -> Plot:
 	return best
 
 
-func _ctx() -> Dictionary:
-	return {
+func _ctx(worker: Worker = null) -> Dictionary:
+	var c := {
 		"world": world, "village": village, "worldgen": gen,
 		"tier": town.tier,
 		"occupied_rects": town.occupied_rects,
 		"built_fronts": town.built_fronts,
 	}
+	# The role travels with the order. It is what narrows the prompt to the
+	# verbs this person may use and what the validator holds the plan to, so
+	# a plan is never checked against a different job than it was made for.
+	if worker != null and worker.role != null:
+		c["role"] = worker.role
+	return c
 
 
 func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
@@ -163,31 +299,997 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 		return
 	var worker: Worker = job["worker"]
 	var plot: Plot = job["plot"]
-	var spec: Dictionary = plan.get("spec", {})
 	var assumptions: Array = plan.get("assumptions", [])
+	var steps := Steps.normalise(plan)
 
-	# Pre-validation. A spec that cannot be built has to be refused before a
-	# single voxel is written, and refused with a reason the worker can say.
-	var err := Validator.check_spec(spec, plot, _ctx())
+	# Pre-validation, and all of it before anything starts. A plan that cannot
+	# be carried out has to be refused before a single voxel is written, and
+	# refused with a reason the worker can say — and for a plan with parts that
+	# means checking the parts nobody has reached yet. Half an order carried out
+	# and then refused would be the worst of both: it looks understood right up
+	# until it stops.
+	var err := Validator.check_plan(steps, plot, _ctx(worker))
 	if not err.is_empty():
 		_refuse(worker, plot, err)
 		return
 
-	var res := BuildingGenerator.build(spec, hash(worker_id) & 0x7FFFFFFF, plot, _ctx())
-	if not res["ok"]:
-		_refuse(worker, plot, res["error"])
+	_open.erase(worker_id)
+	worker.stop_thinking()
+
+	# Said once, up front, for the whole plan. The assumptions go up while the
+	# worker walks away, which is what makes the result fair (pillar P3) — and
+	# a second panel three steps later would just be the same list again.
+	#
+	# A plan with parts leads with its shape. An order that quietly became two
+	# jobs is the player's business before it starts, not after they notice the
+	# worker has walked off twice.
+	if steps.size() > 1:
+		var shape: Array[String] = []
+		for s: Variant in steps:
+			shape.append(Steps.describe(s as Dictionary))
+		var counts: Array[String] = ["", "", "two", "three", "four"]
+		var many: String = counts[mini(steps.size(), 4)]
+		assumptions = ["I took that as %s jobs: %s." % [many,
+			", then ".join(shape)]] + assumptions
+	plan_accepted.emit(worker, assumptions)
+	if str(plan.get("worker_line", "")) != "":
+		worker.speak(str(plan["worker_line"]), "plan")
+
+	var run := {
+		"worker": worker, "steps": steps, "at": 0, "sites": {},
+		"assumptions": assumptions, "plot": plot,
+		"instruction": str(job.get("instruction", "")),
+	}
+	_running[worker_id] = run
+	_advance(run)
+
+
+# ------------------------------------------------------------------ the plan
+
+## Carry out the next step, or finish.
+##
+## Every step ends in one of four places and the caller does not have to know
+## which: the worker walked off with it, it was over the moment it started, the
+## stores could not cover it, or it cannot be done at all. Only the last one
+## ends the plan — an unaffordable step is held exactly as an unaffordable
+## building always was, and the rest of the order is still coming.
+func _advance(run: Dictionary) -> void:
+	if run.get("abandoned", false):
+		return
+	var worker: Worker = run["worker"]
+	if worker == null or not is_instance_valid(worker):
 		return
 
-	var patch: VoxelPatch = res["patch"]
-	_open.erase(worker_id)
+	var at := int(run["at"])
+	if at >= (run["steps"] as Array).size():
+		_finish_run(run)
+		return
 
+	var step: Dictionary = (run["steps"] as Array)[at]
+	match _run_step(run, step):
+		"started":
+			return                      # the worker has it; step_done will wake us
+		"done":
+			run["at"] = at + 1
+			_advance(run)
+		"held":
+			return                      # _process retries it
+		_:
+			_abandon(run)
+
+
+## One step, dispatched to whichever part of the town already does that work.
+##
+## The whole of the new machinery is this match. Every arm below calls something
+## that existed before the plan had steps in it — a generator, a field, a
+## quarry, a flock — because a verb is meant to be a name for work the town can
+## already do, not a new way of doing work.
+func _run_step(run: Dictionary, step: Dictionary) -> String:
+	match str(step.get("do", "")):
+		"build":   return _step_build(run, step)
+		"enclose": return _step_enclose(run, step)
+		"stock":   return _step_stock(run, step)
+		"sow":     return _step_sow(run, step)
+		"gather":  return _step_gather(run, step)
+		"go", "wait", "station", "patrol", "harvest", "collect", "rest", "speak", "scout":
+			return _step_errand(run, step)
+		"trade":      return _step_trade(run, step)
+		"cook", "craft", "fish", "hunt":
+			return _step_shift_with_yield(run, step)
+		"water", "tend":
+			return _step_land_care(run, step)
+		"teach":      return _step_teach(run, step)
+		"decorate":   return _step_decorate(run, step)
+		"plant_tree", "pave", "level", "demolish":
+			return _step_works(run, step)
+		"delegate":   return _step_delegate(run, step)
+		"recruit":    return _step_recruit(run, step)
+		"report":     return _step_report(run, step)
+		"follow":
+			var w: Worker = run["worker"]
+			if player != null:
+				w.employer = player
+			w.speak("Right behind you.", "talk")
+			return "done"
+	return "failed"
+
+
+# ---------------------------------------------------------------- errands
+
+## Every verb that is a walk with something at the end of it. The worker has
+## one job for all of them; this only works out where, for how long, and what
+## to say.
+func _step_errand(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var verb := str(step["do"])
+	var hours := float(step.get("hours", 0))
+	var extra := {}
+	var target := worker.global_position
+	var where := "here"
+	var line := ""
+
+	match verb:
+		"go":
+			var place := _resolve_place(str(step["place"]), worker)
+			if place.is_empty():
+				return _refuse_step(run, "I do not know where %s is." % _place_name(str(step["place"])))
+			target = place["pos"]
+			where = str(place["where"])
+			line = "Off to %s." % where
+			_remember_site(run, step, {"centre": target, "spread": 3.0, "where": where})
+		"wait":
+			if step.has("place"):
+				var place2 := _resolve_place(str(step["place"]), worker)
+				if place2.is_empty():
+					return _refuse_step(run, "I do not know where %s is." % _place_name(str(step["place"])))
+				target = place2["pos"]
+				where = str(place2["where"])
+			# "Wait here" with no hours is the posting command, not a shift.
+			if hours <= 0.0 and not step.has("place"):
+				worker.employer = null
+				worker.home = worker.global_position
+				worker.speak("I will wait here, then.", "talk")
+				return "done"
+			var at_words := "here" if where == "here" else "at " + where
+			var for_words := (" for %d hours" % int(hours)) if hours > 0 else ""
+			line = "I will wait %s%s." % [at_words, for_words]
+		"station":
+			var place3 := _resolve_place(str(step["place"]), worker)
+			if place3.is_empty():
+				return _refuse_step(run, "There is no %s in this town to work at." % _place_name(str(step["place"])))
+			target = place3["pos"]
+			where = str(place3["where"])
+			if hours <= 0.0:
+				hours = 6.0
+			extra["doing"] = str(step.get("doing", "hammer"))
+			line = "I will take a %d hour shift at %s." % [int(hours), where]
+			_remember_site(run, step, {"centre": target, "spread": 3.0, "where": where})
+		"patrol":
+			var legs: Array = []
+			var names: Array[String] = []
+			for pl: Variant in step.get("places", []):
+				var place4 := _resolve_place(str(pl), worker)
+				if place4.is_empty():
+					return _refuse_step(run, "I do not know where %s is." % _place_name(str(pl)))
+				legs.append(place4["pos"])
+				names.append(str(place4["where"]))
+			if hours <= 0.0:
+				hours = 8.0
+			where = " and ".join(names)
+			line = "I will walk the round — %s — for %d hours." % [where, int(hours)]
+			if not worker.take_errand_job("patrol", legs[0], hours, line,
+					{"where": where}, legs):
+				return "failed"
+			return "started"
+		"harvest":
+			if farm == null or farm.tile_count() == 0:
+				return _refuse_step(run, "There is no field to bring anything in from.")
+			var rect := _field_rect(run, step)
+			var c := rect.get_center()
+			target = Vector3(c.x * VoxelChunk.VOXEL_M, 0.0, c.y * VoxelChunk.VOXEL_M)
+			where = "the field"
+			extra = {"farm": farm, "rect": rect}
+			line = "I will see what is ripe."
+		"collect":
+			if livestock == null or livestock.total() == 0:
+				return _refuse_step(run, "We have no animals to go round.")
+			var site := _site_for(run, step, "in")
+			target = site["centre"]
+			where = str(site.get("where", "the pens"))
+			extra = {"livestock": livestock,
+				"radius": maxf(float(site["spread"]) + 6.0, 14.0)}
+			line = "I will go round the animals."
+		"rest":
+			target = worker.home
+			where = "home"
+			if hours <= 0.0:
+				hours = 4.0
+			line = "I could do with a rest. Back in a few hours."
+		"speak":
+			extra["line"] = str(step["line"])
+			if not worker.take_errand_job("speak", worker.global_position, 0.0, "", extra):
+				return "failed"
+			return "started"
+		"scout":
+			var dir := str(step["direction"])
+			var dist := float(step.get("distance", 60))
+			var d := Vector3.ZERO
+			match dir:
+				"north": d = Vector3(0, 0, -1)
+				"south": d = Vector3(0, 0, 1)
+				"east": d = Vector3(1, 0, 0)
+				"west": d = Vector3(-1, 0, 0)
+			var far := worker.global_position + d * dist
+			target = nav.nearest_walkable_world(far, 20)
+			if target == Vector3.ZERO:
+				return _refuse_step(run, "There is no way out to the %s from here." % dir)
+			where = "%d metres %s" % [int(dist), dir]
+			extra["report"] = _describe_ground(target, dir)
+			line = "I will have a look %s." % dir
+
+	extra["where"] = where
+	if not worker.take_errand_job(verb, target, hours, line, extra):
+		return "failed"
+	return "started"
+
+
+# ---------------------------------------------------------- trades and works
+
+func _step_trade(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var action := str(step.get("action", "sell"))
+	var kind := str(step.get("kind", ""))
+	var count := int(step.get("count", 0))
+	if count <= 0:
+		count = 20 if action == "sell" else 10
+	# The market is the store if there is one, and the square if there is not.
+	var place := _resolve_place("store", worker)
+	if place.is_empty():
+		place = _resolve_place("square", worker)
+	var line := "I will %s %d %s at %s." % [action, count, kind.replace("_", " "), str(place["where"])]
+	if not worker.take_errand_job("trade", place["pos"], 0.0, line, {
+			"town": town, "action": action, "kind": kind, "count": count,
+			"where": str(place["where"])}):
+		return "failed"
+	return "started"
+
+
+## Cooking, crafting, fishing and hunting: a shift somewhere with something
+## in the stores at the end of it.
+func _step_shift_with_yield(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var verb := str(step["do"])
+	var hours := float(step.get("hours", 0))
+	if hours <= 0.0:
+		hours = 4.0
+	var extra := {"town": town}
+	var target := Vector3.ZERO
+	var where := ""
+	var line := ""
+	match verb:
+		"cook":
+			var at := _building_with(["oven", "hearth"], str(step.get("place", "")), worker)
+			if at.is_empty():
+				return _refuse_step(run, "There is no oven in this town to cook at.")
+			target = at["pos"]
+			where = str(at["where"])
+			extra["inputs"] = {"food": 3}
+			extra["outputs"] = {"meals": 2}
+			extra["batches"] = int(hours / 2.0)
+			extra["doing"] = "lay"
+			line = "I will get the oven going at %s — %d hours." % [where, int(hours)]
+		"craft":
+			var at2 := _building_with(["workbench", "forge"], str(step.get("place", "")), worker)
+			if at2.is_empty():
+				return _refuse_step(run, "There is no bench in this town to work at.")
+			target = at2["pos"]
+			where = str(at2["where"])
+			extra["inputs"] = {"timber": 4, "plank": 2}
+			extra["outputs"] = {"tools": 2}
+			extra["batches"] = int(hours / 2.0)
+			extra["doing"] = "hammer"
+			line = "I will make what I can at %s — %d hours." % [where, int(hours)]
+		"fish":
+			target = _nearest_ground_of([VoxelTypes.WATER], worker.global_position, true)
+			if target == Vector3.ZERO:
+				return _refuse_step(run, "There is no water within reach to fish.")
+			where = "the water's edge"
+			extra["food"] = int(hours * 2.0)
+			extra["doing"] = "survey"
+			line = "I will try the water for %d hours." % int(hours)
+		"hunt":
+			target = _nearest_ground_of([VoxelTypes.LEAF, VoxelTypes.BARK], worker.global_position, false)
+			if target == Vector3.ZERO:
+				return _refuse_step(run, "There are no woods within reach to hunt.")
+			where = "the woods"
+			extra["food"] = int(hours * 3.0)
+			extra["doing"] = "survey"
+			line = "I will see what the woods have — %d hours." % int(hours)
+	extra["where"] = where
+	if not worker.take_errand_job(verb, target, hours, line, extra):
+		return "failed"
+	return "started"
+
+
+func _step_land_care(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var verb := str(step["do"])
+	if verb == "water":
+		if farm == null or farm.tile_count() == 0:
+			return _refuse_step(run, "There is no field to water.")
+		var rect := _field_rect(run, step)
+		var c := rect.get_center()
+		var target := Vector3(c.x * VoxelChunk.VOXEL_M, 0.0, c.y * VoxelChunk.VOXEL_M)
+		if not worker.take_errand_job("water", target, 0.0, "I will water the field.",
+				{"farm": farm, "rect": rect, "where": "the field"}):
+			return "failed"
+		return "started"
+	if livestock == null or livestock.total() == 0:
+		return _refuse_step(run, "We have no animals to see to.")
+	var site := _site_for(run, step, "in")
+	if not worker.take_errand_job("tend", site["centre"], 0.0, "I will see to the animals.",
+			{"livestock": livestock, "radius": maxf(float(site["spread"]) + 6.0, 14.0),
+				"where": str(site.get("where", "the pens"))}):
+		return "failed"
+	return "started"
+
+
+func _step_teach(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var pupil := _worker_named(str(step.get("who", "")))
+	if pupil == null or not pupil.hired:
+		return _refuse_step(run, "There is nobody working for you called %s." % str(step.get("who", "")).capitalize())
+	if pupil == worker:
+		return _refuse_step(run, "I cannot teach myself.")
+	var skill := str(step.get("skill", "carpentry"))
+	var hours := float(step.get("hours", 0))
+	if hours <= 0.0:
+		hours = 3.0
+	var line := "I will take %s through some %s — %d hours." % [pupil.display_name(), skill, int(hours)]
+	if not worker.take_errand_job("teach", pupil.global_position, hours, line, {
+			"pupil": pupil, "skill": skill, "where": "with " + pupil.display_name()}):
+		return "failed"
+	return "started"
+
+
+func _step_decorate(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var rec := _building_rec(str(step.get("place", "")), worker)
+	if rec.is_empty():
+		return _refuse_step(run, "There is no %s to dress up." % _place_name(str(step.get("place", ""))))
+	var n := clampi(int(step.get("count", 4)), 1, 8)
+	var spots := _front_spots(rec, n)
+	var place := _resolve_place(str(step.get("place", "")), worker)
+	if not worker.take_errand_job("decorate", place["pos"], 0.0,
+			"I will smarten up the front of %s." % str(place["where"]), {
+			"props_root": props_root, "spots": spots, "where": str(place["where"])}):
+		return "failed"
+	return "started"
+
+
+## Trees, roads, levelling and demolition: all patches, all handled by the
+## same construction the buildings use.
+func _step_works(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var verb := str(step["do"])
+	var res := {}
+	var where := ""
+	var after := Callable()
+	var seed := hash(worker.memory.worker_id + str(clock.day) + str(clock.hour)) & 0x7FFFFFFF
+	match verb:
+		"plant_tree":
+			# "place" is either an earlier step's id or the name of somewhere;
+			# with neither, the trees go in near the worker.
+			var site := _site_for(run, step, "place")
+			if step.has("place") and not (run["sites"] as Dictionary).has(str(step["place"])):
+				var place := _resolve_place(str(step["place"]), worker)
+				if place.is_empty():
+					return _refuse_step(run, "I do not know where %s is." % _place_name(str(step["place"])))
+				site = {"centre": place["pos"], "where": str(place["where"])}
+			var count := clampi(int(step.get("count", 1)), 1, 12)
+			res = TerrainWorks.trees(world, site["centre"], count, seed, _avoid_rects())
+			where = "by " + str(site.get("where", "the town"))
+		"pave":
+			var a := _resolve_place(str(step["from"]), worker)
+			var b := _resolve_place(str(step["to"]), worker)
+			if a.is_empty() or b.is_empty():
+				return _refuse_step(run, "I do not know both of those places.")
+			var mat_name := str(step.get("material", "cobble"))
+			var mat := VoxelTypes.id_of(mat_name)
+			if mat < 0:
+				return _refuse_step(run, "I cannot lay a road in %s." % mat_name)
+			var width := clampi(int(step.get("width", 3)), 1, 6)
+			res = TerrainWorks.road(world, a["pos"], b["pos"], mat,
+				int(width / VoxelChunk.VOXEL_M), town.occupied_rects)
+			where = "from %s to %s" % [str(a["where"]), str(b["where"])]
+		"level":
+			var centre := worker.global_position
+			where = "here"
+			if step.has("place"):
+				var place2 := _resolve_place(str(step["place"]), worker)
+				if place2.is_empty():
+					return _refuse_step(run, "I do not know where %s is." % _place_name(str(step["place"])))
+				centre = place2["pos"]
+				where = "at " + str(place2["where"])
+			var size_m := 8
+			if step.has("size"):
+				size_m = clampi(int((step["size"] as Array)[0]), 3, 24)
+			var sv := int(size_m / VoxelChunk.VOXEL_M)
+			var cv := VoxelWorld.to_voxel(centre)
+			var rect := Rect2i(cv.x - sv / 2, cv.z - sv / 2, sv, sv)
+			res = TerrainWorks.flatten(world, rect, -1, _avoid_rects())
+			if res["ok"]:
+				var r2 := rect
+				_remember_site(run, step, {"centre": centre, "spread": size_m * 0.4,
+					"where": "the levelled ground", "rect": r2})
+		"demolish":
+			var rec := _building_rec(str(step["place"]), worker)
+			if rec.is_empty():
+				return _refuse_step(run, "There is no %s to take down." % _place_name(str(step["place"])))
+			res = TerrainWorks.demolition(rec)
+			where = "the " + str(rec["archetype"]).replace("_", " ")
+			var plot := _plot_of(int(rec.get("plot_id", -1)))
+			var salvage := TerrainWorks.salvage(rec)
+			# The register and the refund wait for the last voxel to go.
+			after = func() -> void:
+				_clear_props_in((rec["patch"] as VoxelPatch))
+				if plot != null:
+					town.unregister(rec, plot)
+					plot.reserved = false
+				town.refund(salvage)
+				worker.speak("%s is down. Salvaged %s." % [where.capitalize(),
+					Resources.describe(salvage) if not salvage.is_empty() else "nothing worth keeping"],
+					"done")
+
+	if not res.get("ok", false):
+		return _refuse_step(run, str((res.get("error", {}) as Dictionary).get("question",
+			"I could not do that there.")))
+	var patch: VoxelPatch = res["patch"]
 	var ready := {
-		"worker": worker, "plot": plot, "spec": spec, "patch": patch,
-		"assumptions": assumptions,
-		"line": str(plan.get("worker_line", "")),
+		"kind": verb, "run": run, "worker": worker, "plot": null,
+		"patch": patch, "assumptions": run["assumptions"], "where": where, "line": "",
+	}
+	if after.is_valid():
+		run["after"] = after
+	if not _begin(ready):
+		_held.append(ready)
+		return "held"
+	return "started"
+
+
+# ----------------------------------------------------------- running things
+
+## A foreman: hands an order to another hired person. The order goes through
+## instruct() like anything the player says, so it is planned, validated and
+## refused exactly as if the player had said it — a foreman cannot get a
+## shepherd to build a tavern any more than you can.
+func _step_delegate(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var who := str(step.get("who", ""))
+	var target := _worker_named(who)
+	if target == null or not target.hired:
+		return _refuse_step(run, "There is nobody working for you called %s." % who.capitalize())
+	if target == worker:
+		return _refuse_step(run, "I cannot give myself orders.")
+	var order := str(step.get("order", "")).strip_edges()
+	if order == "":
+		return _refuse_step(run, "Tell %s what?" % target.display_name())
+	worker.speak("%s — %s." % [target.display_name(), order], "talk")
+	instruct(target, order)
+	return "done"
+
+
+## A recruiter: takes somebody from the street on as a job, on your behalf.
+func _step_recruit(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var role_name := str(step.get("role", "")).strip_edges()
+	if role_name == "":
+		return _refuse_step(run, "Take somebody on as what?")
+	var target: Worker = null
+	if step.has("who") and str(step["who"]).strip_edges() != "":
+		target = _worker_named(str(step["who"]))
+		if target == null:
+			return _refuse_step(run, "There is nobody here called %s." % str(step["who"]).capitalize())
+	else:
+		var free := crew.citizens()
+		if free.is_empty():
+			return _refuse_step(run, "There is nobody left in the town to take on.")
+		# The nearest, so the person hired is one you can see.
+		var best_d := INF
+		for c: Worker in free:
+			var d := c.global_position.distance_squared_to(worker.global_position)
+			if d < best_d:
+				best_d = d
+				target = c
+	worker.speak("I will have a word with %s." % target.display_name(), "talk")
+	_hire_as(target, role_name, "", worker)
+	return "done"
+
+
+## An accountant: the state of the town, said out loud with the real numbers.
+func _step_report(run: Dictionary, _step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var lines: Array[String] = []
+	lines.append("The purse holds %d coins." % town.coins)
+	lines.append(town.stock_line())
+	lines.append("%d buildings, tier %d, %d of us working." % [town.buildings.size(),
+		town.tier, crew.hired().size()])
+	if livestock != null and livestock.total() > 0:
+		lines.append("%d animals." % livestock.total())
+	if farm != null and farm.tile_count() > 0:
+		lines.append("%d tiles under crop, %d ripe." % [farm.planted_count(), farm.ripe_count()])
+	return _step_errand(run, {"do": "speak", "line": " ".join(lines)})
+
+
+# ------------------------------------------------------------------ lookups
+
+## A building record by what it is or where it is, nearest first.
+func _building_rec(name: String, worker: Worker) -> Dictionary:
+	var p := name.strip_edges().to_lower().trim_prefix("the ").trim_prefix("a ")
+	var best: Dictionary = {}
+	var best_d := INF
+	for rec: Dictionary in town.buildings:
+		var arch := str(rec["archetype"]).replace("_", " ")
+		var street := str(rec.get("street", "")).to_lower()
+		if not (p == arch or p == arch + "s" or p.find(arch) >= 0 \
+				or (street != "" and p.find(street) >= 0)):
+			continue
+		var patch: VoxelPatch = rec["patch"]
+		var c := patch.footprint.get_center()
+		var d := Vector2(c.x * VoxelChunk.VOXEL_M, c.y * VoxelChunk.VOXEL_M) \
+			.distance_squared_to(Vector2(worker.global_position.x, worker.global_position.z))
+		if d < best_d:
+			best_d = d
+			best = rec
+	return best
+
+
+## The nearest building with one of these modules in it, or the named one if
+## a name was given. Returns {pos, where} like _resolve_place.
+func _building_with(modules: Array, named: String, worker: Worker) -> Dictionary:
+	if named.strip_edges() != "":
+		return _resolve_place(named, worker)
+	var best: Dictionary = {}
+	var best_d := INF
+	for rec: Dictionary in town.buildings:
+		var patch: VoxelPatch = rec["patch"]
+		var has := false
+		for m: Dictionary in patch.modules:
+			if str(m.get("type", "")) in modules:
+				has = true
+				break
+		if not has:
+			continue
+		var c := patch.footprint.get_center()
+		var d := Vector2(c.x * VoxelChunk.VOXEL_M, c.y * VoxelChunk.VOXEL_M) \
+			.distance_squared_to(Vector2(worker.global_position.x, worker.global_position.z))
+		if d < best_d:
+			best_d = d
+			best = rec
+	if best.is_empty():
+		return {}
+	return _resolve_place(str(best["archetype"]).replace("_", " "), worker)
+
+
+## Ground of a given kind nearest a point: water for fishing, trees for
+## hunting. Rings out to the edge of the nav grid; the spot returned is the
+## walkable cell beside it, not the water itself.
+func _nearest_ground_of(tops: Array, from: Vector3, beside: bool) -> Vector3:
+	var c := VoxelWorld.to_voxel(from)
+	for radius in range(4, 200, 4):
+		for dz in range(-radius, radius + 1, 4):
+			for dx in range(-radius, radius + 1, 4):
+				if maxi(absi(dx), absi(dz)) != radius:
+					continue
+				var x := c.x + dx
+				var z := c.z + dz
+				var h := world.height_at(x, z)
+				if h < 0:
+					continue
+				var top := world.get_voxel(Vector3i(x, h, z))
+				if top not in tops:
+					continue
+				var at := Vector3(x * VoxelChunk.VOXEL_M, 0.0, z * VoxelChunk.VOXEL_M)
+				var stand := nav.nearest_walkable_world(at, 12) if beside else at
+				if stand != Vector3.ZERO:
+					return stand
+	return Vector3.ZERO
+
+
+## Places along the front of a building, a pace out from the wall, for
+## whatever is being put there.
+func _front_spots(rec: Dictionary, n: int) -> Array:
+	var patch: VoxelPatch = rec["patch"]
+	var v := VoxelChunk.VOXEL_M
+	var fp := patch.footprint
+	var front := Vector3(patch.front)
+	var out: Array = []
+	var along := Vector3(-front.z, 0.0, front.x)
+	var centre := Vector3((fp.position.x + fp.size.x * 0.5) * v, 0.0,
+		(fp.position.y + fp.size.y * 0.5) * v)
+	var half := (fp.size.x if absi(patch.front.z) > 0 else fp.size.y) * v * 0.5
+	var edge := centre + front * (half + 0.9)
+	var span := half * 0.8
+	for i in n:
+		var t := -span + (2.0 * span) * (float(i) + 0.5) / float(n)
+		var at := edge + along * t
+		# Not in the doorway.
+		if not patch.doors.is_empty():
+			var door := Vector3(patch.doors[0]) * v
+			if Vector2(at.x - door.x, at.z - door.z).length() < 1.2:
+				continue
+		at.y = world.ground_m(at.x, at.z)
+		out.append(at)
+	return out
+
+
+func _plot_of(plot_id: int) -> Plot:
+	for p: Plot in village.plots:
+		if p.id == plot_id:
+			return p
+	return null
+
+
+## Free the furniture standing inside a building's box. The props were never
+## kept against the building they went in, so this is the only way to find
+## them: anything under props_root whose feet are inside the footprint.
+func _clear_props_in(patch: VoxelPatch) -> void:
+	if props_root == null:
+		return
+	var v := VoxelChunk.VOXEL_M
+	var fp := patch.footprint
+	var y0 := patch.origin.y * v - 0.5
+	var y1 := (patch.origin.y + patch.size.y) * v + 0.5
+	for n: Node in props_root.get_children():
+		if not (n is Node3D):
+			continue
+		var at := (n as Node3D).global_position
+		var vx := floori(at.x / v)
+		var vz := floori(at.z / v)
+		if fp.has_point(Vector2i(vx, vz)) and at.y >= y0 and at.y <= y1:
+			n.queue_free()
+
+
+## A refusal from inside a step: the worker says it, and the plan ends.
+func _refuse_step(run: Dictionary, line: String) -> String:
+	var worker: Worker = run["worker"]
+	worker.speak(line, "refuse")
+	refused.emit(worker, Validator.error("no_such_place", line))
+	return "failed"
+
+
+## The field a harvest is about: the one a step in this plan sowed, if it
+## names it, otherwise every field in the town at once.
+func _field_rect(run: Dictionary, step: Dictionary) -> Rect2i:
+	var site := _site_for(run, step, "in")
+	if site.has("rect"):
+		return site["rect"]
+	return _all_fields()
+
+
+func _all_fields() -> Rect2i:
+	var lo := Vector2i(1 << 30, 1 << 30)
+	var hi := Vector2i(-(1 << 30), -(1 << 30))
+	for k: Vector2i in farm.tiles:
+		lo = Vector2i(mini(lo.x, k.x), mini(lo.y, k.y))
+		hi = Vector2i(maxi(hi.x, k.x), maxi(hi.y, k.y))
+	if lo.x > hi.x:
+		return Rect2i()
+	return Rect2i(lo, hi - lo + Vector2i.ONE)
+
+
+## A place, by the words a player uses for it.
+##
+## Buildings by what they are ("the bakery") or where they are ("the one on
+## Mill Street"); the well, the field and home by name; "you" and "here" are
+## wherever the player is standing. Returns {} for a place the town has not
+## got, which the worker says out loud rather than walking to the origin.
+func _resolve_place(name: String, worker: Worker) -> Dictionary:
+	var p := name.strip_edges().to_lower().trim_prefix("the ").trim_prefix("a ")
+	var v := VoxelChunk.VOXEL_M
+	match p:
+		"you", "here", "me", "player":
+			var at := player.global_position if player != null else worker.global_position
+			return {"pos": at, "where": "where you are"}
+		"home":
+			return {"pos": worker.home, "where": "home"}
+		"well":
+			return {"pos": village.well_pos, "where": "the well"}
+		"field", "fields", "farm":
+			if farm == null or farm.tile_count() == 0:
+				return {}
+			var r := _all_fields()
+			var c := r.get_center()
+			return {"pos": Vector3(c.x * v, 0.0, c.y * v), "where": "the field"}
+		"gate", "edge", "town edge":
+			# The end of the last street: as far out as the town goes.
+			var far := village.well_pos + Vector3(0, 0, 40)
+			return {"pos": nav.nearest_walkable_world(far, 20), "where": "the edge of town"}
+		"square", "plaza", "middle", "centre", "center":
+			return {"pos": village.well_pos, "where": "the square"}
+
+	# A building. By archetype first — "bakery", "the tavern" — and by street
+	# if nothing matched, so "the one on Mill Street" finds something.
+	var best: Dictionary = {}
+	var best_d := INF
+	for rec: Dictionary in town.buildings:
+		var arch := str(rec["archetype"]).replace("_", " ")
+		var street := str(rec.get("street", "")).to_lower()
+		var hit := p == arch or p == arch + "s" or p.find(arch) >= 0 \
+			or (street != "" and p.find(street) >= 0)
+		if not hit:
+			continue
+		var patch: VoxelPatch = rec["patch"]
+		var door := Vector3i(patch.footprint.get_center().x, 0, patch.footprint.get_center().y)
+		if not patch.doors.is_empty():
+			door = patch.doors[0]
+		# Stand a pace outside the door, not in it.
+		var front := Vector3(patch.front)
+		var pos := Vector3(door.x * v, 0.0, door.z * v) + front * 1.2
+		var d := pos.distance_squared_to(worker.global_position)
+		if d < best_d:
+			best_d = d
+			best = {"pos": pos, "where": "the " + arch}
+	return best
+
+
+## "the bakery" from "bakery" or "the_bakery", for saying out loud.
+static func _place_name(raw: String) -> String:
+	var p := raw.strip_edges().to_lower().replace("_", " ")
+	return p if p.begins_with("the ") else "the " + p
+
+
+## What a scout reports from where they end up: the lie of the land in a few
+## words, from the same terrain the generator reads.
+func _describe_ground(at: Vector3, dir: String) -> String:
+	var v := VoxelChunk.VOXEL_M
+	var cx := int(at.x / v)
+	var cz := int(at.z / v)
+	var water := 0
+	var lo := 1 << 30
+	var hi := -(1 << 30)
+	var trees := 0
+	var n := 0
+	for dz in range(-12, 13, 3):
+		for dx in range(-12, 13, 3):
+			var h := world.height_at(cx + dx, cz + dz)
+			if h < 0:
+				continue
+			n += 1
+			lo = mini(lo, h)
+			hi = maxi(hi, h)
+			var top := world.get_voxel(Vector3i(cx + dx, h, cz + dz))
+			if top == VoxelTypes.WATER:
+				water += 1
+			elif top == VoxelTypes.LEAF or top == VoxelTypes.BARK:
+				trees += 1
+	if n == 0:
+		return "Nothing out %s but the edge of the world." % dir
+	var parts: Array[String] = []
+	if water > n / 4:
+		parts.append("there is water")
+	if trees > n / 4:
+		parts.append("it is wooded")
+	if hi - lo <= 3:
+		parts.append("the ground is flat")
+	elif hi - lo > 12:
+		parts.append("it climbs steeply")
+	else:
+		parts.append("it rises a little")
+	return "Out %s: %s." % [dir, ", ".join(parts)]
+
+
+## Where a referenced step left its ground, or the player's feet if the step
+## named nothing. "here" is not a failure to be specific: most orders are given
+## while standing in the place they are about, and that is the whole reason the
+## crew follows you around.
+func _site_for(run: Dictionary, step: Dictionary, field: String) -> Dictionary:
+	var id := str(step.get(field, ""))
+	var sites: Dictionary = run["sites"]
+	if id != "" and id != "here" and sites.has(id):
+		return sites[id]
+	var worker: Worker = run["worker"]
+	var near := worker.global_position if player == null else player.global_position
+	return {"centre": near, "spread": 9.0, "where": "where you were standing"}
+
+
+func _finish_run(run: Dictionary) -> void:
+	var worker: Worker = run["worker"]
+	_running.erase(worker.memory.worker_id)
+	# A plot reserved for a plan that turned out to be all fences and hens is a
+	# plot nobody can build on for the rest of the game.
+	var plot: Plot = run["plot"]
+	if plot != null and plot.occupied_by < 0:
+		plot.reserved = false
+
+
+func _abandon(run: Dictionary) -> void:
+	run["abandoned"] = true
+	_finish_run(run)
+
+
+## A worker's hands are free. If they were in the middle of a plan, the next
+## step of it starts.
+##
+## Deferred, because a step can finish inside the call that started it — an
+## errand for hens given while standing on the spot has no walk in it — and
+## advancing the plan from inside its own dispatch would run two steps into
+## each other.
+func _on_step_done(worker: Worker) -> void:
+	var run: Dictionary = _running.get(worker.memory.worker_id, {})
+	if run.is_empty():
+		return                          # a one-off errand, not part of a plan
+	# Some steps have a piece of bookkeeping that belongs to the moment the
+	# work is finished, not the moment it was started — a demolished building
+	# leaves the register when the last voxel is gone, not when the worker
+	# sets off with a hammer.
+	if run.has("after"):
+		var after: Callable = run["after"]
+		run.erase("after")
+		after.call()
+	run["at"] = int(run["at"]) + 1
+	_advance.call_deferred(run)
+
+
+## The worker could not do the step they had taken. They have already said so
+## out loud, so this only has to stop the rest of the plan waiting on them.
+func _on_step_failed(worker: Worker, _err: Dictionary) -> void:
+	var run: Dictionary = _running.get(worker.memory.worker_id, {})
+	if not run.is_empty():
+		_abandon(run)
+
+
+# ------------------------------------------------------------------ the steps
+
+func _step_build(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var plot: Plot = run["plot"]
+	var spec: Dictionary = step.get("spec", {})
+	var res := BuildingGenerator.build(spec,
+		hash(worker.memory.worker_id) & 0x7FFFFFFF, plot, _ctx())
+	if not res["ok"]:
+		_refuse(worker, plot, res["error"])
+		return "failed"
+
+	var patch: VoxelPatch = res["patch"]
+	var ready := {
+		"kind": "build", "run": run, "worker": worker, "plot": plot,
+		"spec": spec, "patch": patch, "assumptions": run["assumptions"],
+		"line": "",
 	}
 	if not _begin(ready):
 		_held.append(ready)
+		return "held"
+	_remember_site(run, step, {
+		"centre": plot.centre_m(), "spread": 4.0, "where": plot.street_name,
+	})
+	return "started"
+
+
+func _step_enclose(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var anchor := _site_for(run, step, "near")
+	var size: Array = step["size"]
+	var want := Vector2i(
+		int(round(float(size[0]) / VoxelChunk.VOXEL_M)),
+		int(round(float(size[1]) / VoxelChunk.VOXEL_M)))
+
+	# A pen goes on open ground, never on a plot. That is partly so it does not
+	# eat somewhere a building could stand, and partly because it is where a pen
+	# belongs: behind the town, not on the high street.
+	var site := EnclosureGenerator.find_site(world, anchor["centre"], want,
+		_avoid_rects())
+	var res := EnclosureGenerator.build(step, world, site, _ctx())
+	if not res["ok"]:
+		worker.ask_player(str((res["error"] as Dictionary).get("question",
+			"I could not put a fence there.")))
+		refused.emit(worker, res["error"])
+		return "failed"
+
+	var patch: VoxelPatch = res["patch"]
+	var inside := EnclosureGenerator.inside_of(site, world)
+	var ready := {
+		"kind": "enclose", "run": run, "worker": worker, "plot": null,
+		"patch": patch, "assumptions": run["assumptions"],
+		"where": "out past the town", "line": "",
+	}
+	if not _begin(ready):
+		_held.append(ready)
+		return "held"
+	_remember_site(run, step, {
+		"centre": inside["centre"], "spread": inside["spread"],
+		"where": "in the pen", "rect": site,
+	})
+	return "started"
+
+
+func _step_stock(run: Dictionary, step: Dictionary) -> String:
+	if livestock == null:
+		return "failed"
+	var worker: Worker = run["worker"]
+	var species := str(step["species"])
+	var target := _site_for(run, step, "into")
+	var count := int(step.get("count", 0))
+	if count <= 0:
+		count = 6 if species == "hen" else 4
+
+	# The pen decides how many will fit, not the order. Six hens in a three by
+	# three is not six hens, it is a crate.
+	#
+	# Spread is the radius they may drift over, so the room is its circle at
+	# roughly two square metres an animal. Squaring the radius and calling that
+	# the area put six hens in an eight by six pen at two of them, which looked
+	# like the order being ignored rather than the pen being full.
+	var spread := maxf(float(target["spread"]), 0.6)
+	var room := int(PI * spread * spread * 0.5)
+	count = clampi(count, 1, maxi(room, 1))
+
+	var line := "I will go and fetch %d %s." % [count, Steps.plural(species, count)]
+	if not worker.take_stock_job(livestock, species, count, target["centre"],
+			float(target["spread"]), str(target["where"]), line):
+		return "failed"
+	return "started"
+
+
+func _step_sow(run: Dictionary, step: Dictionary) -> String:
+	if farm == null:
+		return "failed"
+	var worker: Worker = run["worker"]
+	var crop := str(step.get("crop", "wheat"))
+	var anchor := _site_for(run, step, "in")
+
+	var side := 20                        ## voxels — 5 m square, the usual field
+	if step.has("size"):
+		var size: Array = step["size"]
+		side = int(round(float(size[0]) / VoxelChunk.VOXEL_M))
+	var found := farm.find_field(anchor["centre"], Vector2i(side, side))
+	if found.is_empty():
+		worker.ask_player("There is no flat open ground near here for a field. "
+			+ "Where would you like it?")
+		return "failed"
+
+	var rect: Rect2i = found["rect"]
+	_remember_site(run, step, {
+		"centre": Vector3(rect.get_center().x * VoxelChunk.VOXEL_M,
+			world.ground_m(rect.get_center().x * VoxelChunk.VOXEL_M,
+				rect.get_center().y * VoxelChunk.VOXEL_M),
+			rect.get_center().y * VoxelChunk.VOXEL_M),
+		"spread": float(mini(rect.size.x, rect.size.y)) * VoxelChunk.VOXEL_M * 0.4,
+		"where": "on the new field", "rect": rect,
+	})
+	worker.take_field_job(FieldWork.new(farm, rect, crop), run["assumptions"],
+		"Right — %s it is." % crop)
+	return "started"
+
+
+func _step_gather(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var mat := str(step["material"])
+	var units := int(step.get("units", 0))
+	if units <= 0:
+		units = 240
+	if not _dig(worker, mat, units):
+		return "failed"
+	return "started"
+
+
+func _remember_site(run: Dictionary, step: Dictionary, site: Dictionary) -> void:
+	var id := str(step.get("id", ""))
+	if id == "":
+		return
+	(run["sites"] as Dictionary)[id] = site
+
+
+## Ground a pen must not be put on: every building already standing, and every
+## plot, taken or not, because a plot is where a building is going to stand.
+func _avoid_rects() -> Array:
+	var out: Array = []
+	for r: Rect2i in town.occupied_rects:
+		out.append(r)
+	if village != null:
+		for p: Plot in village.plots:
+			out.append(p.rect_v())
+	return out
 
 
 # ---------------------------------------------------------------- the stores
@@ -232,24 +1334,32 @@ func _begin(job: Dictionary) -> bool:
 	town.spend(bill)
 	worker.waiting_for = ""
 
-	# The assumptions go up before the worker leaves, never after the building
-	# is finished. Seeing what they decided while they walk away is what makes
-	# the result fair (design pillar P3).
-	plan_accepted.emit(worker, job["assumptions"])
-
-	# Nobody paths through a building site.
+	# Nobody paths through a building site. A pen is a building site too — the
+	# posts are solid, and a worker who pathed through where the fence is going
+	# would walk out through it once it was there.
 	nav.refresh_world_rect(patch.footprint, 3)
 
-	if not worker.take_job(job["plot"], job["spec"], patch, job["assumptions"],
-			str(job["line"]), props_root):
+	# A fence and a house are the same job to everything above this line. They
+	# part company only here, and only because one of them has a plot.
+	var took := false
+	if str(job.get("kind", "build")) != "build":
+		# Anything with no plot: a fence, a road, a grove, a cut, a demolition.
+		took = worker.take_enclosure_job(patch, str(job.get("where", "the town")),
+			job["assumptions"], str(job["line"]), props_root)
+	else:
+		took = worker.take_job(job["plot"], job["spec"], patch, job["assumptions"],
+			str(job["line"]), props_root)
+	if not took:
 		# The route was there when the plan was made and is not there now. The
 		# worker has already said so; the town gets its material back, because
 		# a bill for a house that was never started is just a leak.
 		town.refund(bill)
-		(job["plot"] as Plot).reserved = false
+		if job.get("plot", null) != null:
+			(job["plot"] as Plot).reserved = false
 		return true
 	if map != null:
-		map.note_building(patch, str(job["spec"].get("archetype", "building")))
+		map.note_building(patch, patch.archetype if patch.archetype != ""
+			else str((job.get("spec", {}) as Dictionary).get("archetype", "building")))
 	return true
 
 
@@ -349,17 +1459,30 @@ func _process(delta: float) -> void:
 			continue
 		if worker.busy():
 			continue
+		var run: Dictionary = job.get("run", {})
+		if run.get("abandoned", false):
+			_held.remove_at(i)
+			continue
 		if _begin(job):
 			_held.remove_at(i)
 
 
 ## Drop a held plan — the player asked this worker for something else.
+##
+## The rest of the plan goes with it. A worker holding "fence it, then stock it"
+## who is told to go and dig instead has been given a different order, and
+## coming back to the hens an hour later would be a ghost of an instruction the
+## player has forgotten giving.
 func _forget_held(worker: Worker) -> void:
 	for i in range(_held.size() - 1, -1, -1):
 		var job: Dictionary = _held[i]
 		if job["worker"] == worker:
-			(job["plot"] as Plot).reserved = false
+			if job.get("plot", null) != null:
+				(job["plot"] as Plot).reserved = false
 			_held.remove_at(i)
+	var run: Dictionary = _running.get(worker.memory.worker_id, {})
+	if not run.is_empty():
+		_abandon(run)
 	worker.waiting_for = ""
 
 
@@ -388,6 +1511,7 @@ func _on_llm_failed(_worker_id: String, reason: String) -> void:
 
 func _refuse(worker: Worker, plot: Plot, err: Dictionary) -> void:
 	_open.erase(worker.memory.worker_id)
+	worker.stop_thinking()
 	plot.reserved = false
 	# A typed error is a question, not a stack trace. This is the moment the
 	# design is built around: the worker turns "MODULE_WONT_FIT" into a sentence.
@@ -404,10 +1528,193 @@ func answer(worker: Worker, reply: String) -> void:
 	if job.is_empty():
 		return
 	_open.erase(worker.memory.worker_id)
+	# Before instruct(), not after: a worker still marked as thinking counts as
+	# busy now, and would be told they were in the middle of something by the
+	# very call meant to restart them.
+	worker.stop_thinking()
 	var plot: Plot = job["plot"]
 	plot.reserved = false
 	instruct(worker, "%s (%s)" % [str(job["instruction"]), reply])
 
+
+
+# ------------------------------------------------------------------- roles
+
+## Taking people on and writing jobs up.
+##
+## Kept as sentence patterns rather than sent to the model, for the same
+## reason "wait here" is: they are about the crew, not the world, there is
+## nothing to plan, and a forty-second pause before "you're hired" would be
+## absurd. The job itself — what a "night watchman" is made of — is the part
+## that goes to the model, once, the first time the town hears the name.
+const HIRE_RE := "^(?:hire|take on|employ|recruit|sign up)\\s+(?<who>you|me|him|her|them|[a-z]+)\\s+as\\s+(?:a |an |the |my )?(?<role>[a-z][a-z \\-]*?)(?:\\s*[:,;\\-–—]\\s*(?<desc>.+))?[.!]?$"
+const HIRED_RE := "^(?:you're|you are|youre|your) hired as\\s+(?:a |an |the |my )?(?<role>[a-z][a-z \\-]*?)(?:\\s*[:,;\\-–—]\\s*(?<desc>.+))?[.!]?$"
+const BE_MY_RE := "^(?:be my|work for me as|join me as|you can be my|i want you as)\\s+(?:a |an |the )?(?<role>[a-z][a-z \\-]*?)(?:\\s*[:,;\\-–—]\\s*(?<desc>.+))?[.!]?$"
+const DEFINE_RE := "^(?:define|create|make|add|write up|new)\\s+(?:a |an )?(?:new )?(?:role|job)\\s+(?:called |named |for )?(?<role>[a-z][a-z \\-]*?)\\s*(?:[:,;\\-–—]|\\bwho\\b|\\bthat\\b|\\bto\\b)?\\s*(?<desc>.*)$"
+const FIRE_RE := "^(?:you're fired|you are fired|youre fired|dismiss(?:ed)?|let you go|i'm letting you go|you can go home for good|you're let go)"
+
+var _re_hire := RegEx.new()
+var _re_hired := RegEx.new()
+var _re_be_my := RegEx.new()
+var _re_define := RegEx.new()
+var _re_fire := RegEx.new()
+
+
+func _compile_role_patterns() -> void:
+	_re_hire.compile(HIRE_RE)
+	_re_hired.compile(HIRED_RE)
+	_re_be_my.compile(BE_MY_RE)
+	_re_define.compile(DEFINE_RE)
+	_re_fire.compile(FIRE_RE)
+
+
+## Returns true if the instruction was about hiring or roles, whatever it
+## then did about it.
+func _try_roles(worker: Worker, instruction: String) -> bool:
+	if _re_hire.get_pattern() == "":
+		_compile_role_patterns()
+	var t := instruction.strip_edges().to_lower()
+
+	if _re_fire.search(t) != null:
+		if not worker.hired:
+			spoke.emit(worker, "I never worked for you.", "talk")
+		elif worker.memory.worker_id in ["mira", "tobias", "ren"]:
+			spoke.emit(worker, "I am not going anywhere.", "talk")
+		else:
+			# Whatever plan they were in the middle of goes with them.
+			_forget_held(worker)
+			_open.erase(worker.memory.worker_id)
+			crew.dismiss(worker)
+			worker.memory.remember(clock.day, "Let go.", -0.3)
+			spoke.emit(worker, "Right. I will be about, if you change your mind.", "talk")
+		return true
+
+	var m := _re_hire.search(t)
+	var target := worker
+	if m == null:
+		m = _re_hired.search(t)
+	if m == null:
+		m = _re_be_my.search(t)
+	if m != null:
+		var who := m.get_string("who") if m.names.has("who") else "you"
+		if who not in ["", "you", "me", "him", "her", "them"]:
+			target = _worker_named(who)
+			if target == null:
+				spoke.emit(worker, "There is nobody here called %s." % who.capitalize(), "talk")
+				return true
+		_hire_as(target, m.get_string("role"), m.get_string("desc"), worker)
+		return true
+
+	m = _re_define.search(t)
+	if m != null and m.get_string("role").strip_edges() != "":
+		_define_role(worker, m.get_string("role"), m.get_string("desc"), null)
+		return true
+	return false
+
+
+func _worker_named(name: String) -> Worker:
+	if crew == null:
+		return null
+	for w: Worker in crew.workers:
+		if w.display_name().to_lower() == name.to_lower():
+			return w
+	return null
+
+
+## Taking somebody on as a job. If the town knows the job, it is immediate;
+## if not, the job is written up first and the hire waits on it.
+func _hire_as(target: Worker, role_name: String, desc: String, asked: Worker) -> void:
+	var id := RoleBook.canonical(Role.id_of(role_name))
+	if id == "":
+		spoke.emit(asked, "As a what?", "question")
+		return
+	if id == "citizen":
+		spoke.emit(asked, "That is not a job, that is just living here.", "talk")
+		return
+	if target.hired and target.role != null and target.role.id == id:
+		spoke.emit(target, "I already am.", "talk")
+		return
+	if crew.roles.has(id):
+		_finish_hire(target, crew.roles.get_role(id))
+		return
+	_define_role(asked, role_name, desc, target)
+
+
+## Writing a job up. `then_hire` is who to take on once it exists, or null to
+## only define it.
+func _define_role(asked: Worker, role_name: String, desc: String, then_hire: Worker) -> void:
+	var id := RoleBook.canonical(Role.id_of(role_name))
+	if id == "":
+		spoke.emit(asked, "What is the job called?", "question")
+		return
+	if crew.roles.has(id) and then_hire == null:
+		spoke.emit(asked, "We have %s already: %s." % [
+			Validator.an(crew.roles.get_role(id).name), crew.roles.get_role(id).summary()], "talk")
+		return
+	if not _pending_hires.has(id):
+		_pending_hires[id] = []
+	if then_hire != null:
+		(_pending_hires[id] as Array).append(then_hire)
+	spoke.emit(asked, "%s — let me think what that comes to." % role_name.capitalize(), "talk")
+	llm.compose_role(id, role_name, desc.strip_edges(), _ctx(asked))
+
+
+## The job has been written up, by the model or by the keyword composer. It
+## is checked like everything else that comes back from a model: a role that
+## names something the town has never heard of is refused out loud, not
+## quietly trimmed.
+func _on_role_ready(key: String, raw: Dictionary, source: String) -> void:
+	var waiting: Array = _pending_hires.get(key, [])
+	_pending_hires.erase(key)
+	var mouth: Worker = waiting[0] if not waiting.is_empty() else _any_hired()
+
+	var err := Validator.check_role(raw)
+	if not err.is_empty():
+		if mouth != null:
+			mouth.speak(str(err["question"]), "refuse")
+		refused.emit(mouth, err)
+		return
+
+	var role := Role.make(key, str(raw.get("name", key)).strip_edges().to_lower(),
+		raw.get("capabilities", []), "")
+	role.character = str(raw.get("character", "")).strip_edges()
+	role.standing = str(raw.get("standing", "")).strip_edges()
+	role.created_day = clock.day
+	role.source = source
+	# Everybody can walk, stand and talk, whatever the composer left out.
+	for base: String in ["go", "wait", "speak"]:
+		if base not in role.capabilities:
+			role.capabilities.append(base)
+	crew.roles.add(role)
+	status.emit("New job: %s" % role.summary())
+
+	var line := str(raw.get("line", "")).strip_edges()
+	for w: Variant in waiting:
+		_finish_hire(w as Worker, role, line)
+	if waiting.is_empty() and mouth != null:
+		mouth.speak("%s: %s." % [role.name.capitalize(),
+			", ".join(role.ready_capabilities())], "talk")
+
+
+func _finish_hire(target: Worker, role: Role, line: String = "") -> void:
+	crew.hire(target, role)
+	target.memory.remember(clock.day, "Taken on as %s." % Validator.an(role.name), 0.3)
+	target.memory.nudge("trust_in_player", 0.1)
+	if line == "":
+		line = "Right. I am your %s, then." % role.name
+	target.speak(line, "talk")
+	plan_accepted.emit(target, ["Taken on as %s." % Validator.an(role.name),
+		"Can do: %s." % ", ".join(role.ready_capabilities()),
+		("Cannot do yet: %s." % ", ".join(role.planned_capabilities()))
+			if not role.planned_capabilities().is_empty() else "Nothing waiting on the town."])
+
+
+func _any_hired() -> Worker:
+	if crew == null:
+		return null
+	for w: Worker in crew.hired():
+		return w
+	return null
 
 
 const STAY_WORDS := ["wait", "stay", "stop", "hold"]
@@ -479,95 +1786,9 @@ func _try_gather(worker: Worker, instruction: String) -> bool:
 	return true
 
 
-# ------------------------------------------------------------------ the land
-
-const FIELD_WORDS := ["field", "farm", "plant", "sow", "crop", "wheat",
-	"carrot", "garden", "plough", "plow", "allotment"]
-const STOCK_WORDS := ["hen", "hens", "chicken", "chickens", "sheep", "cow",
-	"cows", "cattle", "livestock", "coop", "poultry"]
-
-
 static func _has_word(text: String, words: Array) -> bool:
 	var t := " %s " % text.to_lower().replace(",", " ").replace(".", " ")
 	for w: String in words:
 		if t.find(" %s " % w) >= 0:
 			return true
 	return false
-
-
-static func _is_field_work(instruction: String) -> bool:
-	return _has_word(instruction, FIELD_WORDS)
-
-
-static func _is_livestock(instruction: String) -> bool:
-	return _has_word(instruction, STOCK_WORDS)
-
-
-## Size and crop are the two things a one-line instruction usually leaves out,
-## so both are guessed and both are said out loud. That is the whole of pillar
-## P3 applied to a field instead of a building.
-func _send_to_field(worker: Worker, instruction: String) -> void:
-	var text := instruction.to_lower()
-	var crop := "carrot" if text.find("carrot") >= 0 else "wheat"
-	var side := 20                       ## voxels — 5 m square
-	var size_word := "the usual size"
-	if _has_word(text, ["big", "large", "great", "huge"]):
-		side = 36
-		size_word = "big, since you asked"
-	elif _has_word(text, ["small", "little", "tiny"]):
-		side = 12
-		size_word = "small, since you asked"
-
-	var near := worker.global_position if player == null else player.global_position
-	var found := farm.find_field(near, Vector2i(side, side))
-	if found.is_empty():
-		worker.ask_player("There is no flat open ground near here for a field. " 			+ "Where would you like it?")
-		return
-	var rect: Rect2i = found["rect"]
-
-	var where := "on the nearest flat ground I could find"
-	if bool(found["wet"]):
-		where = "within reach of water, so it will ripen in about three days"
-	else:
-		where = "on the nearest flat ground I could find — there is no water " 			+ "near it, so it will be slow"
-	var assumptions: Array = [
-		"You did not say what to sow, so I put in %s." % crop
-			if text.find(crop) < 0 else "Sowing %s, as you said." % crop,
-		"You did not say how big, so I made it %s — %.0f by %.0f metres."
-			% [size_word, side * 0.25, side * 0.25],
-		"I put it %s, %.0f m from you." % [where,
-			Vector3(rect.get_center().x * 0.25, near.y,
-				rect.get_center().y * 0.25).distance_to(near)],
-	]
-	plan_accepted.emit(worker, assumptions)
-
-	var work := FieldWork.new(farm, rect, crop)
-	worker.take_field_job(work, assumptions,
-		"Right — %s it is." % crop)
-
-
-## Livestock arrives with the worker rather than appearing from nowhere: they
-## walk out, and the animals are there when they get back.
-func _fetch_livestock(worker: Worker, instruction: String) -> void:
-	var text := instruction.to_lower()
-	var species := "hen"
-	if _has_word(text, ["sheep"]):
-		species = "sheep"
-	elif _has_word(text, ["cow", "cows", "cattle"]):
-		species = "cow"
-
-	var count := 6 if species == "hen" else 4
-	if _has_word(text, ["a", "one"]) and _has_word(text, ["few"]):
-		count = 3
-	var near := worker.global_position if player == null else player.global_position
-	var made := livestock.stock_area(species, near, count, 9.0)
-	if made == 0:
-		worker.ask_player("There is nowhere here to put them. Somewhere more open?")
-		return
-
-	plan_accepted.emit(worker, [
-		"You did not say how many, so I brought %d." % made,
-		"I turned them out where you were standing; they will not stray far.",
-	])
-	worker.speak("%d %s, turned out here." % [made,
-		species + ("s" if made != 1 else "")], "done")

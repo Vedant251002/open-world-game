@@ -187,17 +187,15 @@ func _limb(at: Vector3, upper: Color, lower: Color, length: float,
 	return n
 
 
+## Boxes and paint come from BoxKit rather than being made here.
+##
+## Three of these people is sixty small cubes, and every one of them used to
+## carry a BoxMesh and a StandardMaterial3D of its own. Nothing could batch, so
+## a worker cost twenty draw calls in the colour pass and twenty more in the
+## shadow pass, for a figure a metre and a half tall. Shared, the whole crew
+## comes down to a handful of distinct materials.
 func _box(parent: Node3D, origin: Vector3, size: Vector3, colour: Color) -> void:
-	var mesh := BoxMesh.new()
-	mesh.size = size
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = colour
-	mat.roughness = 0.9
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.material_override = mat
-	mi.position = origin + size * 0.5
-	parent.add_child(mi)
+	BoxKit.add(parent, origin, size, colour)
 
 
 ## speed is metres per second; 0 stands still.

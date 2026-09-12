@@ -121,9 +121,43 @@ func _process(delta: float) -> void:
 	_drops = keep
 
 
+## Feeding and seeing to every animal within reach: they give twice as often
+## for `hours`. Returns how many were seen to.
+func tend_near(at: Vector3, radius: float, hours: float) -> int:
+	var n := 0
+	for a: Animal in animals:
+		if not is_instance_valid(a):
+			continue
+		if a.global_position.distance_to(at) <= radius:
+			a.tended_hours = maxf(a.tended_hours, hours)
+			n += 1
+	return n
+
+
+## Everything lying within reach of a point, into the stores. What a farmhand
+## does on a round of the pens — the same pickup the player gets by walking
+## over produce, done for them. Returns what was picked up, by kind.
+func collect_near(at: Vector3, radius: float) -> Dictionary:
+	var got := {}
+	var keep: Array[Dictionary] = []
+	for d: Dictionary in _drops:
+		var n: Node3D = d["node"]
+		if not is_instance_valid(n):
+			continue
+		if n.global_position.distance_to(at) <= radius:
+			var kind := str(d["kind"])
+			_collect(kind)
+			got[kind] = int(got.get(kind, 0)) + 1
+			n.queue_free()
+			continue
+		keep.append(d)
+	_drops = keep
+	return got
+
+
 func _collect(kind: String) -> void:
 	var into := "food" if kind != "wool" else "cloth"
-	town.stock[into] = int(town.stock.get(into, 0)) + (2 if kind == "wool" else 1)
+	town.produce(into, 2 if kind == "wool" else 1)
 	stock_changed.emit(into, int(town.stock[into]))
 
 

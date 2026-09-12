@@ -18,7 +18,7 @@ static func specs() -> Array[Dictionary]:
 	return [
 		{
 			"kind": "building", "archetype": "hut", "tech_tier": 1,
-			"footprint": [7, 6], "stories": 1, "orientation": "face_street",
+			"footprint": [11, 9], "stories": 1, "orientation": "face_street",
 			"roof": "gable",
 			"materials": {"walls": "timber", "roof": "thatch",
 				"trim": "dark_oak", "foundation": "cobble"},
@@ -31,7 +31,7 @@ static func specs() -> Array[Dictionary]:
 		},
 		{
 			"kind": "building", "archetype": "bakery", "tech_tier": 1,
-			"footprint": [11, 9], "stories": 1, "orientation": "face_street",
+			"footprint": [16, 13], "stories": 1, "orientation": "face_street",
 			"roof": "gable",
 			"materials": {"walls": "plank", "roof": "thatch",
 				"trim": "dark_oak", "foundation": "cobble"},
@@ -47,7 +47,7 @@ static func specs() -> Array[Dictionary]:
 		},
 		{
 			"kind": "building", "archetype": "workshop", "tech_tier": 1,
-			"footprint": [9, 12], "stories": 1, "orientation": "face_north",
+			"footprint": [14, 17], "stories": 1, "orientation": "face_north",
 			"roof": "shed",
 			"materials": {"walls": "timber", "roof": "thatch",
 				"trim": "dark_oak", "foundation": "gravel"},
@@ -60,7 +60,7 @@ static func specs() -> Array[Dictionary]:
 		},
 		{
 			"kind": "building", "archetype": "tavern", "tech_tier": 1,
-			"footprint": [13, 10], "stories": 2, "orientation": "face_plaza",
+			"footprint": [19, 15], "stories": 2, "orientation": "face_plaza",
 			"roof": "hip",
 			"materials": {"walls": "timber", "roof": "thatch",
 				"trim": "dark_oak", "foundation": "cobble"},
@@ -78,7 +78,7 @@ static func specs() -> Array[Dictionary]:
 		},
 		{
 			"kind": "building", "archetype": "store", "tech_tier": 1,
-			"footprint": [8, 8], "stories": 1, "orientation": "worker_choice",
+			"footprint": [13, 13], "stories": 1, "orientation": "worker_choice",
 			"roof": "flat",
 			"materials": {"walls": "sandstone", "roof": "thatch",
 				"trim": "dark_oak", "foundation": "cobble"},

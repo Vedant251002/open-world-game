@@ -20,6 +20,7 @@ var far: FarTerrain
 var sky: SkyEnv
 var player: Player
 var map: MapScreen
+var inventory: InventoryScreen
 var touch: TouchControls
 var props_root: Node3D
 var clock: GameClock
@@ -30,6 +31,7 @@ var dispatch: Dispatcher
 var hud: Hud
 var farm: Farm
 var livestock: Livestock
+var wildlife: Wildlife
 
 var _world_seed := 0
 var showcase_views: Array[Dictionary] = []
@@ -102,10 +104,16 @@ func _ready() -> void:
 	add_child(map)
 	map.setup(world, gen, village, player)
 
+	inventory = InventoryScreen.new()
+	inventory.name = "Inventory"
+	add_child(inventory)
+	inventory.setup(town, player, map)
+
 	touch = TouchControls.new()
 	touch.name = "Touch"
 	touch.player = player
 	touch.map = map
+	touch.inventory = inventory
 	add_child(touch)
 
 	if "--streamtest" in args:
@@ -136,11 +144,23 @@ func _ready() -> void:
 		return
 
 
-func _process(_delta: float) -> void:
+## How often the nav grid is asked whether any more of the world has arrived.
+## Twice a second: the streamer cannot load faster than that in any case, and a
+## pass that finds nothing new costs a dictionary lookup per column.
+const NAV_CATCH_UP := 0.5
+var _nav_due := 0.0
+
+
+func _process(delta: float) -> void:
 	if player == null:
 		return
 	if far != null:
 		far.refresh(player.global_position)
+	if nav != null:
+		_nav_due -= delta
+		if _nav_due <= 0.0:
+			_nav_due = NAV_CATCH_UP
+			nav.catch_up(player.global_position)
 
 
 ## Collision is a physics concern, so it is kept current on the physics tick
@@ -220,6 +240,19 @@ func _on_world_ready(t0: int) -> void:
 		add_child(et)
 		et.begin()
 		return
+	if "--roletest" in args:
+		var rt := RoleTest.new()
+		rt.crew = crew
+		rt.dispatch = dispatch
+		rt.clock = clock
+		rt.town = town
+		rt.player = player
+		rt.farm = farm
+		rt.livestock = livestock
+		rt.world = world
+		add_child(rt)
+		rt.begin()
+		return
 	if "--crewtest" in args:
 		var ct := CrewTest.new()
 		ct.world = world
@@ -235,6 +268,70 @@ func _on_world_ready(t0: int) -> void:
 		ct.hud = hud
 		add_child(ct)
 		ct.begin()
+		return
+	if "--wildprobe" in args:
+		var wp := WildProbe.new()
+		wp.player = player
+		wp.world = world
+		wp.village = village
+		wp.sky = sky
+		wp.wildlife = wildlife
+		add_child(wp)
+		return
+	if "--zoo" in args:
+		var zs := ZooShot.new()
+		zs.player = player
+		zs.world = world
+		zs.village = village
+		zs.sky = sky
+		zs.clock = clock
+		zs.livestock = livestock
+		zs.wildlife = wildlife
+		zs.crew = crew
+		add_child(zs)
+		return
+	if "--chatprobe" in args:
+		var cp := ChatProbe.new()
+		cp.dispatch = dispatch
+		cp.crew = crew
+		cp.world = world
+		add_child(cp)
+		var ask := ""
+		for a in args:
+			if a.begins_with("--say="):
+				ask = a.substr(6)
+		cp.begin(ask)
+		return
+	if "--asktest" in args:
+		var qt := AskTest.new()
+		qt.world = world
+		qt.village = village
+		qt.crew = crew
+		qt.dispatch = dispatch
+		qt.clock = clock
+		qt.town = town
+		qt.player = player
+		qt.farm = farm
+		qt.livestock = livestock
+		add_child(qt)
+		qt.begin()
+		return
+	if "--holdtest" in args:
+		var ht := HoldTest.new()
+		ht.world = world
+		ht.village = village
+		ht.crew = crew
+		ht.clock = clock
+		ht.player = player
+		add_child(ht)
+		ht.begin()
+		return
+	if "--invshot" in args:
+		var iv := InvShot.new()
+		iv.player = player
+		iv.inventory = inventory
+		iv.town = town
+		add_child(iv)
 		return
 	if "--walktest" in args:
 		var wt := WalkTest.new()
@@ -254,6 +351,7 @@ func _on_world_ready(t0: int) -> void:
 		b.world = world
 		b.sky = sky
 		b.streamer = streamer
+		b.nav = nav
 		add_child(b)
 		b.start(village.well_pos)
 		return
@@ -303,12 +401,22 @@ func _raise_crew() -> void:
 	# 160 voxels — forty metres of open country outside the last plot. The crew
 	# never needed it when all they did was build, but fetching stone is a walk
 	# out of town and back, and there has to be a town to be out of.
+	# The flood fill that keeps the crew off the rooftops needs one piece of
+	# ground it can trust. The plaza is it.
+	nav.set_ground_seed(village.well_pos)
+	var t_nav := Time.get_ticks_msec()
 	nav.build(world, village.nav_bounds_v(160))
+	print("[delegate] nav grid %d x %d cells in %d ms" % [
+		nav.size.x, nav.size.y, Time.get_ticks_msec() - t_nav])
 
 	crew = Crew.new()
 	crew.name = "Crew"
 	add_child(crew)
 	crew.spawn(world, nav, clock, town, player, village.well_pos)
+	# People in the streets. --nocitizens for the benches, which time the crew
+	# and not the crowd.
+	if "--nocitizens" not in OS.get_cmdline_user_args():
+		crew.spawn_citizens(Crew.CITIZENS, _world_seed ^ 0x5EED, village.bounds_v)
 
 	farm = Farm.new()
 	farm.name = "Farm"
@@ -322,7 +430,17 @@ func _raise_crew() -> void:
 	# A few hens about the well from the start, so the town is inhabited before
 	# anyone gives an order.
 	livestock.stock_area("hen", village.well_pos + Vector3(6, 0, -5), 5, 7.0)
+	livestock.stock_area("rooster", village.well_pos + Vector3(8, 0, -3), 1, 2.0)
 	livestock.stock_area("sheep", village.well_pos + Vector3(-13, 0, 9), 3, 8.0)
+	livestock.stock_area("goat", village.well_pos + Vector3(-16, 0, -6), 2, 5.0)
+
+	# Everything nobody owns: birds on the ridges, fish in the water, deer past
+	# the last street, a dog by the well. Kept stocked around the player and
+	# nowhere else.
+	wildlife = Wildlife.new()
+	wildlife.name = "Wildlife"
+	add_child(wildlife)
+	wildlife.setup(world, clock, town, village, player)
 
 	if "--demo" in OS.get_cmdline_user_args():
 		_demo_field()
@@ -333,6 +451,7 @@ func _raise_crew() -> void:
 	dispatch.setup(world, village, gen, town, clock, nav, props_root, map)
 	dispatch.farm = farm
 	dispatch.livestock = livestock
+	dispatch.wildlife = wildlife
 	dispatch.player = player
 	# The dispatcher needs the whole crew, not just whoever was spoken to: a
 	# shortfall is answered by sending somebody *else* out to dig.
@@ -343,7 +462,10 @@ func _raise_crew() -> void:
 	add_child(hud)
 	hud.setup(player, crew, clock, town)
 
-	hud.farm = farm
+	hud.show_minimap(village, map, crew, inventory)
+	# The town trades overnight. Connected here rather than inside Town so the
+	# clock stays something Town is handed rather than something it listens to.
+	clock.day_passed.connect(func(_d: int) -> void: town.market_day())
 	hud.harvest_wanted.connect(_on_harvest)
 	hud.instruction_given.connect(func(w: Worker, t: String) -> void:
 		dispatch.instruct(w, t))
@@ -352,6 +474,7 @@ func _raise_crew() -> void:
 	dispatch.plan_accepted.connect(func(w: Worker, a: Array) -> void:
 		hud.show_assumptions(w, a))
 	dispatch.status.connect(func(t: String) -> void: hud.toast(t))
+	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
 	# assumption panel rather than a toast that scrolls away.
 	dispatch.short_of.connect(func(w: Worker, missing: Dictionary) -> void:
@@ -394,7 +517,7 @@ func _demo_field() -> void:
 func _on_harvest(tile: Vector2i) -> void:
 	var kind := farm.harvest(tile)
 	if kind != "":
-		hud.toast("Picked %s.   food %d" % [kind, int(town.stock.get("food", 0))], 2.5)
+		hud.toast("Picked %s.   sold for %d." % [kind, 3 * int(Town.PRICE["food"])], 2.5)
 
 
 ## A finished building joins the town register, which is what the next prompt
@@ -443,7 +566,11 @@ func _found_town() -> void:
 		var patch: VoxelPatch = res["patch"]
 		var c := Construction.new(patch, world, props_root)
 		c.complete_now()
-		plot.occupied_by = placed
+		# On the register like anything the crew builds, with no builder and
+		# day zero. Left off it — which is how this was — the workers could
+		# not tell you where the bakery was, and the model was planning a town
+		# it had been told was empty.
+		town.register(patch, plot, "", 0)
 		ctx["occupied_rects"].append(patch.footprint)
 		ctx["built_fronts"][plot.id] = patch.front
 		map.note_building(patch, str(specs[placed]["archetype"]))
@@ -570,12 +697,18 @@ func _record_view(view_name: String, patch: VoxelPatch) -> void:
 func _line_up_cast() -> void:
 	var base := village.well_pos + Vector3(0, 0, 14.0)
 	base.y = world.ground_m(base.x, base.z) + 0.2
-	for i in crew.workers.size():
-		var w: Worker = crew.workers[i]
+	var cast := crew.hired()
+	for i in cast.size():
+		var w: Worker = cast[i]
 		w.employer = null
 		w.global_position = base + Vector3((i - 1) * 1.5, 0.0, 0.0)
 		w.rotation.y = PI
 		w.set_physics_process(false)
+	# --ask="where is the bakery?" puts a question to Mira before the frame is
+	# taken, so the crew shot shows an answer over her head.
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--ask=") and dispatch != null:
+			dispatch.instruct(crew.workers[0], a.substr(6))
 	var species := ["hen", "sheep", "cow"]
 	for i in species.size():
 		var spot := base + Vector3((i - 1) * 2.4, 0.0, -2.6)
@@ -610,8 +743,14 @@ func _install_shotter() -> void:
 	# shows the game rather than the architecture.
 	s.views.push_front({"pos": well + Vector3(3.0, 1.5, 11.0), "yaw": 0.15,
 		"pitch": -0.09, "hour": 9.5, "name": "crew"})
-	s.views.append({"pos": well + Vector3(0, 34.0, 54), "yaw": 0.0,
-		"pitch": -0.45, "hour": 14.0, "name": "aerial"})
+	# The long view down the town, from the last street rather than from the
+	# middle of it. Taken as a fraction of the shelf because the shelf moved:
+	# the block pitch went from twenty-six metres to forty, and the old fixed
+	# fifty-four metres is now a spot inside somebody's bakery. Kept just short
+	# of the shelf edge, since a step past that is the lake.
+	var span := village.bounds_v.size.x * VoxelChunk.VOXEL_M
+	s.views.append({"pos": well + Vector3(0, 34.0, span * 0.46),
+		"yaw": 0.0, "pitch": -0.2, "hour": 14.0, "name": "aerial"})
 	# The same view after dark, because a fill light generous enough to make the
 	# morning readable is exactly the one that ruins the night.
 	s.views.append({"pos": well + Vector3(3.0, 1.5, 11.0), "yaw": 0.15,

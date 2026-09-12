@@ -17,16 +17,23 @@ const BG := Color(0.06, 0.055, 0.05, 0.82)
 const INK := Color(0.94, 0.92, 0.87)
 const DIM := Color(0.72, 0.70, 0.66)
 const WARN := Color(1.0, 0.86, 0.52)
+const COIN := Color(0.98, 0.83, 0.42)
+const DEBT := Color(0.94, 0.51, 0.42)
 
 var player: Player
 var crew: Crew
 var clock: GameClock
 var town: Town
-var farm: Farm
 
 var _target: Worker = null
 var _crop: Node3D = null
-var _larder: Label
+var _purse: Label
+var _keys: Label
+## What the purse and the roster were last painted, so a colour is only ever
+## reassigned when it has really changed.
+var _in_debt := false
+var _crew_tint: Array[Color] = []
+var minimap: Minimap
 var _typing_for: Worker = null
 var _root: Control
 var _prompt: Label
@@ -40,6 +47,14 @@ var _assume_title: Label
 var _assume_body: Label
 var _toast: Label
 var _toast_left := 0.0
+## What a worker last said, as a subtitle. The speech bubble over their head is
+## where the line belongs, but it is a Label3D in a busy scene — a two-line
+## answer about where the bakery is lands across a name tag and a tree, and
+## the point of asking was to be able to read the answer.
+var _subtitle: PanelContainer
+var _subtitle_who: Label
+var _subtitle_line: Label
+var _subtitle_left := 0.0
 var _phrases: HFlowContainer
 ## Sized for a thumb rather than a cursor.
 var _touch := false
@@ -75,16 +90,36 @@ func _build() -> void:
 	_clockline.position = Vector2(22, 18)
 	_root.add_child(_clockline)
 
-	_larder = _label("", 26 if _touch else 15, DIM)
-	_larder.position = Vector2(22, 58 if _touch else 42)
-	_root.add_child(_larder)
+	# The purse, and nothing else about the economy.
+	#
+	# What used to be here was "timb 620   plan 430   thatc 340   cobb 620",
+	# which is four numbers nobody can act on: the player cannot spend timber,
+	# only ask for a building, and the worker is the one who says when the
+	# stone has run out. One figure that goes up when the fields come in and
+	# down when a house goes up is the whole of what the player needs.
+	_purse = _label("", 38 if _touch else 24, COIN)
+	_purse.position = Vector2(22, 58 if _touch else 44)
+	_root.add_child(_purse)
 
 	_crewbox = VBoxContainer.new()
 	_crewbox.position = Vector2(22, 100 if _touch else 70)
 	_crewbox.add_theme_constant_override("separation", 3)
 	_root.add_child(_crewbox)
+	# Rows are added as the crew grows; three to start.
 	for _i in 3:
 		_crewbox.add_child(_label("", 26 if _touch else 15, DIM))
+		_crew_tint.append(Color.BLACK)
+
+	# Two keys, said once and left there. A screen nobody can find is a screen
+	# that does not exist, and neither the stores nor the map announce
+	# themselves any other way on a keyboard — the phone build has buttons for
+	# both, which is why this line is not drawn there.
+	if not _touch:
+		_keys = _label("[I] stores      [M] map", 14, Color(0.55, 0.53, 0.50))
+		# Below the roster, which is three lines of fifteen-point text starting
+		# at seventy and therefore finishes around a hundred and thirty.
+		_keys.position = Vector2(22, 142)
+		_root.add_child(_keys)
 
 	_prompt = _label("", 34 if _touch else 19, INK)
 	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -106,6 +141,8 @@ func _build() -> void:
 
 	_build_bar()
 	_build_assumptions()
+	_build_subtitle()
+	_place_minimap()
 	get_viewport().size_changed.connect(_reflow)
 	_reflow()
 	# Belt and braces: anything added above that is not the text field must not
@@ -178,11 +215,49 @@ func _build_bar() -> void:
 	col.add_child(_phrases)
 
 	_entry = LineEdit.new()
-	_entry.placeholder_text = "tell them what to build…"
+	_entry.placeholder_text = "tell them what to do, or ask them something…"
 	_entry.custom_minimum_size = Vector2(0, 90.0 if _touch else 34.0)
 	_entry.add_theme_font_size_override("font_size", 34 if _touch else 18)
 	_entry.text_submitted.connect(_on_submit)
 	col.add_child(_entry)
+
+
+## A subtitle strip above the prompt line: who spoke, and what they said.
+func _build_subtitle() -> void:
+	_subtitle = PanelContainer.new()
+	_subtitle.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_subtitle.offset_left = -470
+	_subtitle.offset_right = 470
+	_subtitle.offset_bottom = -176
+	_subtitle.offset_top = -240
+	_subtitle.add_theme_stylebox_override("panel", _panel_style())
+	_subtitle.visible = false
+	_root.add_child(_subtitle)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 2)
+	_subtitle.add_child(col)
+	_subtitle_who = _label("", 24 if _touch else 14, DIM)
+	col.add_child(_subtitle_who)
+	_subtitle_line = _label("", 30 if _touch else 18, INK)
+	_subtitle_line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_subtitle_line.custom_minimum_size = Vector2(900, 0)
+	col.add_child(_subtitle_line)
+
+
+## Shows a line a worker has just said, for about as long as it takes to read.
+## Only what is said to the player — work chatter and errand reports go by in
+## the bubble as they always did, and the strip is for answers and questions.
+func subtitle(w: Worker, line: String, kind: String) -> void:
+	if kind not in ["talk", "question", "refuse", "done"]:
+		return
+	_subtitle_who.text = w.display_name()
+	_subtitle_line.text = line
+	_subtitle_line.add_theme_color_override("font_color",
+		WARN if kind == "question" else (Color("#ffb4a2") if kind == "refuse" else INK))
+	_subtitle_left = clampf(3.0 + line.length() * 0.05, 4.0, 16.0)
+	_subtitle.visible = true
+	# Sized to the text, so a one-liner is not a banner.
+	_subtitle.offset_top = _subtitle.offset_bottom - _subtitle.get_combined_minimum_size().y
 
 
 func _build_assumptions() -> void:
@@ -222,12 +297,37 @@ func _reflow() -> void:
 	var bar_w := 1520.0 if _touch else 900.0
 	_bar.offset_left = maxf((w - bar_w) * 0.5, 16.0)
 	_bar.offset_right = -_bar.offset_left
+	_place_minimap()
 	var panel_w := 760.0 if _touch else 414.0
 	_assume.offset_left = -panel_w - 20.0
 	_assume.offset_right = -20.0
 	var body_width := absf(_assume.offset_right - _assume.offset_left) - 30.0
 	_assume_title.custom_minimum_size = Vector2(body_width, 0)
 	_assume_body.custom_minimum_size = Vector2(body_width, 0)
+
+
+## Brings the little map up once there is a town to put on it.
+##
+## Called from Main rather than from setup(), because the crew and the
+## buildings do not exist until after the world has finished streaming and a
+## map with no streets on it is worse than no map.
+func show_minimap(village: Village, map: MapScreen, c: Crew,
+		inventory: InventoryScreen = null) -> void:
+	if minimap == null:
+		minimap = Minimap.new()
+		minimap.name = "Minimap"
+		_root.add_child(minimap)
+	minimap.setup(player, village, map, c, _touch, inventory)
+	_place_minimap()
+
+
+## Bottom left, where every game that has one of these puts it. Kept clear of
+## the instruction bar, which is centred and only there while you are typing.
+func _place_minimap() -> void:
+	if minimap == null:
+		return
+	var h := get_viewport().get_visible_rect().size.y
+	minimap.position = Vector2(26.0, h - minimap.radius * 2.0 - 26.0)
 
 
 static func _panel_style() -> StyleBoxFlat:
@@ -264,23 +364,39 @@ func _on_looked_at(node: Node) -> void:
 
 
 func _process(delta: float) -> void:
-	if clock != null and town != null:
-		_clockline.text = "%s   ·   %s" % [clock.clock_text(), town.stock_line()]
-		var extra := ""
-		if farm != null and farm.tile_count() > 0:
-			extra = "   ·   %d tiles sown, %d ripe" % [
-				farm.planted_count(), farm.ripe_count()]
-		_larder.text = town.larder_line() + extra
+	if clock != null:
+		_clockline.text = clock.clock_text()
+	if town != null:
+		_purse.text = "%s coins" % town.coin_line()
+		# Only when it actually changes. Setting a theme override marks the
+		# control dirty and queues a re-layout, so doing it unconditionally is
+		# a font shaping pass every frame for a colour that changes about once
+		# a session.
+		var owed := town.coins < 0
+		if owed != _in_debt:
+			_in_debt = owed
+			_purse.add_theme_color_override("font_color", DEBT if owed else COIN)
 
+	# The roster is the people who work for you, with their job. Citizens are
+	# not listed: a dozen names of people you have not spoken to is a phone
+	# book, and the point of the roster is to hold the crew in your head.
+	var hired: Array[Worker] = crew.hired() if crew != null else []
+	while _crewbox.get_child_count() < hired.size():
+		_crewbox.add_child(_label("", 26 if _touch else 15, DIM))
+		_crew_tint.append(Color.BLACK)
 	for i in _crewbox.get_child_count():
 		var l := _crewbox.get_child(i) as Label
-		if crew == null or i >= crew.workers.size():
+		if i >= hired.size():
 			l.text = ""
 			continue
-		var w: Worker = crew.workers[i]
-		l.text = "%s — %s" % [w.display_name(), w.status_text()]
-		l.add_theme_color_override("font_color",
-			WARN if w.pending_question != "" else (INK if w.busy() else DIM))
+		var w: Worker = hired[i]
+		var job := w.role.name if w.role != null and w.role.id != "builder" else ""
+		l.text = "%s%s — %s" % [w.display_name(),
+			(" the " + job) if job != "" else "", w.status_text()]
+		var tint := WARN if w.pending_question != "" else (INK if w.busy() else DIM)
+		if _crew_tint[i] != tint:
+			_crew_tint[i] = tint
+			l.add_theme_color_override("font_color", tint)
 
 	if _web != null and _typing_for != null:
 		var said := _web.take()
@@ -293,6 +409,10 @@ func _process(delta: float) -> void:
 		_toast_left -= delta
 		if _toast_left <= 0.0:
 			_toast.text = ""
+	if _subtitle_left > 0.0:
+		_subtitle_left -= delta
+		if _subtitle_left <= 0.0:
+			_subtitle.visible = false
 
 	if _typing_for != null:
 		_prompt.text = ""
@@ -331,21 +451,28 @@ func open_for(w: Worker) -> void:
 func _open_bar(w: Worker) -> void:
 	_typing_for = w
 	_bar.visible = true
+	# You are talking, not navigating — and on a phone the instruction bar is
+	# nearly the width of the screen and lands straight on top of the map.
+	if minimap != null:
+		minimap.visible = false
 	if w.pending_question != "":
 		_barlabel.text = "%s asked:  %s" % [w.display_name(), w.pending_question]
 		_entry.placeholder_text = "answer them…"
+	elif not w.hired:
+		_barlabel.text = "Talking to %s, who lives here" % w.display_name()
+		_entry.placeholder_text = "hire them as something, or ask them something…"
 	else:
-		_barlabel.text = "Telling %s what to do" % w.display_name()
-		_entry.placeholder_text = "tell them what to build…"
+		var job := "" if w.role == null or w.role.id == "builder" else " the " + w.role.name
+		_barlabel.text = "Telling %s%s what to do" % [w.display_name(), job]
+		_entry.placeholder_text = "tell them what to do, or ask them something…"
 	_entry.text = ""
 	player.set_input_enabled(false)
 	if _web != null:
 		# The browser gets the whole panel: label, phrases and field together,
 		# as real elements. Two fields on screen would be worse than none.
 		_bar.visible = false
-		var hint := "answer them…" if w.pending_question != "" else "tell them what to build…"
-		_web.show_bar(_barlabel.text, hint,
-			REPLIES if w.pending_question != "" else PHRASES)
+		var hint := "answer them…" if w.pending_question != "" else "tell them what to do, or ask them something…"
+		_web.show_bar(_barlabel.text, hint, _phrases_for(w))
 		return
 	_entry.grab_focus()
 	_show_keyboard()
@@ -355,6 +482,8 @@ func _open_bar(w: Worker) -> void:
 func _close_bar() -> void:
 	_typing_for = null
 	_bar.visible = false
+	if minimap != null:
+		minimap.visible = true
 	if _web != null:
 		_web.hide_bar()
 	_entry.release_focus()
@@ -386,18 +515,46 @@ const PHRASES := [
 	"build a hut", "build a bakery", "build a workshop",
 	"build a tavern", "build a store", "plant a wheat field",
 	"bring some hens", "wait here", "follow me",
+	# Questions, so the field is visibly a conversation and not a command line.
+	"what are you doing?", "where is the store?", "what do we have?",
+	"what did I ask you?",
 ]
 ## When a worker has asked something, these are the useful replies.
 const REPLIES := [
 	"yes, go ahead", "use whatever we have", "make it smaller",
 	"a workshop", "a store", "never mind",
 ]
+## For somebody who does not work for you yet. The jobs are examples; the
+## point is that the sentence shape is "hire you as a ...", and a player
+## types the rest.
+const HIRE_PHRASES := [
+	"hire you as a farmer", "hire you as a shepherd", "hire you as a guard",
+	"hire you as a shopkeeper", "hire you as a scout",
+	"what do you do?", "who are you?",
+]
+## Things a hired person other than a builder is usually asked.
+const ROLE_PHRASES := [
+	"go to the well", "follow me", "wait here",
+	"work a shift at the bakery", "patrol the well and the edge of town",
+	"bring in the harvest", "collect the eggs", "scout north",
+	"what can you do?", "what are you doing?",
+]
+
+
+func _phrases_for(w: Worker) -> Array:
+	if w.pending_question != "":
+		return REPLIES
+	if not w.hired:
+		return HIRE_PHRASES
+	if w.role != null and w.role.id != "builder":
+		return ROLE_PHRASES
+	return PHRASES
 
 
 func _fill_phrases(w: Worker) -> void:
 	for c: Node in _phrases.get_children():
 		c.queue_free()
-	var list: Array = REPLIES if w.pending_question != "" else PHRASES
+	var list: Array = _phrases_for(w)
 	for text: String in list:
 		var b := Button.new()
 		b.text = text

@@ -25,6 +25,7 @@ const LOOK_SENS := 0.0052         ## radians per canvas unit of drag
 
 var player: Player
 var map: MapScreen
+var inventory: InventoryScreen
 
 ## Up from boot on a handheld. Elsewhere it stays out of the way until a real
 ## finger lands, which covers both the touchscreen laptop that should keep its
@@ -81,8 +82,17 @@ func _buttons() -> Dictionary:
 			"action": &"map", "label": "MAP",
 		},
 	}
+	out["bag"] = {
+		"centre": Vector2(s.x - 56.0 * u, 122.0 * u), "radius": 28.0 * u,
+		"action": &"inventory", "label": "BAG",
+	}
+	# One full-screen view at a time. While either is up, the only button that
+	# still does anything is the one that closes it again — everything else
+	# would be a tap through a panel at the world underneath.
 	if _map_open():
-		return out
+		return {"map": out["map"]}
+	if _inventory_open():
+		return {"bag": out["bag"]}
 	out["menu"] = {
 		"centre": Vector2(56.0 * u, 56.0 * u), "radius": 28.0 * u,
 		"action": &"menu", "label": "ESC",
@@ -100,6 +110,10 @@ func _buttons() -> Dictionary:
 
 func _map_open() -> bool:
 	return map != null and map.open
+
+
+func _inventory_open() -> bool:
+	return inventory != null and inventory.open
 
 
 func _button_at(pos: Vector2, buttons: Dictionary) -> String:

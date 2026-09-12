@@ -15,6 +15,7 @@ var player: Player
 var world: VoxelWorld
 var sky: SkyEnv
 var streamer: ChunkStreamer
+var nav: NavGrid
 
 var _phase := 0
 var _warmup := 120
@@ -45,6 +46,9 @@ func _process(delta: float) -> void:
 			world.stat_worst_frame_ms = 0.0
 		world.stat_worst_dispatch_ms = 0.0
 		world.stat_worst_upload_ms = 0.0
+		world.stat_worst_collision_ms = 0.0
+		if nav != null:
+			nav.stat_worst_catch_ms = 0.0
 		return
 
 	_t += delta
@@ -74,6 +78,9 @@ func _process(delta: float) -> void:
 		world.stat_worst_frame_ms = 0.0
 		world.stat_worst_dispatch_ms = 0.0
 		world.stat_worst_upload_ms = 0.0
+		world.stat_worst_collision_ms = 0.0
+	if nav != null:
+		nav.stat_worst_catch_ms = 0.0
 	_phase += 1
 	_warmup = 60
 	_t = 0.0
@@ -87,15 +94,27 @@ func _report(label: String) -> void:
 	var median: float = s[s.size() / 2]
 	var p95: float = s[int(s.size() * 0.95)]
 	var worst: float = s[s.size() - 1]
-	var extra := "   draws %d  cpu %.1f ms  gpu %.1f ms  max_fps %d  vsync %d" % [
+	# Idle and physics separately, because they are fixed by different things:
+	# idle is drawing and interface, physics is the crew and the collision
+	# bodies. The old line added them together and called the total "cpu",
+	# and then labelled video memory "gpu ms", which sent the first person
+	# who read it looking for a shader problem that was not there.
+	var extra := ("   draws %d  tris %dk  idle %.1f ms  phys %.1f ms"
+		+ "  vram %.0f MB  nodes %d  max_fps %d  vsync %d") % [
 		Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME) / 1000,
 		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
 		Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
 		Engine.max_fps, DisplayServer.window_get_vsync_mode()]
 	if streamer != null:
 		extra += "   " + streamer.status_text()
 	if world != null:
-		extra += "  rescues %d" % world.stat_rescues
+		extra += "  rescues %d  collision %.1f ms" % [
+			world.stat_rescues, world.stat_worst_collision_ms]
+	if nav != null:
+		extra += "  nav %.1f ms" % nav.stat_worst_catch_ms
 	# A median and a p95 that agree to two decimals are not a workload, they are
 	# a frame cap — usually the machine throttling to 30 fps on battery. Say so,
 	# because otherwise the next person reads it as a performance regression.

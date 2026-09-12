@@ -1,6 +1,6 @@
 extends RefCounted
 class_name Prompt
-## Builds the instruction -> spec prompt, per game-design-doc.md §5.1.
+## Builds the instruction -> plan prompt, per game-design-doc.md §5.1.
 ##
 ## The hard boundary from voxel-module-spec.md §0 lives here: the model is given
 ## a closed vocabulary and prose about the world, and it never sees a
@@ -13,7 +13,21 @@ const SCHEMA := """Return ONE JSON object and nothing else. No prose, no markdow
 If you can act on the instruction:
 {
   "kind": "plan",
-  "spec": {
+  "steps": [ <one to four steps, done in the order you list them> ],
+  "assumptions": ["<plain sentence, addressed to your employer>", ...],
+  "confidence": <0.0-1.0>,
+  "worker_line": "<one line you say out loud before you leave>",
+  "cost_estimate": {"<material>": <units>}
+}
+
+Most orders are ONE step. Use more only when the order genuinely has parts that
+must happen in sequence — a pen has to stand before anything can be put in it.
+
+Give a step an "id" only if a later step needs to point at it. A later step
+points back with "into", "in" or "near", never forwards.
+
+THE STEPS
+{"do": "build", "spec": {
     "kind": "building",
     "archetype": "<archetype>",
     "footprint": [<width_m>, <depth_m>],
@@ -29,12 +43,60 @@ If you can act on the instruction:
     ],
     "sign": "<short uppercase sign text, or empty>",
     "worker_notes": "<one short aside in your own voice>"
-  },
-  "assumptions": ["<plain sentence, addressed to your employer>", ...],
-  "confidence": <0.0-1.0>,
-  "worker_line": "<one line you say out loud before you leave>",
-  "cost_estimate": {"<material>": <units>}
-}
+  }}
+
+{"do": "enclose", "id": "<name it if something goes in it>",
+ "size": [<width_m>, <depth_m>], "material": "<m>",
+ "gate": "north|south|east|west|worker_choice"}
+
+{"do": "stock", "species": "hen|sheep|cow", "count": <1-12>,
+ "into": "<id of an enclose or sow step, or leave it out for open ground>"}
+
+{"do": "sow", "crop": "wheat|carrot", "size": [<width_m>, <depth_m>]}
+
+{"do": "gather", "material": "<m>", "units": <how many>}
+
+{"do": "go", "place": "<a building by name, 'the well', 'the field', 'home', or 'you'>"}
+
+{"do": "follow"}
+
+{"do": "wait", "place": "<optional>", "hours": <optional>}
+
+{"do": "station", "place": "<a building by name>", "hours": <1-12>,
+ "doing": "hammer|saw|lay|lift|measure|survey|plan"}
+
+{"do": "patrol", "places": ["<place>", "<place>", ...], "hours": <1-12>}
+
+{"do": "harvest"}
+
+{"do": "collect"}
+
+{"do": "rest", "hours": <1-12>}
+
+{"do": "speak", "line": "<what to say>"}
+
+{"do": "scout", "direction": "north|south|east|west", "distance": <metres, up to 120>}
+
+{"do": "trade", "action": "sell|buy", "kind": "<a stock kind>", "count": <how many>}
+
+{"do": "cook", "hours": <1-12>}          food -> meals, at an oven
+{"do": "craft", "hours": <1-12>}         timber and plank -> tools, at a bench
+{"do": "fish", "hours": <1-12>}          at the water, for food
+{"do": "hunt", "hours": <1-12>}          in the woods, for food
+
+{"do": "plant_tree", "place": "<place or earlier id>", "count": <1-12>}
+{"do": "pave", "from": "<place>", "to": "<place>", "material": "<m>", "width": <1-6>}
+{"do": "level", "place": "<place>", "size": [<metres>, <metres>], "id": "<if something goes on it>"}
+{"do": "demolish", "place": "<a building by name>"}
+{"do": "decorate", "place": "<a building by name>", "count": <1-8>}
+
+{"do": "water"}                          the field
+{"do": "tend"}                           the animals
+{"do": "teach", "who": "<a hired person's name>", "skill": "carpentry|masonry|machining|piloting", "hours": <1-12>}
+
+{"do": "delegate", "who": "<a hired person's name>", "order": "<what to tell them, in plain words>"}
+{"do": "recruit", "role": "<a job>", "who": "<a citizen's name, or leave it out>"}
+{"do": "report"}
 
 If the instruction is too vague for you to act on, given your character:
 {
@@ -44,7 +106,9 @@ If the instruction is too vague for you to act on, given your character:
 }"""
 
 const RULES := """RULES
-- Use ONLY the vocabulary listed under AVAILABLE. Never invent a material, module, roof or orientation.
+- Use ONLY the vocabulary listed under AVAILABLE. Never invent a material, module, roof, orientation or step.
+- One step unless the order really has parts. Two steps that could have been one is not thoroughness, it is a second job nobody asked for.
+- A step that puts something somewhere ("into", "in") must name an earlier step's id. If you did not build the thing, you cannot fill it.
 - Never state a coordinate, a distance from another building, a cost you were not given, or a balance number.
 - Footprint is in whole metres and must fit the plot you were given.
 - 'width' is the frontage along the street; 'depth' runs back from it.
@@ -56,14 +120,36 @@ const RULES := """RULES
 
 static func system(mem: WorkerMemory, ctx: Dictionary) -> String:
 	var tier := int(ctx.get("tier", 1))
+	var role: Role = ctx.get("role", null)
 	var lines: Array[String] = []
 
-	lines.append("You are %s, a builder in a small town. You convert your employer's spoken instruction into a work plan." % mem.display_name)
+	# Who they are on the job. A builder gets the line the game always used; a
+	# role the player defined gets the character the model wrote for it, which
+	# is the whole reason a shepherd talks like a shepherd.
+	if role == null or role.id == "builder" or role.character == "":
+		lines.append("You are %s, a builder in a small town. You convert your employer's spoken instruction into a work plan." % mem.display_name)
+	else:
+		lines.append("You are %s, the town's %s. %s" % [mem.display_name, role.name, role.character])
+		lines.append("You convert your employer's spoken instruction into a work plan, using only what your job allows.")
 	lines.append("")
 	lines.append("YOUR CHARACTER")
 	lines.append(_character(mem))
 	lines.append("")
 	lines.append("AVAILABLE (tier %d)" % tier)
+	# The verbs come first because they are the only list that decides whether
+	# an order can be acted on at all. Everything below them is detail about one
+	# verb; this is the set of things the town knows how to do — narrowed to
+	# what this role may do, so the model is never tempted by a verb the
+	# validator would refuse.
+	var allowed: Array = []
+	if role != null and role.id != "builder":
+		for c: String in role.ready_capabilities():
+			allowed.append(c)
+	lines.append("what you can be asked to do:")
+	lines.append(Steps.describe_for_tier(tier, allowed))
+	if role != null and not role.planned_capabilities().is_empty():
+		lines.append("things your job covers that the town cannot do yet (refuse these, and say why): "
+			+ ", ".join(role.planned_capabilities()))
 	lines.append("materials: " + ", ".join(VoxelTypes.names_for_tier(tier)))
 	lines.append("modules: " + ", ".join(Vocabulary.modules_for_tier(tier)))
 	lines.append("archetypes: " + ", ".join(Vocabulary.archetypes_for_tier(tier)))
@@ -75,6 +161,115 @@ static func system(mem: WorkerMemory, ctx: Dictionary) -> String:
 	lines.append("")
 	lines.append(SCHEMA)
 	return "\n".join(lines)
+
+
+## The system prompt for a question rather than an order. No schema, no
+## vocabulary lists, no rules about JSON — just who they are and how to talk.
+static func chat_system(mem: WorkerMemory, ctx: Dictionary) -> String:
+	var lines: Array[String] = []
+	var role: Role = ctx.get("role", null)
+	if role == null or role.id == "builder" or role.character == "":
+		lines.append("You are %s, a builder in a small town, talking to your employer face to face." % mem.display_name)
+	elif role.id == "citizen":
+		lines.append("You are %s, who lives in this small town and has not been hired by anyone. You are talking to a visitor face to face. %s" % [mem.display_name, role.character])
+	else:
+		lines.append("You are %s, the town's %s, talking to your employer face to face. %s" % [mem.display_name, role.name, role.character])
+	lines.append("")
+	lines.append("YOUR CHARACTER")
+	lines.append(_character(mem))
+	lines.append("")
+	lines.append("HOW TO ANSWER")
+	lines.append("- Answer the question in one or two plain sentences, in your own voice.")
+	lines.append("- Use only the facts under TOWN, STORES and YOUR RECENT WORK. Numbers there are exact; quote them as they are.")
+	lines.append("- If the facts do not say, say you do not know. Never invent a building, a number or a street.")
+	lines.append("- No lists, no headings, no JSON, no quotation marks around your reply.")
+	lines.append("- The town is tier %d." % int(ctx.get("tier", 1)))
+	return "\n".join(lines)
+
+
+## What the worker knows, for answering from. Everything a question could be
+## about, with real numbers — the planning prompt deliberately rounds the
+## stores to "plenty" and "a little", and a question deserves the figure.
+static func chat_user(question: String, mem: WorkerMemory, ctx: Dictionary,
+		clock: GameClock, town: Town) -> String:
+	var lines: Array[String] = []
+	lines.append("TOWN")
+	lines.append("It is %s of day %d. Tech tier %d." % [
+		clock.part_of_day(clock.hour), clock.day, int(ctx.get("tier", 1))])
+	lines.append(town.describe_buildings())
+	lines.append("The purse holds %s coins." % town.coin_line())
+	lines.append("")
+	lines.append("STORES (units)")
+	lines.append(town.stock_report())
+	lines.append("")
+	var recent := mem.recent(10)
+	if not recent.is_empty():
+		lines.append("YOUR RECENT WORK, OLDEST FIRST")
+		for e: Dictionary in recent:
+			lines.append("- day %d: %s" % [int(e["day"]), str(e["summary"])])
+		lines.append("")
+	if not mem.learned_preferences.is_empty():
+		lines.append("WHAT YOU KNOW ABOUT YOUR EMPLOYER")
+		for p: Dictionary in mem.learned_preferences:
+			if float(p["weight"]) > 0.4:
+				lines.append("- %s" % str(p["text"]))
+		lines.append("")
+	lines.append("YOUR EMPLOYER ASKS")
+	lines.append("\"%s\"" % question.strip_edges())
+	return "\n".join(lines)
+
+
+## Composing a role from a name and a description.
+##
+## The model is handed the whole capability catalogue, planned entries marked,
+## and asked to pick. It never invents one: the validator refuses anything not
+## in the list, and that refusal is the entire safety of letting the player
+## define any job they like. What the model adds is judgement — which of the
+## thirty-odd things a "night watchman" actually is — and a character.
+const ROLE_SCHEMA := """Return ONE JSON object and nothing else. No prose, no markdown fences.
+{
+  "kind": "role",
+  "name": "<the job, one or two words, lower case>",
+  "capabilities": ["<id from the list>", ...],
+  "character": "<one short paragraph, second person, about who this person is on the job. Mention what they will not do.>",
+  "standing": "<one thing they do each day without being told, or empty>",
+  "line": "<what they say on being taken on, in character>"
+}"""
+
+const ROLE_RULES := """RULES
+- Pick ONLY from the list. Never invent a capability. If the job needs something not on the list, leave it out and say so in the character.
+- Pick the few that the job is actually made of. A shepherd is stock, enclose, collect and follow, not everything with the word animal in it.
+- Include planned capabilities (marked "not yet in this town") only if the job is genuinely about them — they will be refused today but the role will be ready when the town is.
+- Every role gets "go", "wait" and "speak": everybody can walk somewhere, stand still and talk.
+- Write the character as the person, not as a list."""
+
+
+static func role_system() -> String:
+	var lines: Array[String] = []
+	lines.append("You define jobs for people in a small town. Your employer names a job and describes it; you say which of the town's capabilities the job is made of, and who the person is.")
+	lines.append("")
+	lines.append("CAPABILITIES")
+	lines.append(Capabilities.describe_for_role())
+	lines.append("")
+	lines.append(ROLE_RULES)
+	lines.append("")
+	lines.append(ROLE_SCHEMA)
+	return "
+".join(lines)
+
+
+static func role_user(name: String, description: String, ctx: Dictionary) -> String:
+	var lines: Array[String] = []
+	lines.append("The town is tier %d." % int(ctx.get("tier", 1)))
+	lines.append("")
+	lines.append("THE JOB")
+	lines.append("name: %s" % name.strip_edges())
+	if description.strip_edges() != "":
+		lines.append("your employer says: \"%s\"" % description.strip_edges())
+	else:
+		lines.append("your employer gave no description; go by the name.")
+	return "
+".join(lines)
 
 
 ## Traits rendered as prose. The model behaves far better when told who it is
@@ -151,12 +346,19 @@ static func context(mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 	# The buildable box, not the plot. Given the plot size the model quite
 	# reasonably fills it to the edges, and the building has to stand back from
 	# its own boundary — so state the number it is actually allowed to use.
+	# Four metres of yard rather than two, because the generator now stands a
+	# building that far back off its own boundary and a plan drawn to the last
+	# metre of the plot just gets clamped down again on the way in.
 	var m := plot.size_m()
-	var build_w := maxf(m.x - 2.0, 4.0)
-	var build_d := maxf(m.y - 2.0, 4.0)
+	var build_w := maxf(m.x - 4.0, 8.0)
+	var build_d := maxf(m.y - 4.0, 8.0)
 	lines.append("HOW MUCH WILL FIT")
 	lines.append("- the building may be at most %d by %d metres. The rest of the plot is the ground it stands on."
 		% [int(build_w), int(build_d)])
+	# The floor matters as much as the ceiling. Left to itself the model
+	# answers "a hut" with six metres by five, which on a thirty metre plot
+	# looks like a shed somebody forgot to take away.
+	lines.append("- and at least 7 by 7 metres. These are big plots: an ordinary house is 11 to 14 metres a side, a tavern or a warehouse 16 to 20.")
 	lines.append("- rooms count as: small 5 sq m, medium 12 sq m, large 26 sq m")
 	lines.append("- the rooms must add up to no more than 80%% of footprint width x depth x stories — at the full %d by %d and one story, about %d sq m of rooms"
 		% [int(build_w), int(build_d), int(build_w * build_d * 0.8)])
@@ -176,7 +378,7 @@ static func context(mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 			lines.append("- %s %s" % [strength, str(p["text"])])
 		lines.append("")
 
-	var recent := mem.recent(3)
+	var recent := mem.recent(6)
 	if not recent.is_empty():
 		lines.append("RECENT HISTORY WITH THEM")
 		for e: Dictionary in recent:

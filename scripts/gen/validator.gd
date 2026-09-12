@@ -77,9 +77,12 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 		return error("bad_footprint", "How big did you want it?")
 	var fw := float((fp as Array)[0])
 	var fd := float((fp as Array)[1])
-	if fw < 3.0 or fd < 3.0 or fw > 40.0 or fd > 40.0:
+	# Seven metres is the smallest thing worth calling a building and the
+	# smallest the generator will lay out rooms in; the plot check below is
+	# what actually stops the big end.
+	if fw < 7.0 or fd < 7.0 or fw > 60.0 or fd > 60.0:
 		return error("footprint_out_of_range",
-			"That is not a size I can build to — anywhere from three to forty metres a side.")
+			"That is not a size I can build to — anywhere from seven to sixty metres a side.")
 
 	var plot_m := plot.size_m()
 	var span := Vector2(fw, fd)
@@ -161,6 +164,335 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 				return error("unsatisfiable_need",
 					_need_question(need, str((m3 as Dictionary).get("type", "room"))), need)
 
+	return {}
+
+
+# ------------------------------------------------------------------ the plan
+
+## The whole step list, checked before the first step starts.
+##
+## All of it, up front, deliberately. The alternative — validate each step as
+## its turn comes — means a two-step order can have its fence built and then be
+## refused for the hens, which is the "wall the town cannot finish" failure in
+## a new coat: it looks like the order was understood right up until it stops
+## halfway. So a plan is accepted whole or refused whole, and the refusal is
+## still one sentence a worker says out loud.
+static func check_plan(steps: Array, plot: Plot, ctx: Dictionary) -> Dictionary:
+	if steps.is_empty():
+		return error("empty_plan", "I am not sure what you want me to do.")
+	if steps.size() > Steps.MAX_STEPS:
+		return error("plan_too_long",
+			"That is more than one job — give it to me a piece at a time.")
+
+	# Ids of steps already seen, so a reference can only ever point backwards.
+	# Forwards would be a plan that has to be solved before it can be run, and
+	# the worker would have to build the pen after putting the hens in it.
+	var seen: Dictionary = {}
+	for i in steps.size():
+		if not (steps[i] is Dictionary):
+			return error("bad_step", "I did not follow the second half of that.")
+		var step: Dictionary = steps[i]
+		var e := check_step(step, seen, plot, ctx)
+		if not e.is_empty():
+			return e
+		var id := str(step.get("id", ""))
+		if id != "":
+			if seen.has(id):
+				return error("duplicate_step_id",
+					"I have got muddled — you have asked me for two of the same thing.")
+			seen[id] = str(step.get("do", ""))
+	return {}
+
+
+static func check_step(step: Dictionary, seen: Dictionary, plot: Plot,
+		ctx: Dictionary) -> Dictionary:
+	var tier := int(ctx.get("tier", 1))
+	var verb := str(step.get("do", ""))
+
+	# Same two sentences as an unbuildable archetype, and the same distinction:
+	# "not yet" and "never heard of it" are different answers and the player is
+	# owed the right one.
+	if not Steps.known(verb):
+		return error("unknown_verb",
+			"I would not know how to go about that.", verb)
+	if Steps.verb_tier(verb) > tier:
+		return error("verb_above_tier",
+			"We are not up to that sort of work yet — that needs a bigger town.",
+			verb)
+
+	# The role's say. A shepherd asked for a tavern is not a builder for the
+	# afternoon; they say what they were taken on for. And a role that was
+	# given a capability the town cannot carry out yet says that too, rather
+	# than the plan quietly failing somewhere the player cannot see.
+	var role: Role = ctx.get("role", null)
+	if role != null:
+		var cap := Steps.capability_of(verb)
+		if not role.can(cap):
+			return error("outside_role",
+				"That is not my trade — I was taken on as a %s." % role.name, cap)
+		if not Capabilities.is_ready(cap):
+			return error("capability_not_ready",
+				"I was taken on for that, but the town has no %s yet." % Capabilities.lacks(cap),
+				cap)
+
+	var schema: Dictionary = Steps.VERBS[verb]
+	for field: String in schema["required"]:
+		if not step.has(field):
+			return error("step_missing_field",
+				"You will have to tell me more than that.", "%s.%s" % [verb, field])
+
+	# References resolve backwards, and only to a step that claimed ground.
+	# Pointing "put the hens in it" at an errand is not a plan, it is a sentence
+	# that parsed.
+	for ref: String in Steps.REF_FIELDS:
+		if not step.has(ref):
+			continue
+		var target := str(step[ref])
+		if target == "" or target == "here":
+			continue
+		if not seen.has(target):
+			return error("dangling_reference",
+				"You have lost me — in what?", "%s.%s" % [verb, ref])
+		if not Steps.produces_site(str(seen[target])):
+			return error("reference_has_no_ground",
+				"There is nowhere to put them — that job does not leave anything to put them in.",
+				target)
+
+	match verb:
+		"build":
+			if not (step.get("spec", null) is Dictionary):
+				return error("bad_step", "I did not follow what to build.")
+			return check_spec(step["spec"], plot, ctx)
+		"enclose":
+			return _check_enclose(step, tier)
+		"stock":
+			return _check_stock(step)
+		"sow":
+			return _check_sow(step)
+		"gather":
+			return _check_gather(step)
+		"go", "wait", "station":
+			return _check_place_step(step, verb)
+		"patrol":
+			return _check_patrol(step)
+		"rest":
+			return _check_hours(step, verb)
+		"speak":
+			if str(step.get("line", "")).strip_edges() == "":
+				return error("nothing_to_say", "Say what?")
+			return {}
+		"scout":
+			return _check_scout(step)
+		"trade":
+			return _check_trade(step)
+		"cook", "craft", "fish", "hunt":
+			return _check_hours(step, verb)
+		"plant_tree":
+			var n := int(step.get("count", 1))
+			if n < 1 or n > 12:
+				return error("bad_count", "I can put in up to a dozen at a go.")
+			return {}
+		"pave":
+			if str(step.get("from", "")).strip_edges() == "" or str(step.get("to", "")).strip_edges() == "":
+				return error("no_place", "A road goes from somewhere to somewhere. Which two?")
+			if step.has("material"):
+				var m := str(step["material"])
+				if VoxelTypes.id_of(m) < 0:
+					return error("bad_material", "I cannot lay a road in %s." % m, m)
+				if VoxelTypes.tech_tier(VoxelTypes.id_of(m)) > tier:
+					return error("material_above_tier", "We have no %s yet." % m.replace("_", " "), m)
+			if step.has("width"):
+				var w := int(step["width"])
+				if w < 1 or w > 6:
+					return error("bad_width", "Between one and six metres wide.")
+			return {}
+		"level":
+			if step.has("size"):
+				var sz: Array = step["size"]
+				if sz.size() != 2 or int(sz[0]) < 3 or int(sz[0]) > 24:
+					return error("bad_size", "Between three and twenty-four metres a side.")
+			return {}
+		"teach":
+			if str(step.get("who", "")).strip_edges() == "":
+				return error("no_pupil", "Teach whom?")
+			if str(step.get("skill", "")) not in Steps.SKILLS:
+				return error("unknown_skill", "I can teach %s." % ", ".join(Steps.SKILLS),
+					str(step.get("skill", "")))
+			return _check_hours(step, verb)
+		"demolish", "decorate":
+			if str(step.get("place", "")).strip_edges() == "":
+				return error("no_place", "Which building?")
+			return {}
+		"delegate":
+			if str(step.get("who", "")).strip_edges() == "":
+				return error("no_one_named", "Tell whom?")
+			if str(step.get("order", "")).strip_edges() == "":
+				return error("nothing_to_say", "Tell them what?")
+			return {}
+		"recruit":
+			if str(step.get("role", "")).strip_edges() == "":
+				return error("role_needs_name", "Take them on as what?")
+			return {}
+	return {}
+
+
+static func _check_trade(step: Dictionary) -> Dictionary:
+	if str(step.get("action", "")) not in Steps.TRADE_ACTIONS:
+		return error("bad_trade", "Buying or selling?", str(step.get("action", "")))
+	var kind := str(step.get("kind", ""))
+	if not Town.PRICE.has(kind):
+		return error("not_traded", "Nobody at the market deals in %s." % kind.replace("_", " "), kind)
+	if step.has("count"):
+		var n := int(step["count"])
+		if n < 1 or n > 500:
+			return error("bad_count", "Between one and five hundred at a time.")
+	return {}
+
+
+static func _check_place_step(step: Dictionary, verb: String) -> Dictionary:
+	if verb != "wait" or step.has("place"):
+		var place := str(step.get("place", "")).strip_edges()
+		if place == "" and verb != "wait":
+			return error("no_place", "Where did you want me to go?")
+	return _check_hours(step, verb)
+
+
+static func _check_hours(step: Dictionary, _verb: String) -> Dictionary:
+	if step.has("hours"):
+		var h := float(step["hours"])
+		if h < 0.0 or h > Steps.SHIFT_MAX_HOURS:
+			return error("bad_hours",
+				"That is longer than a day's work. How long did you mean?")
+	return {}
+
+
+static func _check_patrol(step: Dictionary) -> Dictionary:
+	var places: Array = step.get("places", [])
+	if places.size() < 2:
+		return error("patrol_needs_places",
+			"A round needs at least two places to walk between.")
+	if places.size() > 6:
+		return error("patrol_too_long", "That is a march, not a round. Fewer stops?")
+	return _check_hours(step, "patrol")
+
+
+static func _check_scout(step: Dictionary) -> Dictionary:
+	var dir := str(step.get("direction", ""))
+	if dir not in Steps.DIRECTIONS:
+		return error("bad_direction", "Which way — north, south, east or west?", dir)
+	if step.has("distance"):
+		var d := int(step["distance"])
+		if d < 5 or d > Steps.SCOUT_MAX_M:
+			return error("bad_distance",
+				"I can scout up to about %d metres out." % Steps.SCOUT_MAX_M)
+	return {}
+
+
+# ------------------------------------------------------------------ a role
+
+## A role as the model, or the offline composer, has proposed it.
+##
+## The rule is the same one every other check here enforces: nothing gets in
+## that is not in the closed list. A role that names a capability the engine
+## has never heard of is refused, because a role that "can" do something the
+## game cannot is the whole failure this design exists to avoid — a planner
+## that confidently schedules nothing.
+static func check_role(role: Dictionary) -> Dictionary:
+	var name := str(role.get("name", "")).strip_edges()
+	if name == "":
+		return error("role_needs_name", "What do you want to call the job?")
+	var caps: Array = role.get("capabilities", [])
+	if caps.is_empty():
+		return error("role_has_nothing",
+			"I could not make a job out of that. What would they actually do?")
+	for c: Variant in caps:
+		if not Capabilities.known(str(c)):
+			return error("unknown_capability",
+				"Nobody in this town knows how to %s." % str(c).replace("_", " "),
+				str(c))
+	var any_ready := false
+	for c2: Variant in caps:
+		if Capabilities.is_ready(str(c2)):
+			any_ready = true
+			break
+	if not any_ready:
+		return error("role_not_ready_yet",
+			"That job is all things the town has no means for yet. It can be written down, but nobody could do it today.")
+	return {}
+
+
+static func _check_enclose(step: Dictionary, tier: int) -> Dictionary:
+	var size: Array = step.get("size", [])
+	if size.size() != 2:
+		return error("bad_enclosure_size", "How big did you want it?")
+	var w := int(size[0])
+	var d := int(size[1])
+	if w < Steps.ENCLOSURE_MIN_M or d < Steps.ENCLOSURE_MIN_M:
+		return error("enclosure_too_small",
+			"That is too small to keep anything in. How big did you want it?")
+	if w > Steps.ENCLOSURE_MAX_M or d > Steps.ENCLOSURE_MAX_M:
+		return error("enclosure_too_large",
+			"That is not a pen, that is a field with a fence round it. Smaller?")
+
+	var mat := str(step.get("material", "timber"))
+	if VoxelTypes.id_of(mat) < 0:
+		return error("bad_material",
+			"I have never worked with %s. What should I use?" % mat.replace("_", " "),
+			mat)
+	if VoxelTypes.tech_tier(VoxelTypes.id_of(mat)) > tier:
+		return error("material_above_tier",
+			"We have no %s in this town yet." % mat.replace("_", " "), mat)
+
+	var gate := str(step.get("gate", "worker_choice"))
+	if gate not in Steps.GATES:
+		return error("bad_gate", "Which side did you want the gate?", gate)
+	return {}
+
+
+static func _check_stock(step: Dictionary) -> Dictionary:
+	var species := str(step.get("species", ""))
+	if species not in Steps.SPECIES:
+		return error("unknown_species",
+			"We have no %s anywhere near this town." % species.replace("_", " "),
+			species)
+	var n := int(step.get("count", 0))
+	if n < 0 or n > Steps.COUNT_MAX:
+		return error("bad_count",
+			"I cannot drive that many back on my own. How many did you want?",
+			str(n))
+	return {}
+
+
+static func _check_sow(step: Dictionary) -> Dictionary:
+	var crop := str(step.get("crop", "wheat"))
+	if crop not in Steps.CROPS:
+		return error("unknown_crop",
+			"I have no %s seed. Wheat or carrots?" % crop.replace("_", " "), crop)
+	if step.has("size"):
+		var size: Array = step["size"]
+		if size.size() != 2:
+			return error("bad_field_size", "How big did you want the field?")
+		for n: int in [int(size[0]), int(size[1])]:
+			if n < Steps.FIELD_MIN_M or n > Steps.FIELD_MAX_M:
+				return error("bad_field_size",
+					"A field wants to be between %d and %d metres a side."
+					% [Steps.FIELD_MIN_M, Steps.FIELD_MAX_M])
+	return {}
+
+
+static func _check_gather(step: Dictionary) -> Dictionary:
+	var mat := str(step.get("material", ""))
+	if VoxelTypes.id_of(mat) < 0:
+		return error("bad_material",
+			"I have never heard of %s." % mat.replace("_", " "), mat)
+	if not Resources.gatherable(mat):
+		return error("not_gatherable",
+			"You cannot dig %s out of the ground — it has to be made."
+			% mat.replace("_", " "), mat)
+	var units := int(step.get("units", 0))
+	if units < 0 or units > Steps.UNITS_MAX:
+		return error("bad_units", "That is more than I could carry in a week.",
+			str(units))
 	return {}
 
 

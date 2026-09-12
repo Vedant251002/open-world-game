@@ -38,6 +38,66 @@ const CASES := [
 	{"say": "build a big tavern", "arch": "tavern", "floors": 0, "refuse": ""},
 ]
 
+## Multi-step plans, as the model would return them, checked against the same
+## pre-validator the game runs.
+##
+## These are written out by hand rather than asked for, because what is being
+## tested is the boundary and not the model: given this exact JSON, does the
+## town accept it, and when it refuses does it refuse for the right reason and
+## in a sentence a worker could say? The first case is the one this whole thing
+## was built for — the order that used to match on the word "hens", go straight
+## to the flock, and leave the fence unbuilt and unmentioned.
+const PLANS := [
+	{"name": "fence a pen and put hens in it",
+		"steps": [
+			{"do": "enclose", "id": "coop", "size": [8, 6], "material": "timber",
+				"gate": "south"},
+			{"do": "stock", "species": "hen", "count": 6, "into": "coop"},
+		], "refuse": ""},
+	{"name": "one building, the old shape",
+		"steps": [
+			{"do": "build", "spec": {"kind": "building", "archetype": "cottage",
+				"footprint": [13, 11], "stories": 1, "orientation": "face_street",
+				"roof": "gable",
+				"materials": {"walls": "timber", "roof": "thatch"},
+				"modules": [{"type": "entrance", "wall": "front",
+					"priority": "required"}]}},
+		], "refuse": ""},
+	{"name": "sow a field then fence it",
+		"steps": [
+			{"do": "sow", "id": "plot", "crop": "wheat", "size": [6, 6]},
+			{"do": "enclose", "size": [9, 9], "material": "timber",
+				"near": "plot"},
+		], "refuse": ""},
+	{"name": "hens into a pen nobody built",
+		"steps": [
+			{"do": "stock", "species": "hen", "count": 6, "into": "coop"},
+		], "refuse": "dangling_reference"},
+	{"name": "hens into an errand",
+		"steps": [
+			{"do": "gather", "id": "wood", "material": "timber", "units": 40},
+			{"do": "stock", "species": "hen", "count": 4, "into": "wood"},
+		], "refuse": "reference_has_no_ground"},
+	{"name": "a pen the size of a field",
+		"steps": [{"do": "enclose", "size": [40, 40], "material": "timber"}],
+		"refuse": "enclosure_too_large"},
+	{"name": "an animal we have never seen",
+		"steps": [{"do": "stock", "species": "ostrich", "count": 2}],
+		"refuse": "unknown_species"},
+	{"name": "a verb nobody taught us",
+		"steps": [{"do": "summon", "target": "the tavern"}],
+		"refuse": "unknown_verb"},
+	{"name": "a fence made of something we have not got",
+		"steps": [{"do": "enclose", "size": [6, 6], "material": "carbon_composite"}],
+		"refuse": "material_above_tier"},
+	{"name": "a project, not an order",
+		"steps": [
+			{"do": "enclose", "size": [6, 6]}, {"do": "enclose", "size": [6, 6]},
+			{"do": "enclose", "size": [6, 6]}, {"do": "enclose", "size": [6, 6]},
+			{"do": "enclose", "size": [6, 6]},
+		], "refuse": "plan_too_long"},
+]
+
 var _fails: Array[String] = []
 
 
@@ -58,6 +118,12 @@ func run() -> int:
 
 	for c: Dictionary in CASES:
 		_check(str(c["say"]), c, mem, plot, ctx)
+
+	print("[plan] ---")
+	for c: Dictionary in PLANS:
+		_check_plan(c, plot, ctx)
+	_check_enclosure(ctx)
+	_check_schema()
 
 	print("[plan] ---")
 	for f: String in _fails:
@@ -91,3 +157,114 @@ func _check(say: String, want: Dictionary, mem: WorkerMemory, plot: Plot,
 		_fails.append("%s gave '%s', expected '%s'" % [
 			say, code if code != "" else "no refusal",
 			str(want["refuse"]) if str(want["refuse"]) != "" else "no refusal"])
+
+
+## A step plan through the pre-validator, which is the only gate between the
+## model and the town doing something.
+func _check_plan(want: Dictionary, plot: Plot, ctx: Dictionary) -> void:
+	var steps: Array = want["steps"]
+	var err := Validator.check_plan(steps, plot, ctx)
+	var code := str(err.get("code", "")) if not err.is_empty() else ""
+	var said := str(err.get("question", "")) if not err.is_empty() else ""
+
+	var shape: Array[String] = []
+	for s: Variant in steps:
+		shape.append(str((s as Dictionary).get("do", "?")))
+	print("[plan] %-34s -> %-28s %s" % [
+		'"' + str(want["name"]) + '"', " then ".join(shape),
+		("refused: " + code) if code != "" else "accepted"])
+	if said != "":
+		print("[plan]      the worker says: %s" % said)
+
+	if code != str(want["refuse"]):
+		_fails.append("%s gave '%s', expected '%s'" % [
+			str(want["name"]), code if code != "" else "no refusal",
+			str(want["refuse"]) if str(want["refuse"]) != "" else "no refusal"])
+	# Every refusal is a sentence somebody says out loud, not an error code with
+	# a colon in it. That is pillar P3, and it is worth a test of its own
+	# because it is the one property that silently stops being true.
+	if code != "" and (said == "" or said.length() < 12 or said.find("_") >= 0):
+		_fails.append("%s refused with '%s', which is not a sentence"
+			% [str(want["name"]), said])
+
+
+## The enclosure generator end to end: real ground, real voxels, a real gate.
+func _check_enclosure(ctx: Dictionary) -> void:
+	var step := {"do": "enclose", "size": [8, 6], "material": "timber",
+		"gate": "south"}
+	var near := village.well_pos + Vector3(22, 0, 18)
+	var want := Vector2i(int(8.0 / VoxelChunk.VOXEL_M), int(6.0 / VoxelChunk.VOXEL_M))
+	var site := EnclosureGenerator.find_site(world, near, want, [])
+	if site.size.x == 0:
+		_fails.append("found no open ground for an 8 by 6 pen near the well")
+		print("[plan] enclosure                         -> NO GROUND")
+		return
+
+	var res := EnclosureGenerator.build(step, world, site, ctx)
+	if not res["ok"]:
+		_fails.append("enclosure refused: %s"
+			% str((res["error"] as Dictionary).get("code", "?")))
+		return
+
+	var patch: VoxelPatch = res["patch"]
+	var bill := Resources.bill(patch.cost)
+	print("[plan] enclosure 8x6 timber              -> %d voxels, %s, gate %s" % [
+		patch.touched, Resources.describe(bill), str(res["gate"])])
+
+	# A pen the town could never pay for is a pen nobody will ever see, so the
+	# cost is a test and not a statistic. A cottage runs to a few hundred units;
+	# a fence has no business being in that range.
+	var units := 0
+	for m: String in bill:
+		units += int(bill[m])
+	if units > 60:
+		_fails.append("an 8 by 6 pen costs %d units, which is house money" % units)
+	if patch.doors.is_empty():
+		_fails.append("the pen has no gate")
+	if patch.build_order.size() != patch.touched:
+		_fails.append("the pen's build order covers %d of %d voxels"
+			% [patch.build_order.size(), patch.touched])
+
+
+## The JSON Schema handed to the gateway.
+##
+## Generated from the same tables the prompt and the validator read, so the
+## thing worth testing is not its contents but that it stays in step: a verb
+## that exists in Steps and not in the schema is a verb the model will be
+## prevented from using, which looks exactly like the model being stupid.
+func _check_schema() -> void:
+	for tier in [1, 4]:
+		var wrapper := PlanSchema.for_tier(tier)
+		var schema: Dictionary = wrapper["schema"]
+		var text := JSON.stringify(wrapper)
+		if JSON.new().parse(text) != OK:
+			_fails.append("the tier %d schema is not valid JSON" % tier)
+			continue
+
+		var steps: Dictionary = schema["properties"]["steps"]
+		var variants: Array = steps["items"]["anyOf"]
+		var covered: Array[String] = []
+		for v: Variant in variants:
+			var props: Dictionary = (v as Dictionary)["properties"]
+			covered.append(str((props["do"] as Dictionary)["enum"][0]))
+		for verb: String in Steps.VERBS:
+			if Steps.verb_tier(verb) <= tier and verb not in covered:
+				_fails.append("tier %d schema is missing the %s step" % [tier, verb])
+
+		print("[plan] tier %d schema: %d verbs, %d bytes of JSON" % [
+			tier, covered.size(), text.length()])
+
+	# A schema the size of the prompt is a schema that eats the token budget it
+	# was added to protect. Groq's free tier allows 8K tokens a minute, and the
+	# schema is sent on every single call. The builder's is the biggest, with
+	# every verb in it; a role's is only its own verbs, and has to be small.
+	var t1 := JSON.stringify(PlanSchema.for_tier(1))
+	if t1.length() > 14000:
+		_fails.append("the builder's tier 1 schema is %d bytes — too much of the budget"
+			% t1.length())
+	var shepherd := JSON.stringify(PlanSchema.for_tier(1,
+		["go", "wait", "speak", "stock", "enclose", "collect", "tend"]))
+	print("[plan] a shepherd's schema: %d bytes" % shepherd.length())
+	if shepherd.length() > 4000:
+		_fails.append("a shepherd's schema is %d bytes — the role filter is not narrowing it"
+			% shepherd.length())

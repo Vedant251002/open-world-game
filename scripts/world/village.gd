@@ -12,8 +12,16 @@ class_name Village
 
 const V := VoxelChunk.VOXEL_M
 
-const ROAD_PITCH := 26.0     ## distance between parallel streets, metres
-const ROAD_WIDTH := 5.0
+## Distance between parallel streets, and how wide a street is.
+##
+## Both were grown by half. A twenty-six metre block left an eighteen metre
+## plot, and an eighteen metre plot with a setback either side is a nine metre
+## cottage — a doll's house you could stand astride. Forty metres of block
+## gives a thirty metre plot, which is room for a real building and a yard
+## round it, and it puts the whole town at a scale where two people can pass
+## in the street without either of them standing in a hedge.
+const ROAD_PITCH := 40.0     ## distance between parallel streets, metres
+const ROAD_WIDTH := 7.0
 const BLOCKS := 5            ## streets each way, so BLOCKS-1 blocks of plots
 const PLOT_SETBACK := 1.5
 const FLOOR_HEIGHT := 12.0   ## the town sits on a levelled shelf
@@ -172,7 +180,10 @@ func _cut_plots(_pitch: int) -> void:
 
 	for a in plots:
 		for b in plots:
-			if a.id != b.id and a.centre_m().distance_to(b.centre_m()) < 40.0:
+			# Only the plots either side, not the ones across the corner.
+			# Scaled with the block: at the old twenty-six metre pitch this
+			# was forty metres, and left as it was it would have found none.
+			if a.id != b.id and a.centre_m().distance_to(b.centre_m()) < 46.0:
 				a.neighbours.append(b.id)
 
 

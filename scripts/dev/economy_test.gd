@@ -96,6 +96,9 @@ func _case_short() -> void:
 	var held_stock := int(town.stock.get("timber", 0))
 	town.stock["timber"] = 0
 	_said.clear()
+	# The founding buildings are on the register now, so "nothing registered"
+	# means nothing MORE than was there when the order was given.
+	var buildings_before := town.buildings.size()
 
 	plot.reserved = true
 	dispatch._open[mira.memory.worker_id] = {
@@ -106,7 +109,7 @@ func _case_short() -> void:
 	# 1 — the plan did not become a job.
 	_ok(mira.job_patch == null, "Mira did not start building")
 	_ok(dispatch._held.size() == 1, "the plan is held, not thrown away")
-	_ok(town.buildings.is_empty(), "nothing was registered in the town")
+	_ok(town.buildings.size() == buildings_before, "nothing was registered in the town")
 
 	# 2 — and she said why, in words a player would use.
 	_ok(mira.waiting_for.find("timber") >= 0,

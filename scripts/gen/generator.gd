@@ -14,23 +14,31 @@ class_name BuildingGenerator
 const V := VoxelChunk.VOXEL_M
 
 ## Vertical budget, in voxels.
-const STORY_H := 13          ## 1 slab + 12 clear = 3.25 m
-const CLEAR_H := 12
+## A storey, and the clear height inside one. Both raised by two voxels: at
+## three and a quarter metres to the ceiling, a room with a bed and a hearth in
+## it read as a crawlspace from the doorway.
+const STORY_H := 15          ## 1 slab + 14 clear = 3.75 m
+const CLEAR_H := 14
 const FOUNDATION_D := 4      ## how far the footing digs in
 const PATCH_MARGIN := 4      ## room for eaves, steps and site levelling
 
 ## Openings, in voxels. Spec §1 human scale: door 4 x 11, wall 12 high.
-const DOOR_W := 4
-const DOOR_H := 9
-const WIN_W := 5
-const WIN_H := 5
-const WIN_SILL := 4
-const WIN_PIER := 4          ## minimum solid wall between windows
+## Openings, scaled to the bigger walls they are cut into. A metre-wide door
+## on a sixteen metre frontage reads as a hatch, and it is also the width the
+## crew has to get through.
+const DOOR_W := 6
+const DOOR_H := 11
+const WIN_W := 7
+const WIN_H := 7
+const WIN_SILL := 5
+const WIN_PIER := 5          ## minimum solid wall between windows
 
 ## 2.5 m. At the old 1.5 m the partitioner would chop a small hut into two
 ## slivers you could not turn round in, each with its own wall down the middle
 ## of the only window.
-const MIN_CELL := 10
+## Smallest room the subdivision will cut, in voxels. Three and a half metres
+## a side: below that the furniture fills it and there is nowhere to stand.
+const MIN_CELL := 14
 const ROOF_SLOPE := 0.55
 const SHED_SLOPE := 0.28
 
@@ -187,9 +195,11 @@ func _resolve_dimensions() -> void:
 		W = frontage
 		D = depth
 
-	# Never overrun the parcel, whatever the model asked for.
-	W = clampi(W, 12, plot.size_v.x)
-	D = clampi(D, 12, plot.size_v.y)
+	# Never overrun the parcel, whatever the model asked for — and never come
+	# in under seven metres either. The floor used to be three, which is a
+	# building the size of a garden shed, and "build a hut" landed on it.
+	W = clampi(W, mini(28, plot.size_v.x), plot.size_v.x)
+	D = clampi(D, mini(28, plot.size_v.y), plot.size_v.y)
 
 	stories = clampi(int(spec.get("stories", 1)), 1,
 		Vocabulary.max_stories(int(ctx.get("tier", 1))))
@@ -222,7 +232,10 @@ func _resolve_dimensions() -> void:
 	ground = plot.ground_y
 
 	# Sit the building against its street frontage, centred on the other axis.
-	var setback := 3
+	# Two metres off the pavement rather than three quarters of one: the plots
+	# are thirty metres now, and a building shoved flat against the kerb wastes
+	# all of that behind it.
+	var setback := 8
 	var bx0: int
 	var bz0: int
 	if front.z < 0:
@@ -304,7 +317,7 @@ func _stage_site() -> Dictionary:
 			patch.put(cx + off.x + (front.x * W / 2), gy(),
 				cz + off.z + (front.z * D / 2), mat_found)
 
-	if W < 12 or D < 12:
+	if W < 24 or D < 24:
 		return Validator.error("footprint_too_small",
 			"That plot is too tight for what you asked for.")
 	return {}

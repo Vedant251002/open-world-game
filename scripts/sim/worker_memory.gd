@@ -10,7 +10,10 @@ class_name WorkerMemory
 ## Budget is about 600 tokens per worker per prompt, which is nothing.
 
 const MAX_PREFERENCES := 15
-const MAX_EPISODIC := 20
+## Forty rather than twenty. The episodic log used to be flavour for the
+## planning prompt; now it is also what a worker answers from when you ask
+## "what did I tell you to build", and twenty entries is a morning's work.
+const MAX_EPISODIC := 40
 const PREFERENCE_DECAY := 0.985      ## per in-game day
 
 var worker_id := ""
@@ -151,13 +154,52 @@ func preference_coverage(topics: PackedStringArray) -> float:
 
 # ------------------------------------------------------------------ episodic
 
-func remember(day: int, summary: String, valence: float) -> int:
+## One thing that happened, in the worker's own words, plus whatever facts
+## about it a later question might turn on.
+##
+## `about` is where the structure lives: "kind" says what sort of event this is
+## (order, plan, done, errand, asked, told), and the rest is whatever that kind
+## needs — the instruction as the player said it, the street, the archetype,
+## the id of the order a completion closes. The summary stays as prose because
+## the prompt reads that; the facts are there so Answers does not have to parse
+## prose to find out where the bakery went.
+func remember(day: int, summary: String, valence: float,
+		about: Dictionary = {}) -> int:
 	var id := _next_event
 	_next_event += 1
-	episodic.append({"id": id, "day": day, "summary": summary, "valence": valence})
+	var entry := {"id": id, "day": day, "summary": summary, "valence": valence}
+	for k: Variant in about:
+		entry[k] = about[k]
+	episodic.append(entry)
 	if episodic.size() > MAX_EPISODIC:
 		episodic = episodic.slice(episodic.size() - MAX_EPISODIC)
 	return id
+
+
+## Every order the player gave this worker, oldest first.
+func orders() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for e: Dictionary in episodic:
+		if str(e.get("kind", "")) == "order":
+			out.append(e)
+	return out
+
+
+## The entries of one kind, most recent last.
+func of_kind(kind: String) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for e: Dictionary in episodic:
+		if str(e.get("kind", "")) == kind:
+			out.append(e)
+	return out
+
+
+## What became of an order: the completion that names it, or nothing yet.
+func outcome_of(order_id: int) -> Dictionary:
+	for e: Dictionary in episodic:
+		if int(e.get("order", -1)) == order_id and str(e.get("kind", "")) != "order":
+			return e
+	return {}
 
 
 func recent(n: int) -> Array[Dictionary]:

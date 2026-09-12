@@ -19,6 +19,7 @@ const HANDHELD_PRIME_RADIUS := 4
 ## anyway and only save on the ones after it.
 static func apply(viewport: Viewport, plr: Player, streamer: ChunkStreamer) -> void:
 	if not Platform.is_handheld():
+		_trim_desktop(viewport)
 		return
 
 	# Screen-space AA does not exist under gl_compatibility and MSAA on a tile
@@ -46,3 +47,35 @@ static func apply(viewport: Viewport, plr: Player, streamer: ChunkStreamer) -> v
 
 	print("[delegate] handheld profile: render %.0f%%, load radius %d" % [
 		HANDHELD_RENDER_SCALE * 100.0, HANDHELD_LOAD_RADIUS])
+
+
+## Everything that is not a phone, which is two rather different machines.
+##
+## The native build runs Vulkan on a desktop GPU and can afford almost anything
+## — except that what it was asking for included both 4x MSAA and temporal
+## anti-aliasing. Those do the same job. TAA resolves edges over time and is
+## already paid for; MSAA on top of it is four samples of colour and depth per
+## pixel for an improvement nobody has ever been able to point at in a
+## screenshot. Dropping it is the single cheapest frame in the project.
+##
+## The web build is the one that was actually being neglected. A desktop
+## browser is not "handheld" by any test here — no touchscreen, no mobile
+## feature flag — so it fell through to the full desktop profile and then ran
+## it through gl_compatibility, where TAA does not exist, MSAA costs a great
+## deal more than it does under Vulkan, and every draw call is a WebGL call.
+## That is the configuration most likely to be behind "it lags", because it is
+## the one anybody can reach by opening a link.
+static func _trim_desktop(viewport: Viewport) -> void:
+	viewport.msaa_3d = Viewport.MSAA_DISABLED
+
+	if not Platform.is_web():
+		print("[delegate] desktop profile: TAA, no MSAA")
+		return
+
+	viewport.use_taa = false
+	viewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+	RenderingServer.directional_soft_shadow_filter_set_quality(
+		RenderingServer.SHADOW_QUALITY_SOFT_LOW)
+	RenderingServer.positional_soft_shadow_filter_set_quality(
+		RenderingServer.SHADOW_QUALITY_SOFT_LOW)
+	print("[delegate] desktop web profile: FXAA, no MSAA, cheap shadows")

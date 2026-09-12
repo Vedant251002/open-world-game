@@ -32,6 +32,12 @@ var _fails: Array[String] = []
 var _phase := 0
 var _follow_checked := false
 var _last_beat := -1
+## Hens in the town when the order was given, or -1 before it was given at all.
+var _hens_before := -1
+## Every finished pen, and the counts standing when the cage order was given.
+var _pens: Array[VoxelPatch] = []
+var _cage_before := -1
+var _pens_before := 0
 var _before: Array[Vector3] = []
 ## Everywhere Mira stood while the bakery went up, and everything she was seen
 ## doing there.
@@ -47,7 +53,11 @@ func begin() -> void:
 		_assume_worker = w.display_name()
 		_assumptions = a)
 	crew.job_done.connect(func(_w: Worker, p: VoxelPatch) -> void:
-		_done_patch = p)
+		_done_patch = p
+		# A pen never joins the town register — it has no plot — so the only
+		# place it can be counted is as it is finished.
+		if p.archetype == "pen":
+			_pens.append(p))
 	crew.worker_spoke.connect(func(w: Worker, line: String, kind: String) -> void:
 		print("[crew]   %s (%s): %s" % [w.display_name(), kind, line]))
 	# The stores are EconomyTest's subject, not this one's. Filling them keeps
@@ -150,17 +160,25 @@ func _process(delta: float) -> void:
 				_fails.append("Tobias never finished the field (%s)" % t2.status_text())
 				_phase = 6
 		6:
+			# The hens are no longer instant. They used to appear at the player's
+			# feet the moment the order was given, which contradicted the comment
+			# above the code that did it: livestock is supposed to arrive *with*
+			# the worker. It does now — Ren walks out and the flock is there when
+			# they get back — so this waits, the way the field phases wait.
 			var ren: Worker = crew.get_worker("ren")
-			var before := livestock.count_of("hen")
-			print("[crew] telling Ren: bring some hens")
-			dispatch.instruct(ren, "bring some hens")
-			if livestock.count_of("hen") <= before:
-				_fails.append("no hens arrived")
-			else:
+			if _hens_before < 0:
+				_hens_before = livestock.count_of("hen")
+				print("[crew] telling Ren: bring some hens")
+				dispatch.instruct(ren, "bring some hens")
+			elif livestock.count_of("hen") > _hens_before:
 				print("[crew] hens: %d -> %d, %d animals in all" % [
-					before, livestock.count_of("hen"), livestock.total()])
-			_phase = 7
-			_t = 0.0
+					_hens_before, livestock.count_of("hen"), livestock.total()])
+				_phase = 7
+				_t = 0.0
+			elif _t > 60.0:
+				_fails.append("no hens arrived (Ren: %s)" % ren.status_text())
+				_phase = 7
+				_t = 0.0
 		7:
 			# Walk, so the crew falls in behind the direction of travel, then
 			# stand still long enough for them to finish catching up. Recording
@@ -169,7 +187,7 @@ func _process(delta: float) -> void:
 			player.set_touch_move(Vector2(0.0, -1.0) if _t < 4.0 else Vector2.ZERO)
 			if _t > 7.0:
 				_before.clear()
-				for w: Worker in crew.workers:
+				for w: Worker in crew.hired():
 					_before.append(w.global_position)
 				_turn_from = player.yaw
 				_phase = 8
@@ -192,6 +210,31 @@ func _process(delta: float) -> void:
 				_check_can_talk()
 				_phase = 10
 		10:
+			# The order this whole thing exists for, end to end.
+			#
+			# It used to match on "hens", go straight to the flock and leave the
+			# cage unbuilt and unmentioned — the one failure mode the design does
+			# not allow, because it looks like being understood. Now it is two
+			# steps: the fence goes up, and the hens go inside the fence that was
+			# just built rather than wherever the player happened to be standing.
+			var mira: Worker = crew.get_worker("mira")
+			if _cage_before < 0:
+				_cage_before = livestock.count_of("hen")
+				_pens_before = _pen_count()
+				print("[crew] telling Mira: build a cage for the hens and put them in it")
+				dispatch.instruct(mira,
+					"build a cage for the hens and put them in it")
+			elif _pen_count() > _pens_before \
+					and livestock.count_of("hen") > _cage_before:
+				_check_cage()
+				_phase = 11
+				_t = 0.0
+			elif _t > 180.0:
+				_fails.append("the cage order never finished (%d pens, %d hens; Mira: %s)"
+					% [_pen_count() - _pens_before,
+						livestock.count_of("hen") - _cage_before, mira.status_text()])
+				_phase = 11
+		11:
 			_report()
 			get_tree().quit(1 if not _fails.is_empty() else 0)
 
@@ -205,8 +248,8 @@ func _process(delta: float) -> void:
 ## been walking, and that only changes while he is actually moving.
 func _check_turning() -> void:
 	var worst := 0.0
-	for i in mini(_before.size(), crew.workers.size()):
-		var w: Worker = crew.workers[i]
+	for i in mini(_before.size(), crew.hired().size()):
+		var w: Worker = crew.hired()[i]
 		if w.busy():
 			continue
 		worst = maxf(worst, w.global_position.distance_to(_before[i]))
@@ -219,7 +262,7 @@ func _check_turning() -> void:
 	var forward := Vector3(-sin(player.yaw), 0.0, -cos(player.yaw))
 	var best := -1.0
 	var who := ""
-	for w2: Worker in crew.workers:
+	for w2: Worker in crew.hired():
 		var to := w2.global_position - player.global_position
 		to.y = 0.0
 		if to.length() < 0.1 or to.length() > 12.0:
@@ -294,7 +337,7 @@ func _check_follow() -> void:
 		return
 	_follow_checked = true
 	var far := 0
-	for w: Worker in crew.workers:
+	for w: Worker in crew.hired():
 		var d := w.global_position.distance_to(player.global_position)
 		print("[crew] %s is %.1f m from the employer" % [w.display_name(), d])
 		if d > 14.0:
@@ -428,3 +471,43 @@ func _report() -> void:
 	for f: String in _fails:
 		print("[crew] FAIL: %s" % f)
 	print("[crew] %s" % ("=== PASS ===" if _fails.is_empty() else "=== FAIL ==="))
+
+
+func _pen_count() -> int:
+	return _pens.size()
+
+
+## The hens have to be IN the pen, not merely near it at the same time.
+##
+## This is the assertion the old keyword route could never have passed, because
+## the two halves of the order were never connected: the fence went one place
+## and the flock went to the player's feet. The step's "into" is what joins
+## them, so the check is exactly that join — every hen inside the footprint of
+## the fence that was built for them.
+func _check_cage() -> void:
+	var pen: VoxelPatch = _pens[_pens.size() - 1]
+	var r := pen.footprint
+	print("[crew] pen: %d voxels, %d by %d m, %s" % [pen.touched,
+		int(r.size.x * VoxelChunk.VOXEL_M), int(r.size.y * VoxelChunk.VOXEL_M),
+		Resources.describe(Resources.bill(pen.cost))])
+
+	var inside := 0
+	var outside := 0
+	for a: Animal in livestock.animals:
+		if not is_instance_valid(a) or a.kind != "hen":
+			continue
+		var v := VoxelWorld.to_voxel(a.global_position)
+		if r.has_point(Vector2i(v.x, v.z)):
+			inside += 1
+		else:
+			outside += 1
+	print("[crew] hens: %d inside the pen, %d elsewhere in the town"
+		% [inside, outside])
+
+	# Not all of them: five hens were already loose in the town from the earlier
+	# errand, and they are not supposed to have walked into the new pen.
+	if inside < 3:
+		_fails.append("only %d hens are inside the pen — the two halves of the "
+			% inside + "order did not meet")
+	if pen.doors.is_empty():
+		_fails.append("the pen has no gate")

@@ -15,7 +15,46 @@
 // and the token budget into a sane range, and forwards. It is not an API
 // gateway and should not grow into one.
 
-const UPSTREAM = "https://opencode.ai/zen/v1/chat/completions";
+// The gateways this Worker knows how to reach, and the secret each one wants.
+//
+// It began as one hardcoded URL, which was right while there was one gateway.
+// A second one is worth having because it can be asked for constrained
+// decoding — the reply then always parses, which removes the failure the game
+// spends forty seconds discovering. Both speak the OpenAI chat-completions
+// shape, so the only differences worth encoding are the address, the secret
+// and what each calls its token budget.
+const PROVIDERS = {
+  groq: {
+    upstream: "https://api.groq.com/openai/v1/chat/completions",
+    secret: "GROQ_API_KEY",
+    model: "GROQ_MODEL",
+    defaultModel: "openai/gpt-oss-120b",
+    tokenField: "max_completion_tokens",
+  },
+  opencode: {
+    upstream: "https://opencode.ai/zen/v1/chat/completions",
+    secret: "OPENCODE_API_KEY",
+    model: "OPENCODE_MODEL",
+    defaultModel: "nemotron-3-ultra-free",
+    tokenField: "max_tokens",
+  },
+};
+
+// Which one answers. The owner of the key decides, not the caller: a header
+// naming a gateway is a hint about which build is asking, and the game sends
+// it, but a proxy that lets a stranger choose its upstream is a proxy that can
+// be pointed anywhere. So the env var wins, then whichever secret is actually
+// set, and the header only breaks a tie.
+function pickProvider(env, request) {
+  const named = (env.AI_PROVIDER || "").trim();
+  if (PROVIDERS[named]) return named;
+  const hinted = (request?.headers.get("X-Provider") || "").trim();
+  const order = ["groq", "opencode"];
+  for (const name of order) {
+    if ((env[PROVIDERS[name].secret] || "").trim()) return name;
+  }
+  return PROVIDERS[hinted] ? hinted : "opencode";
+}
 
 // Who is allowed to ask. An open proxy with somebody's key behind it is a
 // donation to whoever finds the URL, so this is an allowlist and not a "*".
@@ -75,8 +114,14 @@ function fail(status, message, origin) {
 // empty body, which is indistinguishable from a broken proxy and sent me
 // looking at User-Agents and network paths for half an hour. Cheaper to be
 // forgiving here than to make anybody paste a secret twice.
-function apiKey(env) {
-  return (env.OPENCODE_API_KEY || "").trim();
+function apiKey(env, provider) {
+  return (env[PROVIDERS[provider].secret] || "").trim();
+}
+
+// The model the key's owner has chosen for that gateway.
+function modelFor(env, provider) {
+  const p = PROVIDERS[provider];
+  return (env[p.model] || "").trim() || p.defaultModel;
 }
 
 async function fingerprint(secret) {
@@ -99,12 +144,19 @@ async function fingerprint(secret) {
 // string that the gateway will not accept. Behind a flag rather than on by
 // default: a health endpoint that calls out on every hit is a health endpoint
 // somebody can point at a load generator.
-async function health(env) {
-  const raw = env.OPENCODE_API_KEY || "";
-  const key = apiKey(env);
+async function health(env, request) {
+  const provider = pickProvider(env, request);
+  const raw = env[PROVIDERS[provider].secret] || "";
+  const key = apiKey(env, provider);
   return {
     service: "DELEGATE AI proxy",
     ok: true,
+    provider,
+    secret_name: PROVIDERS[provider].secret,
+    // Whether the reply is guaranteed to parse. The single most useful fact
+    // about a deployment, and the one that is hardest to infer afterwards
+    // from a log full of half-finished JSON.
+    schema_locked: provider === "groq",
     key_configured: key.length > 0,
     // Of the key as used, so it can be compared against the one you meant to
     // store without anybody pasting a secret anywhere to check.
@@ -115,7 +167,7 @@ async function health(env) {
     // not what you meant to store, which is the failure this endpoint exists
     // to make visible.
     key_length: key.length,
-    model: env.OPENCODE_MODEL || "nemotron-3-ultra-free",
+    model: modelFor(env, provider),
     allow_native: env.ALLOW_NATIVE === "1",
     allowed_origins: ALLOWED_ORIGINS,
     usage: "POST the OpenAI chat-completions shape here. The game does this for you.",
@@ -126,18 +178,16 @@ async function health(env) {
 
 // Does the stored key actually buy anything? One token, so the answer costs
 // almost nothing and means everything.
-async function keyCheck(env) {
-  const key = apiKey(env);
-  if (!key) return { key_works: false, why: "no key set" };
+async function keyCheck(env, provider) {
+  const key = apiKey(env, provider);
+  if (!key) return { key_works: false, why: `no ${PROVIDERS[provider].secret} set` };
   try {
-    const res = await fetch(UPSTREAM, {
+    const probe = { model: modelFor(env, provider), messages: [{ role: "user", content: "hi" }] };
+    probe[PROVIDERS[provider].tokenField] = 1;
+    const res = await fetch(PROVIDERS[provider].upstream, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
-      body: JSON.stringify({
-        model: env.OPENCODE_MODEL || "nemotron-3-ultra-free",
-        max_tokens: 1,
-        messages: [{ role: "user", content: "hi" }],
-      }),
+      body: JSON.stringify(probe),
     });
     const text = await res.text();
     return {
@@ -166,9 +216,9 @@ export default {
     // the address sends no Origin at all, and turning that away with a 403
     // would be the same unhelpfulness in a different colour.
     if (request.method === "GET" || request.method === "HEAD") {
-      const body = await health(env);
+      const body = await health(env, request);
       if (new URL(request.url).searchParams.get("check") === "1") {
-        Object.assign(body, await keyCheck(env));
+        Object.assign(body, await keyCheck(env, pickProvider(env, request)));
       }
       return new Response(JSON.stringify(body, null, 2), {
         status: 200,
@@ -183,8 +233,10 @@ export default {
     if (request.method !== "POST") {
       return fail(405, "POST only.", ok);
     }
-    if (!apiKey(env)) {
-      return fail(500, "The proxy has no API key set. Run: wrangler secret put OPENCODE_API_KEY", ok);
+    const provider = pickProvider(env, request);
+    if (!apiKey(env, provider)) {
+      return fail(500, "The proxy has no API key set. Run: wrangler secret put "
+        + PROVIDERS[provider].secret, ok);
     }
 
     const raw = await request.text();
@@ -203,18 +255,26 @@ export default {
     }
 
     // Clamp rather than reject: a request that is merely greedy should still
-    // get an answer, just a bounded one.
-    body.max_tokens = Math.min(Number(body.max_tokens) || 1024, MAX_TOKENS_CAP);
+    // get an answer, just a bounded one. Both spellings are read and only the
+    // one this gateway understands is sent, so a build that still says
+    // max_tokens is not silently capped at the upstream default.
+    const asked = Number(body.max_tokens ?? body.max_completion_tokens) || 1024;
+    delete body.max_tokens;
+    delete body.max_completion_tokens;
+    body[PROVIDERS[provider].tokenField] = Math.min(asked, MAX_TOKENS_CAP);
     // Whatever the caller said, the key's owner picks the model.
-    body.model = env.OPENCODE_MODEL || body.model || "nemotron-3-ultra-free";
+    body.model = modelFor(env, provider);
+    // response_format is forwarded untouched. It is the caller asking to be
+    // held to a schema, it cannot cost anything, and stripping it would throw
+    // away the one guarantee worth having.
 
     let upstream;
     try {
-      upstream = await fetch(UPSTREAM, {
+      upstream = await fetch(PROVIDERS[provider].upstream, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey(env)}`,
+          "Authorization": `Bearer ${apiKey(env, provider)}`,
         },
         body: JSON.stringify(body),
       });
@@ -228,7 +288,7 @@ export default {
     // debugging it even less — so the status goes in the message where it can
     // be seen from the game's own log.
     const answer = await upstream.text();
-    console.log(`upstream ${upstream.status} model=${body.model} ` +
+    console.log(`upstream ${upstream.status} provider=${provider} model=${body.model} ` +
       `msgs=${body.messages.length} max_tokens=${body.max_tokens} ` +
       `bytes=${answer.length}`);
 

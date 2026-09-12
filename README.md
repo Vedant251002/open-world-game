@@ -44,10 +44,35 @@ Desktop builds for Windows, Linux and macOS are attached to every tagged
 
     godot4 --path .
 
-The AI reads `ANTHROPIC_API_KEY` from the environment, or from a `.env` file in
-the project root. Without one the game runs offline and nobody answers you.
-Browser builds have no environment to read, so the deployed version needs a
-proxy holding the key — that is not wired up yet.
+The AI reads its key from the environment or from a `.env` file in the project
+root — copy `.env.example` and fill in one key. Without one the game runs
+offline on the built-in plan library, which still answers every order, just
+less well.
+
+Two gateways are supported, chosen by whichever key is present:
+
+| | Groq (default) | OpenCode Zen |
+| --- | --- | --- |
+| key | `GROQ_API_KEY` | `OPENCODE_API_KEY` |
+| free | yes, no card | yes |
+| speed | a second or two | ~45 s |
+| JSON | held to a schema, always parses | best effort, truncates |
+
+Groq is worth the two minutes it takes to get a key: it accepts a
+`response_format` of `json_schema`, so the model physically cannot return a
+plan that does not parse. That was the single most expensive failure in the
+old setup — a reply cut off mid-string costs the whole wait and yields nothing.
+The schema is generated from the same tables as the prompt and the validator,
+in `scripts/ai/plan_schema.gd`, so the three cannot drift apart.
+
+The free tier caps tokens per minute rather than just requests, so sustained
+play is roughly an order a minute; repeated orders are served from the
+archetype cache and never leave the machine.
+
+Browser builds have no environment to read, so the deployed version goes
+through `proxy/worker.js`, which holds the key on Cloudflare. It speaks to
+either gateway — `wrangler secret put GROQ_API_KEY` is all that is needed to
+move it across.
 
 ## Debug flags
 
@@ -56,6 +81,7 @@ Pass these after `--`, e.g. `godot4 --path . -- --seed=7 --nofar`:
 | Flag           | Effect                                              |
 | -------------- | --------------------------------------------------- |
 | `--seed=N`     | fix the world seed                                   |
+| `--provider=X` | force `groq` or `opencode` for one run               |
 | `--nofar`      | skip the far-terrain horizon mesh                    |
 | `--nostream`   | freeze chunk streaming                               |
 | `--buildtest`  | drop the acceptance buildings onto real plots        |

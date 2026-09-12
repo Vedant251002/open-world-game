@@ -74,6 +74,10 @@ var stat_worst_upload_ms := 0.0
 ## How many times the streaming budget was overridden to keep a floor under the
 ## player. Any number above a handful means the budgets are set too low.
 var stat_rescues := 0
+## Worst time one collision refresh has taken. It only runs when the player
+## crosses into a new chunk column, which is also exactly when a stutter while
+## walking would be blamed on the streamer.
+var stat_worst_collision_ms := 0.0
 ## Where collision is wanted. Set by the game each frame; cheap to write.
 var collision_focus := Vector3.ZERO
 var _collision_column := Vector2i(1 << 30, 1 << 30)
@@ -707,6 +711,7 @@ func refresh_collision(focus: Vector3) -> void:
 	if col == _collision_column:
 		return
 	_collision_column = col
+	var t0 := Time.get_ticks_usec()
 	var r := int(ceil(COLLISION_DROP_M / VoxelChunk.SPAN_M)) + 1
 	for dz in range(-r, r + 1):
 		for dx in range(-r, r + 1):
@@ -714,6 +719,8 @@ func refresh_collision(focus: Vector3) -> void:
 				var cpos := Vector3i(col.x + dx, cy, col.y + dz)
 				if chunks.has(cpos):
 					_sync_body(cpos)
+	stat_worst_collision_ms = maxf(stat_worst_collision_ms,
+		float(Time.get_ticks_usec() - t0) / 1000.0)
 
 
 func _clear_chunk_node(cpos: Vector3i) -> void:

@@ -174,7 +174,11 @@ func advance_days(days: float) -> void:
 		var stages: Array = Props.CROPS[str(t["kind"])]
 		if int(t["stage"]) >= stages.size() - 1:
 			continue
-		var rate: float = 1.0 if bool(t["wet"]) else DRY_PENALTY
+		# Watered by hand counts as wet until it dries out again.
+		var watered := float(t.get("watered", 0.0))
+		if watered > 0.0:
+			t["watered"] = maxf(watered - days, 0.0)
+		var rate: float = 1.0 if bool(t["wet"]) or watered > 0.0 else DRY_PENALTY
 		t["growth"] = float(t["growth"]) + days * rate
 		var want := int(float(t["growth"]) / DAYS_PER_STAGE)
 		if want == int(t["stage"]):
@@ -186,6 +190,23 @@ func advance_days(days: float) -> void:
 		if int(t["stage"]) == stages.size() - 1:
 			crop_ripened.emit(str(t["kind"]),
 				VoxelWorld.centre_metres(Vector3i(key.x, int(t["y"]) + 1, key.y)))
+
+
+## Watering a field by hand: every tile in the rectangle grows at the wet rate
+## for `days`. Returns how many tiles were watered — none, if there is no
+## field there, which the worker says rather than pretending.
+func water(rect: Rect2i, days: float) -> int:
+	var n := 0
+	for z in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			var key := Vector2i(x, z)
+			if not tiles.has(key):
+				continue
+			var t: Dictionary = tiles[key]
+			t["watered"] = maxf(float(t.get("watered", 0.0)), days)
+			tiles[key] = t
+			n += 1
+	return n
 
 
 # ------------------------------------------------------------------ harvest
@@ -211,7 +232,7 @@ func harvest(key: Vector2i) -> String:
 	_show_stage(key, t)
 	tiles[key] = t
 	if town != null:
-		town.stock["food"] = int(town.stock.get("food", 0)) + 3
+		town.produce("food", 3)
 	harvested.emit(kind, 3)
 	return kind
 
