@@ -74,6 +74,18 @@ through `proxy/worker.js`, which holds the key on Cloudflare. It speaks to
 either gateway — `wrangler secret put GROQ_API_KEY` is all that is needed to
 move it across.
 
+## Goals
+
+Somebody who can give orders — a foreman, or the mayor — can be handed a
+goal instead of a job: **your goal is to get a farm going**. Each morning
+they look at the town and what has been done, take people on where the town
+lacks the trade, and hand out the day's orders one by one; the orders are
+planned and refused exactly as if you had given them. Ask **how is the farm
+going?** for where it stands, and **drop the goal** to end it. With an API
+key the foreman plans each morning from the state of the town; without one,
+a library of campaigns — farm, bakery, tools, watch, orchard, trade, food,
+roads, flock — carries the common ones.
+
 ## Corrections
 
 The crew learn what you mean. Tell somebody **no, I wanted a thatch roof**,

@@ -328,8 +328,44 @@ func kill(c: Citizen, how: String) -> void:
 
 # ------------------------------------------------------------------ talking
 
-func try_order(_worker: Worker, _text: String) -> bool:
-	return false
+## "give Ada a home in the cottage", "house Bram in the hut", "move Cora to
+## the apartment". Anything that names a person and a place to live.
+func try_order(worker: Worker, text: String) -> bool:
+	var t := text.to_lower()
+	if Realm.has_phrase(t, ["build", "put up", "construct", "erect", "make a", "plant"]):
+		return false
+	if not (Realm.has_word(t, ["house", "home", "lodge", "rehouse", "live"])
+			or Realm.has_phrase(t, ["a home", "a bed", "a roof", "move in"])):
+		return false
+	var who: Citizen = null
+	for c: Citizen in alive():
+		if Realm.has_word(t, [c.name.to_lower()]):
+			who = c
+			break
+	if who == null:
+		return false
+	var want := ""
+	var best_len := 0
+	for word: String in ArchetypeLibrary.KEYWORDS:
+		var arch := str(ArchetypeLibrary.KEYWORDS[word])
+		if BEDS.has(arch) and word.length() > best_len and Realm.has_word(t, [word]):
+			want = arch
+			best_len = word.length()
+	var home: Dictionary = {}
+	for rec: Dictionary in realm.town.buildings:
+		if want != "" and str(rec["archetype"]) != want:
+			continue
+		if _beds_in(rec) > _occupants(int(rec["id"])):
+			home = rec
+			break
+	if home.is_empty():
+		worker.speak("There is no bed free%s for %s." % [
+			" in a %s" % want.replace("_", " ") if want != "" else "", who.name])
+		return true
+	who.home_id = int(home["id"])
+	worker.speak("%s will sleep at the %s from tonight." % [who.name, str(home["archetype"]).replace("_", " ")])
+	realm.note("homes", "%s moved into the %s." % [who.name, str(home["archetype"]).replace("_", " ")])
+	return true
 
 
 func try_answer(_worker: Worker, text: String) -> String:
@@ -363,9 +399,28 @@ func try_answer(_worker: Worker, text: String) -> String:
 		var h2 := hungry()
 		return "Nobody is hungry." if h2 == 0 else "%d %s hungry. The larder holds %d food." % [
 			h2, "person is" if h2 == 1 else "people are", realm.town.units_of("food")]
+	if Realm.has_phrase(t, ["who lives in", "who lives at", "who sleeps in", "who is in the"]):
+		for rec: Dictionary in realm.town.buildings:
+			var arch := str(rec["archetype"]).replace("_", " ")
+			if t.find(arch) >= 0 and BEDS.has(str(rec["archetype"])):
+				var names: Array[String] = []
+				for c: Citizen in alive():
+					if c.home_id == int(rec["id"]):
+						names.append(c.name)
+				if names.is_empty():
+					return "Nobody lives in the %s." % arch
+				return "%s %s in the %s." % [" and ".join(names),
+					"lives" if names.size() == 1 else "live", arch]
 	if Realm.has_phrase(t, ["where does", "where do", "who is", "tell me about"]):
 		for c: Citizen in alive():
-			if t.find(c.name.to_lower()) >= 0:
+			if Realm.has_word(t, [c.name.to_lower()]):
+				if Realm.has_word(t, ["work", "works", "working"]):
+					var ind: Node = realm.system("Industry")
+					if ind != null and ind.has_method("workplace_of"):
+						var wp: Dictionary = ind.call("workplace_of", c)
+						if wp.is_empty():
+							return "%s has no trade — labouring, mostly." % c.name
+						return "%s works at the %s." % [c.name, str(wp["archetype"]).replace("_", " ")]
 				return "%s — lives in %s." % [c.describe().capitalize(), home_of(c)]
 	if Realm.has_phrase(t, ["how many beds", "any room", "room for more", "free beds"]):
 		return "%d beds, %d taken." % [beds(), housed()]

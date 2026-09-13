@@ -265,6 +265,7 @@ func snapshot() -> Array:
 			"hired": w.hired, "role": w.role.id if w.role != null else "citizen",
 			"pos": w.global_position, "home": w.home,
 			"memory": w.memory.to_dict(), "standing": w.standing,
+			"goal": w.goal.to_dict() if w.goal != null else {},
 		})
 	return out
 
@@ -280,6 +281,8 @@ func restore(saved: Array) -> void:
 			continue
 		w.memory.from_dict(e.get("memory", {}))
 		w.standing = str(e.get("standing", ""))
+		var gd: Dictionary = e.get("goal", {})
+		w.goal = Goal.from_dict(gd) if not gd.is_empty() else null
 		var role_id := str(e.get("role", "citizen"))
 		if bool(e.get("hired", false)):
 			if not w.hired or (w.role != null and w.role.id != role_id):

@@ -174,6 +174,34 @@ static func role_schema() -> Dictionary:
 	}
 
 
+## A round of a goal, as the foreman is asked for it.
+static func round_schema() -> Dictionary:
+	return {
+		"name": "delegate_round",
+		"strict": STRICT,
+		"schema": {
+			"type": "object",
+			"properties": {
+				"kind": {"type": "string", "enum": ["round"]},
+				"done": {"type": "boolean"},
+				"orders": {
+					"type": "array", "maxItems": Goal.MAX_ORDERS_PER_ROUND,
+					"items": {
+						"type": "object",
+						"properties": {
+							"who": {"type": "string"},
+							"order": {"type": "string"},
+						},
+						"required": ["who", "order"],
+					},
+				},
+				"note": {"type": "string"},
+			},
+			"required": ["kind", "done", "orders", "note"],
+		},
+	}
+
+
 static func _building_spec(tier: int) -> Dictionary:
 	return {
 		"type": "object",

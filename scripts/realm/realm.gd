@@ -148,6 +148,10 @@ func _process(delta: float) -> void:
 ## An instruction the dispatcher did not recognise as a build, an errand or
 ## a question. First system to take it wins.
 func handle(worker: Worker, text: String) -> bool:
+	# A worker ambling about the well is not busy; stop the amble so the
+	# systems' own "are you free?" checks see them as they are.
+	if worker != null:
+		worker.stop_wandering()
 	if population.has_method("try_order") and population.try_order(worker, text):
 		return true
 	for s: Node in systems:
@@ -279,12 +283,20 @@ static func count_in(text: String, fallback: int) -> int:
 	var words := {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
 		"five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 		"dozen": 12, "twenty": 20, "thirty": 30, "fifty": 50, "hundred": 100}
-	for w: String in text.to_lower().split(" ", false):
+	var toks := text.to_lower().split(" ", false)
+	# Digits first, then number words, then "a" — "a gift of 200 coins" is
+	# two hundred, not one.
+	for w: String in toks:
 		var t := w.rstrip(",.?!")
 		if t.is_valid_int():
 			return clampi(int(t), 0, 10000)
-		if words.has(t):
-			return int(words[t])
+	for w2: String in toks:
+		var t2 := w2.rstrip(",.?!")
+		if words.has(t2) and t2 != "a" and t2 != "an":
+			return int(words[t2])
+	for w3: String in toks:
+		if w3 == "a" or w3 == "an":
+			return 1
 	return fallback
 
 

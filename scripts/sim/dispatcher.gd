@@ -97,6 +97,16 @@ var _from_morning: Dictionary = {}
 const MORNING_STAGGER_ONLINE := 8.0
 const MORNING_STAGGER_OFFLINE := 0.4
 
+## A goal's orders waiting to go out: {"foreman": Worker, "who": String,
+## "order": String, "tries": int}. Drained a few seconds apart like the
+## morning's, for the same reason.
+var _goal_queue: Array[Dictionary] = []
+var _goal_wait := 0.0
+const GOAL_RETRY_WAIT := 6.0
+## Whose goal an order belongs to: worker id -> foreman id, so a refusal or a
+## finish finds its way back into the log the next round is planned from.
+var _goal_orders: Dictionary = {}
+
 
 func _set_crew(c: Crew) -> void:
 	crew = c
@@ -132,6 +142,7 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	llm.failed.connect(_on_llm_failed)
 	llm.answered.connect(_on_answered)
 	llm.role_ready.connect(_on_role_ready)
+	llm.round_ready.connect(_on_round_ready)
 	llm.status.connect(func(t2: String) -> void: status.emit(t2))
 	clock.day_passed.connect(_on_morning)
 	# Everything the dispatcher says on a worker's behalf goes out through the
@@ -165,6 +176,8 @@ func instruct(worker: Worker, instruction: String) -> void:
 	if _try_game(worker, instruction):
 		return
 	if _try_standing(worker, instruction):
+		return
+	if _try_goal(worker, instruction):
 		return
 
 	# Being told they got it wrong, or what you like. Learned first, whatever
@@ -275,10 +288,16 @@ func _answer_about_role(worker: Worker, question: String) -> String:
 	var q := question.to_lower()
 	var about_job := q.find("your job") >= 0 or q.find("what do you do") >= 0 		or q.find("what can you do") >= 0 or q.find("your role") >= 0 		or q.find("what are you for") >= 0 or q.find("who are you") >= 0 		or q.find("work for me") >= 0 or q.find("do you work") >= 0 \
 		or q.find("each morning") >= 0 or q.find("every morning") >= 0 \
-		or q.find("daily") >= 0 or q.find("each day") >= 0
+		or q.find("daily") >= 0 or q.find("each day") >= 0 \
+		or (worker.goal != null and (q.find("going") >= 0 or q.find("goal") >= 0
+			or q.find("progress") >= 0 or q.find("where are we") >= 0 or q.find("how far") >= 0))
 	if not about_job:
 		return ""
 	var r := worker.role
+	if worker.goal != null and (q.find("going") >= 0 or q.find("goal") >= 0
+			or q.find("progress") >= 0 or q.find("where are we") >= 0
+			or q.find("how far") >= 0 or q.find("how is the") >= 0):
+		return _goal_report(worker)
 	if q.find("morning") >= 0 or q.find("each day") >= 0 or q.find("every day") >= 0 \
 			or q.find("daily") >= 0:
 		var task := worker.standing_task()
@@ -1283,6 +1302,7 @@ func _site_for(run: Dictionary, step: Dictionary, field: String) -> Dictionary:
 func _finish_run(run: Dictionary) -> void:
 	var worker: Worker = run["worker"]
 	_running.erase(worker.memory.worker_id)
+	_goal_outcome(worker, "abandoned" if run.get("abandoned", false) else "done")
 	# A plot reserved for a plan that turned out to be all fences and hens is a
 	# plot nobody can build on for the rest of the game.
 	var plot: Plot = run["plot"]
@@ -1630,6 +1650,7 @@ func _dig(worker: Worker, mat: String, units: int, announce: bool = true) -> boo
 ## has to be told twice, and the player does not have to remember to re-ask.
 func _process(delta: float) -> void:
 	_tick_morning(delta)
+	_tick_goals(delta)
 	if _held.is_empty():
 		return
 	# Once and a half a second is often enough to feel immediate and rare
@@ -1699,6 +1720,7 @@ func _on_llm_failed(_worker_id: String, reason: String) -> void:
 
 func _refuse(worker: Worker, plot: Plot, err: Dictionary) -> void:
 	_open.erase(worker.memory.worker_id)
+	_goal_outcome(worker, "refused")
 	worker.stop_thinking()
 	plot.reserved = false
 	# A typed error is a question, not a stack trace. This is the moment the
@@ -1791,6 +1813,9 @@ func _try_critique(worker: Worker, instruction: String) -> bool:
 func _on_morning(_day: int) -> void:
 	if crew == null:
 		return
+	for f: Worker in crew.hired():
+		if f.goal != null and not f.goal.done and f.goal.rounds < Goal.MAX_ROUNDS:
+			_plan_round(f)
 	for w: Worker in crew.hired():
 		if w.standing_task() == "" or w.busy() or w in _morning_queue:
 			continue
@@ -1854,6 +1879,235 @@ func _try_standing(worker: Worker, instruction: String) -> bool:
 	worker.memory.remember(clock.day, "Told to %s every morning." % task, 0.1)
 	spoke.emit(worker, "Every morning, then: %s." % task, "talk")
 	return true
+
+
+# ------------------------------------------------------------------- goals
+
+## "Your goal is to get a farm going." Only somebody who can give orders can
+## hold one; everybody else is told so. The first round is planned at once —
+## the mornings take it from there.
+const GOAL_RE := "^(?:your goal is|goal:|the goal is|see to it that|make sure that|make sure|take charge of|organise|organize|set up|i want you to see to|get)\\s+(?:to )?(?<goal>.+?)[.!]?$"
+const DROP_GOAL := ["drop the goal", "forget the goal", "never mind the goal", "stop the goal",
+	"forget about the goal", "leave the goal", "no more goal"]
+var _re_goal := RegEx.new()
+
+
+func _try_goal(worker: Worker, instruction: String) -> bool:
+	if _re_goal.get_pattern() == "":
+		_re_goal.compile(GOAL_RE)
+	var t := instruction.strip_edges().to_lower().rstrip(".!")
+	if t in DROP_GOAL:
+		if worker.goal == null:
+			spoke.emit(worker, "I had none.", "talk")
+		else:
+			spoke.emit(worker, "Right. I will leave the %s be." % _goal_word(worker.goal.text), "talk")
+			worker.goal = null
+		return true
+	var m := _re_goal.search(t)
+	if m == null:
+		return false
+	# "get" alone is nearly every order there is; as a goal it needs the tail —
+	# "get a farm going" — or an explicit opener.
+	if t.begins_with("get ") and not (t.ends_with(" going") or t.ends_with(" started")
+			or t.ends_with(" running") or t.ends_with(" underway") or t.ends_with(" sorted")):
+		return false
+	var goal_text := m.get_string("goal").strip_edges()
+	if goal_text == "":
+		return false
+	if not worker.hired:
+		spoke.emit(worker, "I do not work for you.", "talk")
+		return true
+	if worker.role == null or not worker.role.can("delegate"):
+		spoke.emit(worker, "That wants somebody who can give orders — a foreman, or the mayor. I only do my own work.", "talk")
+		return true
+	var g := Goal.new()
+	g.text = goal_text
+	g.given_day = clock.day
+	worker.goal = g
+	worker.memory.remember(clock.day, "Given the goal: %s." % goal_text, 0.2)
+	spoke.emit(worker, "%s. Leave it with me — I will see who we have and set them to it." % _sentence_case(goal_text), "talk")
+	_plan_round(worker)
+	return true
+
+
+static func _sentence_case(text: String) -> String:
+	if text == "":
+		return text
+	return text.substr(0, 1).to_upper() + text.substr(1)
+
+
+static func _goal_word(text: String) -> String:
+	var t := text.to_lower()
+	for w: String in ["farm", "bakery", "workshop", "orchard", "watch", "trade", "roads", "flock"]:
+		if t.find(w) >= 0:
+			return w
+	return "goal"
+
+
+func _plan_round(foreman: Worker) -> void:
+	var g := foreman.goal
+	if g == null or g.done:
+		return
+	if not _goal_queue.is_empty():
+		for q: Dictionary in _goal_queue:
+			if q["foreman"] == foreman:
+				return                  # yesterday's orders are still going out
+	llm.plan_round(foreman, g, crew, town, clock, farm, livestock)
+
+
+## The morning's orders have come back — from the model, or from the campaign
+## library. They go out one at a time; the foreman says where things stand.
+func _on_round_ready(worker_id: String, round: Dictionary, source: String) -> void:
+	var foreman := crew.get_worker(worker_id)
+	if foreman == null or foreman.goal == null:
+		return
+	var g := foreman.goal
+	if round.is_empty():
+		foreman.speak("I would not know how to go about %s. Tell me what you want done, one thing at a time." % g.text, "refuse")
+		foreman.goal = null
+		return
+	g.rounds += 1
+	var note := str(round.get("note", "")).strip_edges()
+	if bool(round.get("done", false)):
+		g.done = true
+		foreman.speak(note if note != "" else "That is %s seen to." % g.text, "done")
+		foreman.memory.remember(clock.day, "Saw the goal through: %s." % g.text, 0.4)
+		status.emit("%s: goal met — %s" % [foreman.display_name(), g.text])
+		return
+	var orders: Array = round.get("orders", [])
+	if orders.is_empty():
+		foreman.speak(note if note != "" else "Nothing to order today.", "talk")
+		return
+	for o: Variant in orders.slice(0, Goal.MAX_ORDERS_PER_ROUND):
+		if not (o is Dictionary):
+			continue
+		var od: Dictionary = o
+		_goal_queue.append({"foreman": foreman, "who": str(od.get("who", "")).strip_edges(),
+			"order": str(od.get("order", "")).strip_edges(), "tries": 0})
+	_goal_wait = 0.0
+	if note != "":
+		foreman.speak(note, "talk")
+	status.emit("%s's %s, day %d: %d orders (%s)" % [foreman.display_name(),
+		_goal_word(g.text), g.rounds, orders.size(), source])
+
+
+func _tick_goals(delta: float) -> void:
+	if _goal_queue.is_empty():
+		return
+	_goal_wait -= delta
+	if _goal_wait > 0.0:
+		return
+	_goal_wait = MORNING_STAGGER_ONLINE if ai_online() else MORNING_STAGGER_OFFLINE
+	var q: Dictionary = _goal_queue.pop_front()
+	var foreman: Worker = q["foreman"]
+	if foreman == null or not is_instance_valid(foreman) or foreman.goal == null:
+		return
+	var who := str(q["who"])
+	var order := str(q["order"])
+	var target := _resolve_who(who, foreman, order)
+	if target == null:
+		# Somebody is being taken on, or everybody is busy. Try again in a
+		# little while, a few times, and then let it go as refused.
+		q["tries"] = int(q["tries"]) + 1
+		if int(q["tries"]) < 12:
+			_goal_queue.append(q)
+			# Somebody is mid-job; a field takes hours. Come back to it rather
+			# than asking again in half a second and giving up inside a minute.
+			_goal_wait = maxf(_goal_wait, GOAL_RETRY_WAIT)
+		else:
+			foreman.goal.note(clock.day, who, order, "refused")
+			foreman.speak("Nobody free to %s." % order, "refuse")
+		return
+	if target == foreman:
+		foreman.goal.note(clock.day, who, order, "refused")
+		return
+	foreman.goal.note(clock.day, target.display_name(), order)
+	_goal_orders[target.memory.worker_id] = foreman.memory.worker_id
+	foreman.speak("%s — %s." % [target.display_name(), order], "talk")
+	instruct(target, order)
+
+
+## Who an order in a round goes to. A name; "new:<job>", which takes somebody
+## on first; "role:<job>", anyone hired as it; "builder", one of the three;
+## "anyone", whoever is free. Null when the right person is not free yet.
+func _resolve_who(who: String, foreman: Worker, _order: String) -> Worker:
+	var w := who.to_lower().strip_edges()
+	if w.begins_with("new:"):
+		var role_name := w.substr(4).strip_edges()
+		var id := RoleBook.canonical(Role.id_of(role_name))
+		# Somebody already doing that job is preferred over hiring another.
+		var have := _idle_with_role(id, foreman)
+		if have != null:
+			return have
+		var free := crew.citizens()
+		if free.is_empty():
+			return null
+		var pick: Worker = null
+		var best := INF
+		for c: Worker in free:
+			var d := c.global_position.distance_squared_to(foreman.global_position)
+			if d < best:
+				best = d
+				pick = c
+		_hire_as(pick, role_name, "", foreman)
+		# A preset is hired on the spot; a composed job comes back later, and
+		# the order is retried when it has.
+		return pick if pick.hired else null
+	if w.begins_with("role:"):
+		return _idle_with_role(RoleBook.canonical(Role.id_of(w.substr(5))), foreman)
+	if w == "builder" or w == "a builder" or w == "the builders":
+		for id2: String in ["mira", "tobias", "ren"]:
+			var b := crew.get_worker(id2)
+			if b != null and b.hired and not b.busy() and not _open.has(id2) and not _running.has(id2):
+				return b
+		return null
+	if w == "anyone" or w == "somebody" or w == "someone" or w == "":
+		for h: Worker in crew.hired():
+			if h != foreman and not h.busy() and not _open.has(h.memory.worker_id) \
+					and not _running.has(h.memory.worker_id):
+				return h
+		return null
+	var named := _worker_named(w)
+	if named == null or not named.hired:
+		return null
+	if named.busy() or _open.has(named.memory.worker_id) or _running.has(named.memory.worker_id):
+		return null
+	return named
+
+
+func _idle_with_role(role_id: String, foreman: Worker) -> Worker:
+	for h: Worker in crew.hired():
+		if h == foreman or h.role == null or h.role.id != role_id:
+			continue
+		if h.busy() or _open.has(h.memory.worker_id) or _running.has(h.memory.worker_id):
+			continue
+		return h
+	return null
+
+
+## What became of an order given toward a goal, into that goal's log.
+func _goal_outcome(worker: Worker, outcome: String) -> void:
+	var fid: String = _goal_orders.get(worker.memory.worker_id, "")
+	if fid == "":
+		return
+	_goal_orders.erase(worker.memory.worker_id)
+	var foreman := crew.get_worker(fid)
+	if foreman == null or foreman.goal == null:
+		return
+	foreman.goal.mark(worker.display_name(), outcome)
+
+
+## Where the goal stands, for "how is the farm going?"
+func _goal_report(worker: Worker) -> String:
+	var g := worker.goal
+	if g == null:
+		return "I have not been given anything to see to."
+	if g.done:
+		return "%s — done, as far as I can take it." % _sentence_case(g.text)
+	var lines := g.recent_lines(4)
+	if lines.is_empty():
+		return "%s — I have only just started on it." % _sentence_case(g.text)
+	return "%s: day %d. %s." % [_sentence_case(g.text), g.rounds, "; ".join(lines)]
 
 
 # ------------------------------------------------------------------- roles

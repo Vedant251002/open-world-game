@@ -101,6 +101,8 @@ var hired := true
 ## have set one ("every morning, bring in the harvest"); otherwise the role's.
 ## Empty means nothing — most people wait to be asked.
 var standing := ""
+## A standing objective, for somebody who can give orders. See Goal.
+var goal: Goal = null
 ## How far an idle person drifts from home. Seven metres keeps the crew at
 ## your elbow; a citizen roams the whole town.
 var wander_m := 7.0
@@ -1717,6 +1719,9 @@ func status_text() -> String:
 		State.IDLE:
 			if waiting_for != "":
 				return "waiting on %s" % waiting_for
+			if goal != null and not goal.done:
+				return "seeing to the %s" % goal.text.get_slice(" ", 0) if goal.text.find(" ") < 0 \
+					else "seeing to: %s" % goal.text
 			return "idle"
 		State.WALKING:
 			if job_quarry != null:

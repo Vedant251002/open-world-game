@@ -272,6 +272,85 @@ static func role_user(name: String, description: String, ctx: Dictionary) -> Str
 ".join(lines)
 
 
+## A round of a goal: what a foreman orders next, given what the town is and
+## what has been done. One call a morning, and the model sees the log, so it
+## does not sow the field twice.
+const ROUND_SCHEMA := """Return ONE JSON object and nothing else. No prose, no markdown fences.
+{
+  "kind": "round",
+  "done": <true if the goal is met and there is nothing more to order>,
+  "orders": [
+    {"who": "<a hired person's name, or new:<job> to take somebody on first>",
+     "order": "<one plain sentence, as you would say it to them>"}
+  ],
+  "note": "<one line to your employer about where things stand>"
+}"""
+
+const ROUND_RULES := """RULES
+- At most four orders, one per person. An order is a sentence the person could be given by your employer: build, fence, sow, bring, fetch, patrol, cook, sell, and the rest of what people here can do.
+- Give orders to people whose job covers them. If nobody has the job, "who": "new:<job>" takes somebody on as it first — farmer, shepherd, cook, toolmaker, merchant, guard, forester, fisher, hunter, road_builder, and so on.
+- Never order yourself. Never repeat an order the log shows was done.
+- If a step needs something not yet built, order the building first and the rest tomorrow.
+- Say done:true, with no orders, when the goal is met. Be honest about that: a farm with no field is not going."""
+
+
+static func round_system(mem: WorkerMemory, role: Role) -> String:
+	var lines: Array[String] = []
+	lines.append("You are %s, the town's %s. %s" % [mem.display_name,
+		role.name if role != null else "foreman",
+		role.character if role != null and role.character != "" else "You see that work gets done rather than doing it."])
+	lines.append("Your employer has given you a standing goal. Each morning you decide what to order next toward it.")
+	lines.append("")
+	lines.append("YOUR CHARACTER")
+	lines.append(_character(mem))
+	lines.append("")
+	lines.append("WHAT PEOPLE CAN BE ASKED TO DO")
+	lines.append(Steps.describe_for_tier(1))
+	lines.append("")
+	lines.append(ROUND_RULES)
+	lines.append("")
+	lines.append(ROUND_SCHEMA)
+	return "\n".join(lines)
+
+
+static func round_user(goal: Goal, crew: Crew, town: Town, clock: GameClock,
+		farm: Farm, livestock: Livestock) -> String:
+	var lines: Array[String] = []
+	lines.append("THE GOAL")
+	lines.append("\"%s\" — given on day %d; this is morning %d of it." % [
+		goal.text, goal.given_day, goal.rounds + 1])
+	lines.append("")
+	lines.append("TOWN")
+	lines.append("It is %s of day %d. Tech tier %d." % [
+		clock.part_of_day(clock.hour), clock.day, town.tier])
+	lines.append(town.describe_buildings())
+	lines.append("The purse holds %s coins." % town.coin_line())
+	lines.append(town.stock_line())
+	if farm != null and farm.tile_count() > 0:
+		lines.append("%d tiles under crop, %d ripe." % [farm.planted_count(), farm.ripe_count()])
+	else:
+		lines.append("No field has been sown.")
+	if livestock != null and livestock.total() > 0:
+		lines.append("%d animals in the town." % livestock.total())
+	else:
+		lines.append("No animals.")
+	lines.append("")
+	lines.append("PEOPLE")
+	for w: Worker in crew.hired():
+		var job := w.role.name if w.role != null else "hand"
+		lines.append("- %s — %s — %s" % [w.display_name(), job,
+			"busy: " + w.status_text() if w.busy() else "free"])
+	lines.append("- %d more people in the town, not hired" % crew.citizens().size())
+	lines.append("")
+	if not goal.log.is_empty():
+		lines.append("DONE SO FAR")
+		for l: String in goal.recent_lines(10):
+			lines.append("- " + l)
+		lines.append("")
+	lines.append("What do you order this morning?")
+	return "\n".join(lines)
+
+
 ## Traits rendered as prose. The model behaves far better when told who it is
 ## than when handed a table of floats.
 static func _character(mem: WorkerMemory) -> String:

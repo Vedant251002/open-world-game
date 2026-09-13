@@ -39,6 +39,14 @@ var _compat := false
 
 const SKY_SHADER := preload("res://scripts/core/sky.gdshader")
 
+## Set by weather.gd, blended in by _apply_time(). Neutral values (white,
+## zero, zero) leave a clear day looking exactly as it did before weather
+## existed — weather multiplies and adds on top of the time-of-day palette,
+## it never replaces it.
+var weather_tint: Color = Color.WHITE   ## multiplies sky and ambient colour
+var weather_fog: float = 0.0            ## 0..1, extra depth/volumetric fog
+var cloud_cover: float = 0.0            ## 0..1, added to the shader's cloud coverage
+
 ## 0..24. Set by GameClock every frame.
 var hour: float = 9.0:
 	set(value):
@@ -254,6 +262,14 @@ func _apply_time() -> void:
 	var sun_energy: float = k[3]
 	var ambient: float = k[4]
 
+	# Weather recolours the time-of-day palette rather than replacing it: an
+	# overcast noon is still noon, only greyer. Applied to the sky and sun
+	# colour before anything downstream reads them, so the water, the fog
+	# tint and the ambient light all agree with what the clouds are doing.
+	sky_top = sky_top * weather_tint
+	horizon = horizon * weather_tint
+	sun_col = sun_col * weather_tint
+
 	# Sun rides an arc from east to west between sunrise and sunset.
 	var day_t := clampf(inverse_lerp(SUNRISE, SUNSET, hour), 0.0, 1.0)
 	var elevation := sin(day_t * PI) * 68.0 + 2.0
@@ -302,7 +318,13 @@ func _apply_time() -> void:
 		env.ambient_light_sky_contribution = lerpf(0.15, 1.0,
 			clampf(sun_energy, 0.0, 1.0))
 	if not _no_vol:
-		env.volumetric_fog_density = lerpf(0.0042, 0.0010, clampf(sun_energy, 0.0, 1.0))
+		env.volumetric_fog_density = lerpf(0.0042, 0.0010, clampf(sun_energy, 0.0, 1.0)) \
+			+ weather_fog * 0.02
+	if not _no_fog:
+		# The palette's own haze is a constant 0.05 (see _build_environment);
+		# weather thickens it on top; a storm or a fog bank should read as
+		# genuinely hard to see through, not as a slightly duller day.
+		env.fog_density = 0.05 + weather_fog * 0.4
 	env.fog_light_color = horizon
 
 	env.glow_intensity = lerpf(1.00, 0.50, clampf(sun_energy, 0.0, 1.0))
@@ -320,8 +342,8 @@ func _apply_time() -> void:
 	var lit := sun_col.lerp(Color.WHITE, 0.35)
 	var shadow := horizon.lerp(Color("#5a6a86"), 0.45)
 	var bright := clampf(sun_energy * 1.25 + 0.10, 0.0, 1.0)
-	_set_sky_uniforms(sky_top, horizon, lit, shadow, to_sun, sun_col,
-		0.0 if _no_clouds else 0.58, bright)
+	var cover := 0.0 if _no_clouds else clampf(0.58 + cloud_cover, 0.0, 1.0)
+	_set_sky_uniforms(sky_top, horizon, lit, shadow, to_sun, sun_col, cover, bright)
 
 
 ## Pushes the palette into the sky shader. Colours arrive sRGB and are

@@ -39,6 +39,14 @@ var input_enabled := true
 ## The fighting, when there is any. Set by Main; null in the tests that never
 ## raise a crew.
 var warfare: Node = null
+## Riding. A multiplier on walk/sprint speed (2.2 on a horse) and a lift added
+## to eye height (so the view sits where a rider's head actually is), both set
+## and cleared by scripts/realm/riding.gd — never touched here. `mount` is the
+## thing carrying the player, for anything else that needs to know: nothing
+## reads it from this file, it is a hook for the realm system that sets it.
+var speed_scale := 1.0
+var eye_offset := 0.0
+var mount: Node3D = null
 var _kick := Vector3.ZERO
 var _kick_t := 0.0
 

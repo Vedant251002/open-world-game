@@ -21,6 +21,8 @@ signal answered(worker_id: String, text: String)
 ## through Validator.check_role and either keeps it or says why not. `source`
 ## is "model" or "fallback", so the roster can say which it got.
 signal role_ready(key: String, role: Dictionary, source: String)
+## A morning's round toward a goal: {"done", "orders": [{who, order}], "note"}.
+signal round_ready(worker_id: String, round: Dictionary, source: String)
 
 ## OpenCode Zen, which speaks the OpenAI chat-completions shape.
 ##
@@ -364,6 +366,64 @@ func compose_role(key: String, name: String, description: String,
 		http.queue_free()
 		_composing.erase(key)
 		role_ready.emit(key, ArchetypeLibrary.role_fallback(name, description), "fallback")
+
+
+## A round of a goal. One call a morning per foreman; offline, the campaign
+## library answers, which is what a keyless build has to do.
+func plan_round(worker: Worker, goal: Goal, crew: Crew, town: Town,
+		clock: GameClock, farm: Farm, livestock: Livestock) -> void:
+	var wid := worker.memory.worker_id
+	if not available():
+		round_ready.emit(wid, ArchetypeLibrary.goal_round(goal.text, goal.rounds), "fallback")
+		return
+	if _composing.get("round:" + wid, false):
+		return
+	_composing["round:" + wid] = true
+
+	var http := HTTPRequest.new()
+	http.timeout = TIMEOUT
+	http.use_threads = true
+	add_child(http)
+	http.request_completed.connect(
+		func(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+			http.queue_free()
+			_composing.erase("round:" + wid)
+			var raw := body.get_string_from_utf8()
+			_log("round", wid, goal.text, "http=%d result=%d\n%s" % [code, result, raw])
+			if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+				last_error = _gateway_message(raw)
+				status.emit("%s: %s — planning the day myself." % [model, last_error])
+				round_ready.emit(wid, ArchetypeLibrary.goal_round(goal.text, goal.rounds), "fallback")
+				return
+			var parsed := _extract(raw)
+			if str(parsed.get("kind", "")) != "round" or not (parsed.get("orders", null) is Array):
+				_log("round_rejected", wid, goal.text, "not a round object")
+				round_ready.emit(wid, ArchetypeLibrary.goal_round(goal.text, goal.rounds), "fallback")
+				return
+			round_ready.emit(wid, parsed, "model"),
+		CONNECT_ONE_SHOT)
+
+	var route := _route()
+	var body := {
+		"model": model,
+		"temperature": 0.6,
+		"reasoning": {"exclude": true},
+		"messages": [
+			{"role": "system", "content": Prompt.round_system(worker.memory, worker.role)},
+			{"role": "user", "content": Prompt.round_user(goal, crew, town, clock, farm, livestock)},
+		],
+	}
+	body[AIProvider.token_field(provider)] = ROLE_TOKENS
+	if AIProvider.schema_mode(provider) != "none":
+		body["response_format"] = {"type": "json_schema", "json_schema": PlanSchema.round_schema()}
+	_log("round_request", wid, goal.text, Prompt.round_system(worker.memory, worker.role)
+		+ "\n\n---\n\n" + Prompt.round_user(goal, crew, town, clock, farm, livestock))
+	calls_made += 1
+	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
+			JSON.stringify(body)) != OK:
+		http.queue_free()
+		_composing.erase("round:" + wid)
+		round_ready.emit(wid, ArchetypeLibrary.goal_round(goal.text, goal.rounds), "fallback")
 
 
 ## The reply's text, with any fence or stray quoting stripped. Kept to a

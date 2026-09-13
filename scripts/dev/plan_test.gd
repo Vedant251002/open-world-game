@@ -172,6 +172,10 @@ func _check_standing_sentences() -> void:
 		"work a shift at the store each day": "station",
 		"give an account each morning": "report",
 		"walk the round from the well to the edge of town all night": "patrol",
+		"feed the hens": "tend",
+		"feed the sheep": "tend",
+		"water the field": "water",
+		"collect the eggs": "collect",
 	}
 	for sentence: String in want:
 		var plan := ArchetypeLibrary.errand_plan(sentence)

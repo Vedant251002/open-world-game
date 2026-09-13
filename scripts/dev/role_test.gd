@@ -41,6 +41,8 @@ var _buildings_before := 0
 var _foreman: Worker = null
 var _morning_toasts := 0
 var _mira_morning := false
+var _hired_before_goal := 0
+var _goal_days: Array[int] = []
 var _clerk: Worker = null
 var _trader: Worker = null
 
@@ -55,6 +57,9 @@ func begin() -> void:
 	crew.job_done.connect(func(_w: Worker, p: VoxelPatch) -> void:
 		_works.append(p.archetype))
 	dispatch.status.connect(func(t: String) -> void:
+		if t.find("day 2:") >= 0 and t.find("orders") >= 0:
+			_goal_days.append(2)
+			print("[role]   status: %s" % t)
 		if t.begins_with("Morning:"):
 			_morning_toasts += 1
 			if t.find("Mira") >= 0:
@@ -381,17 +386,26 @@ func _process(delta: float) -> void:
 				return
 			_buildings_before = town.buildings.size()
 			_works.clear()
-			print("[role] telling Mira: demolish the hut  (%d buildings)" % _buildings_before)
+			_lines.clear()
+			print("[role] telling Mira: demolish the hut  (%d buildings; Mira %s at %s)" % [
+				_buildings_before, mira.status_text(), str(mira.global_position.round())])
 			dispatch.instruct(mira, "demolish the hut")
 			_phase = 24
 			_t = 0.0
 		24:
+			if int(_t / 15.0) != _beat:
+				_beat = int(_t / 15.0)
+				print("[role]   t=%3ds mira: %s | run=%s open=%s held=%d" % [int(_t),
+					crew.get_worker("mira").debug_state(),
+					"yes" if dispatch._running.has("mira") else "no",
+					"yes" if dispatch._open.has("mira") else "no", dispatch._held.size()])
 			if town.buildings.size() < _buildings_before:
 				print("[role] buildings: %d -> %d" % [_buildings_before, town.buildings.size()])
 				_phase = 25
 			elif _t > 150.0:
-				_fails.append("the hut was never taken down (%d buildings, works %s, Mira: %s)"
-					% [town.buildings.size(), str(_works), crew.get_worker("mira").status_text()])
+				_fails.append("the hut was never taken down (%d buildings, works %s, Mira: %s; she said: %s)"
+					% [town.buildings.size(), str(_works), crew.get_worker("mira").status_text(),
+						str(_lines)])
 				_phase = 25
 		25:
 			# Standing tasks: "every morning, go to the well", then a new day.
@@ -469,6 +483,74 @@ func _process(delta: float) -> void:
 				_fails.append("the lesson is not in Mira's memory")
 			_phase = 28
 		28:
+			# A goal: the foreman takes people on and hands out the day's work,
+			# then reports, then plans again the next morning.
+			var fm: Worker = null
+			for w: Worker in crew.hired():
+				if w.role != null and w.role.can("delegate"):
+					fm = w
+			if fm == null:
+				fm = crew.citizens()[0]
+				dispatch.instruct(fm, "hire you as a foreman")
+			_hired_before_goal = crew.hired().size()
+			_accepted = 0
+			_lines.clear()
+			_goal_days.clear()
+			print("[role] telling %s: your goal is to get a farm going" % fm.display_name())
+			dispatch.instruct(fm, "your goal is to get a farm going")
+			if fm.goal == null:
+				_fails.append("the foreman did not take the goal")
+				_phase = 31
+				return
+			_foreman = fm
+			_phase = 29
+			_t = 0.0
+		29:
+			# Round one, offline: two orders out, to a farmer and a shepherd —
+			# taken on for it, or already on the crew from earlier and reused,
+			# which is the right call and is why this counts orders, not hires.
+			var hired_now := crew.hired().size()
+			if _foreman.goal.log.size() >= 2 and hired_now > _hired_before_goal:
+				print("[role] round one: %d taken on, orders to %s" % [
+					hired_now - _hired_before_goal,
+					", ".join(_foreman.goal.recent_lines(2))])
+				var jobs: Array[String] = []
+				for w: Worker in crew.hired():
+					if w.role != null:
+						jobs.append(w.role.id)
+				if "farmer" not in jobs or "shepherd" not in jobs:
+					_fails.append("the farm round did not hire a farmer and a shepherd: %s" % str(jobs))
+				_lines.clear()
+				dispatch.instruct(_foreman, "how is the farm going?")
+				var said := _lines[_lines.size() - 1] if not _lines.is_empty() else ""
+				print("[role] foreman: %s" % said.substr(0, 110))
+				if said.find("day 1") < 0 and said.find("farm") < 0:
+					_fails.append("the foreman could not say how the farm is going: %s" % said)
+				if _foreman.goal.log.size() < 2:
+					_fails.append("the goal log has %d entries after two orders" % _foreman.goal.log.size())
+				_phase = 30
+				_t = 0.0
+			elif _t > 90.0:
+				_fails.append("round one never went out (%d hired, %d logged; queue %d)" % [
+					hired_now - _hired_before_goal, _foreman.goal.log.size(), dispatch._goal_queue.size()])
+				_phase = 31
+		30:
+			# The next morning plans round two by itself.
+			if _t < 1.0:
+				return
+			if _goal_days.is_empty():
+				print("[role] a new day dawns for the foreman")
+				clock.advance(24.0)
+				_t = 1.0
+				_goal_days.append(0)         # asked once
+				return
+			if _goal_days.size() >= 2:
+				print("[role] round two was planned on the next morning")
+				_phase = 31
+			elif _t > 20.0:
+				_fails.append("no round two on the next morning (goal: %s)" % _foreman.goal.summary())
+				_phase = 31
+		31:
 			_report()
 			get_tree().quit(1 if not _fails.is_empty() else 0)
 

@@ -435,6 +435,94 @@ static func _names_a_building(text: String) -> bool:
 	return false
 
 
+# ------------------------------------------------------------------ goals
+
+## Campaigns for the goals a player is likeliest to hand a foreman, offline:
+## a list of rounds, each a few orders, each order a person and a sentence.
+## "new:farmer" takes somebody on as a farmer first. This is cruder than the
+## model — it cannot look at the town and see that the field is already sown —
+## but it is a farm at the end of three mornings, which is what a keyless
+## build has to manage.
+const CAMPAIGNS := {
+	"farm": [
+		[{"who": "new:farmer", "order": "plant a wheat field"},
+			{"who": "new:shepherd", "order": "fence a pen and put 6 hens in it"}],
+		[{"who": "role:farmer", "order": "water the field"},
+			{"who": "role:shepherd", "order": "feed the hens"}],
+		[{"who": "role:farmer", "order": "bring in the harvest"},
+			{"who": "role:shepherd", "order": "collect the eggs"}],
+	],
+	"bakery": [
+		[{"who": "builder", "order": "build a bakery"}],
+		[{"who": "new:cook", "order": "cook a shift"}],
+		[{"who": "role:cook", "order": "cook a shift"}],
+	],
+	"tools": [
+		[{"who": "builder", "order": "build a workshop"}],
+		[{"who": "new:toolmaker", "order": "make tools"}],
+		[{"who": "role:toolmaker", "order": "make tools"}],
+	],
+	"watch": [
+		[{"who": "new:night_watchman", "order": "patrol the well and the edge of town"}],
+		[{"who": "role:night_watchman", "order": "patrol the well and the edge of town"}],
+	],
+	"orchard": [
+		[{"who": "new:forester", "order": "plant 6 trees"}],
+		[{"who": "role:forester", "order": "plant 4 trees"}],
+	],
+	"trade": [
+		[{"who": "new:merchant", "order": "sell 40 timber"}],
+		[{"who": "role:merchant", "order": "sell 40 thatch"}],
+	],
+	"food": [
+		[{"who": "new:fisher", "order": "go fishing"},
+			{"who": "new:hunter", "order": "go hunting"}],
+		[{"who": "role:fisher", "order": "go fishing"},
+			{"who": "role:hunter", "order": "go hunting"}],
+	],
+	"roads": [
+		[{"who": "new:road_builder", "order": "lay a road from the well to the edge of town"}],
+	],
+	"stock": [
+		[{"who": "new:shepherd", "order": "fence a pen and put 4 sheep in it"}],
+		[{"who": "role:shepherd", "order": "feed the sheep"}],
+		[{"who": "role:shepherd", "order": "collect the wool"}],
+	],
+}
+const CAMPAIGN_WORDS := {
+	"farm": ["farm", "farming", "crops", "fields", "field", "grow food", "agriculture"],
+	"bakery": ["bakery", "bread", "baking", "meals", "kitchen"],
+	"tools": ["tools", "smithy", "forge", "workshop", "toolmaking"],
+	"watch": ["watch", "guard", "safe", "security", "patrol", "defend"],
+	"orchard": ["orchard", "trees", "forest", "woodland"],
+	"trade": ["trade", "money", "coins", "market", "sell", "purse", "profit"],
+	"food": ["fed", "food", "hunt", "fish", "feed the town", "feed everyone"],
+	"roads": ["road", "roads", "paths", "paved"],
+	"stock": ["sheep", "cattle", "cows", "wool", "livestock", "flock", "herd"],
+}
+
+
+## The round for a goal, offline. Returns {} when the campaign is over.
+static func goal_round(goal: String, round_index: int) -> Dictionary:
+	var g := goal.to_lower()
+	var key := ""
+	for k: String in CAMPAIGN_WORDS:
+		for w: String in CAMPAIGN_WORDS[k]:
+			if g.find(w) >= 0:
+				key = k
+				break
+		if key != "":
+			break
+	if key == "":
+		return {}
+	var rounds: Array = CAMPAIGNS[key]
+	if round_index >= rounds.size():
+		return {"kind": "round", "done": true, "orders": [],
+			"note": "That is the %s seen to, as far as I can take it." % key}
+	return {"kind": "round", "done": false, "orders": rounds[round_index],
+		"note": "Day %d of the %s." % [round_index + 1, key], "source": "fallback"}
+
+
 # ------------------------------------------------------------------ roles
 
 ## Composing a role without a model: score every capability against the name
@@ -629,7 +717,9 @@ static func errand_plan(instruction: String) -> Dictionary:
 		steps.append(step3)
 	elif _has_any(text, WATER_WORDS):
 		steps.append({"do": "water"})
-	elif _has_any(text, TEND_WORDS) and _has_any(text, ["animal", "hen", "sheep", "cow", "flock", "herd", "stock"]):
+	elif _has_any(text, TEND_WORDS) and _has_any(text, ["animal", "animals", "hen", "hens",
+			"chicken", "chickens", "sheep", "cow", "cows", "cattle", "flock", "herd", "stock",
+			"livestock", "them"]):
 		steps.append({"do": "tend"})
 	elif _has_any(text, COOK_WORDS):
 		steps.append({"do": "cook", "hours": _hours_in(text, 4)})
