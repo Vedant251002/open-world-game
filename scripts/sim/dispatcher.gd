@@ -51,6 +51,7 @@ var farm: Farm
 var livestock: Livestock
 var wildlife: Wildlife
 var warfare: Warfare
+var quick: QuickIntent
 var realm: Realm
 var player: Node3D
 ## Assigned from outside, which is why it is a setter rather than a plain field:
@@ -137,6 +138,20 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	llm = LLM.new()
 	llm.name = "LLM"
 	add_child(llm)
+
+	# The fast front door, in front of the model and never instead of it.
+	# It answers the handful of orders nobody could misread and hands over
+	# everything else, so the model's turn is unchanged for all of it.
+	quick = QuickIntent.new()
+	quick.name = "QuickIntent"
+	# One way to turn it off and get the old behaviour exactly: every order
+	# goes to the model, as it did before this existed. Worth having while it
+	# is new, because "is it the front door" is the first question to ask of
+	# any order that came back wrong.
+	quick.enabled = not ("--noquick" in OS.get_cmdline_args()) \
+		and OS.get_environment("DELEGATE_NO_QUICK") == ""
+	add_child(quick)
+	quick.decided.connect(_on_quick_decided)
 	llm.plan_ready.connect(_on_plan_ready)
 	llm.question_ready.connect(_on_question_ready)
 	llm.failed.connect(_on_llm_failed)
@@ -159,7 +174,10 @@ func ai_online() -> bool:
 
 
 func describe_ai() -> String:
-	return llm.describe() if llm != null else "no AI layer"
+	var line := llm.describe() if llm != null else "no AI layer"
+	if quick != null:
+		line += "   |   " + quick.describe()
+	return line
 
 
 func instruct(worker: Worker, instruction: String) -> void:
@@ -245,12 +263,102 @@ func instruct(worker: Worker, instruction: String) -> void:
 	_open[worker.memory.worker_id] = {
 		"worker": worker, "instruction": instruction, "plot": plot,
 	}
+	# One question to the classifier first, if it will take it. It answers in
+	# a fraction of a second or not at all, so nothing is said out loud and
+	# nobody is sent walking until it has either produced the step or stood
+	# aside — a third of a second of standing still is not a wait, and the
+	# alternative is announcing "let me think about that" for an order that
+	# was about to be understood instantly.
+	if quick != null and quick.available() \
+			and quick.submit(instruction, worker.memory.worker_id, _quick_labels(worker)):
+		return
+	_ask_model(worker, instruction, plot)
+
+
+## The model's turn: the slow path, and still the only one that can plan.
+func _ask_model(worker: Worker, instruction: String, plot: Plot) -> void:
 	worker.speak("Right — let me think about that.", "talk")
 	# Off you go. The plan will catch up on the way (§5.2): a free model takes
 	# the better part of a minute, and none of that should be spent watching
 	# somebody stand still — or, worse, watching them wander.
 	worker.start_thinking(instruction, plot)
 	llm.submit(instruction, worker.memory, plot, _ctx(worker), clock, town)
+
+
+## The classifier's answer: a one-step plan to run, or {} meaning "not mine".
+##
+## A plan taken here goes through _on_plan_ready like any other, so it is
+## validated, refused, announced, remembered and carried out by exactly the
+## same code the model's plans use. That is the whole reason this is worth
+## having rather than worrying about: it cannot reach anything the model could
+## not, and it cannot skip a check the model's plan is held to.
+## The lists the classifier is allowed to choose from, built fresh for this
+## worker and this town.
+##
+## Fresh matters more than it looks. "Go to the bakery" is only answerable
+## because the bakery is standing — a fixed list would have the classifier
+## confidently choosing buildings the town has never built, and a wrong place
+## is a worker walking somewhere nobody asked for. Everything here is the town
+## as it is right now, narrowed to what this person is allowed to do.
+func _quick_labels(worker: Worker) -> Dictionary:
+	var verbs: Array = []
+	for v: String in QuickIntent.SIMPLE:
+		if Steps.verb_tier(v) > town.tier:
+			continue
+		if worker.role != null and not worker.role.can(Steps.capability_of(v)):
+			continue
+		if not Capabilities.is_ready(Steps.capability_of(v)):
+			continue
+		verbs.append(v)
+	if verbs.is_empty():
+		return {}
+
+	# Buildings by the name they are spoken of, plus the handful of places
+	# that are not buildings at all. Deduplicated: two bakeries are one label.
+	var places: Array = []
+	for rec: Dictionary in town.buildings:
+		var arch := str(rec["archetype"]).replace("_", " ")
+		if arch != "" and arch not in places:
+			places.append(arch)
+	for w: String in Steps.PLACE_WORDS:
+		if w not in places:
+			places.append(w)
+
+	var who: Array = []
+	if crew != null:
+		for w2: Worker in crew.workers:
+			if w2.hired and w2 != worker:
+				who.append(w2.display_name())
+
+	var materials: Array = []
+	for m: String in VoxelTypes.names_for_tier(town.tier):
+		materials.append(m)
+	var goods: Array = []
+	for g: String in Town.PRICE:
+		goods.append(g)
+
+	return {
+		"verbs": verbs,
+		"places": places,
+		"who": who,
+		"materials": materials,
+		"goods": goods,
+		"species": Steps.SPECIES.duplicate(),
+		"crops": Steps.CROPS.duplicate(),
+		"directions": Steps.DIRECTIONS.duplicate(),
+		"skills": Steps.SKILLS.duplicate(),
+		"trade_actions": Steps.TRADE_ACTIONS.duplicate(),
+	}
+
+
+func _on_quick_decided(worker_id: String, plan: Dictionary) -> void:
+	var job: Dictionary = _open.get(worker_id, {})
+	if job.is_empty():
+		return
+	if plan.is_empty():
+		_ask_model(job["worker"], str(job.get("instruction", "")), job["plot"])
+		return
+	_on_plan_ready(worker_id, plan)
 
 
 ## Something the player wants to know rather than have done.
