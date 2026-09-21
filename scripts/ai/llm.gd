@@ -218,23 +218,21 @@ func submit(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 		status.emit("%s is still thinking." % mem.display_name)
 		return
 
-	# Cache before anything else. A popular building on a familiar plot for a
-	# worker whose preferences have not changed is the same plan every time.
-	var arch := ArchetypeLibrary.guess_archetype(instruction)
-	var key := ArchetypeLibrary.cache_key(arch, int(ctx.get("tier", 1)), plot, mem)
-	var hit := ArchetypeLibrary.cached(key)
-	# ...unless it is not a building at all. The cache is keyed by archetype and
-	# guess_archetype answers "hut" for anything it does not recognise, so "bring
-	# six hens" is a three-word plain instruction that hashes to whatever hut was
-	# last built on this plot. The old livestock branch in Dispatcher hid this by
-	# never letting such an order reach here; now that orders compose, it has to
-	# be said properly.
-	if not hit.is_empty() and _instruction_is_plain(instruction) \
-			and ArchetypeLibrary.land_plan(instruction, int(ctx.get("tier", 1))).is_empty() 			and ArchetypeLibrary.errand_plan(instruction).is_empty():
-		cache_hits += 1
-		_log("cache", mem.worker_id, instruction, JSON.stringify(hit))
-		plan_ready.emit(mem.worker_id, hit)
-		return
+	# Only a building they actually named can come out of the cache. The key is
+	# the archetype, and an unnamed sentence used to hash to whatever hut was
+	# last built on this plot.
+	var arch := ArchetypeLibrary.named_archetype(instruction)
+	var key := ""
+	if arch != "" and _instruction_is_plain(instruction) \
+			and ArchetypeLibrary.land_plan(instruction, int(ctx.get("tier", 1))).is_empty() \
+			and ArchetypeLibrary.errand_plan(instruction).is_empty():
+		key = ArchetypeLibrary.cache_key(arch, int(ctx.get("tier", 1)), plot, mem)
+		var hit := ArchetypeLibrary.cached(key)
+		if not hit.is_empty():
+			cache_hits += 1
+			_log("cache", mem.worker_id, instruction, JSON.stringify(hit))
+			plan_ready.emit(mem.worker_id, hit)
+			return
 
 	if not available():
 		_offline_answer(instruction, mem, plot, ctx)
@@ -459,7 +457,7 @@ func _instruction_is_plain(instruction: String) -> bool:
 
 func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 		clock: GameClock, town: Town, key: String, attempt: int, repair: String) -> void:
-	var sys := Prompt.system(mem, ctx)
+	var sys := Prompt.system(mem, ctx, true)
 	var usr := Prompt.user(instruction, mem, plot, ctx, clock, town)
 	if repair != "":
 		usr += "\n\nYour previous reply could not be used: %s\nReturn corrected JSON only." % repair
@@ -499,19 +497,16 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 	# default and truncates exactly the plans this was raised to fit.
 	body[AIProvider.token_field(provider)] = MAX_TOKENS
 
-	# And the point of the whole exercise: on a gateway that constrains its
-	# decoding, ask it to. The reply then cannot come back as unparseable JSON,
-	# which is the failure that costs a full round trip and yields nothing.
-	if AIProvider.schema_mode(provider) != "none":
-		var allowed: Array = []
-		var role: Role = ctx.get("role", null)
-		if role != null and role.id != "builder":
-			for c: String in role.ready_capabilities():
-				allowed.append(c)
-		body["response_format"] = {
-			"type": "json_schema",
-			"json_schema": PlanSchema.for_tier(int(ctx.get("tier", 1)), allowed),
-		}
+	# The actions are tools. The model calls one; it does not write the plan
+	# into the message. A gateway that also locks the whole reply to a JSON
+	# schema will refuse the tool call, so the schema is not sent alongside.
+	var allowed: Array = []
+	var role: Role = ctx.get("role", null)
+	if role != null and role.id != "builder":
+		for c: String in role.ready_capabilities():
+			allowed.append(c)
+	body["tools"] = PlanSchema.tools_for(int(ctx.get("tier", 1)), allowed)
+	body["tool_choice"] = "required"
 	var payload := JSON.stringify(body)
 	_log("request", mem.worker_id, instruction, sys + "\n\n---\n\n" + usr)
 	calls_made += 1
@@ -564,7 +559,13 @@ func _on_reply(result: int, code: int, body: PackedByteArray, instruction: Strin
 		_offline_answer(instruction, mem, plot, ctx)
 		return
 
-	var parsed := _extract(raw)
+	var calls := _tool_calls(raw)
+	var parsed := PlanSchema.from_tool_calls(calls) if not calls.is_empty() else _extract(raw)
+	if str(parsed.get("kind", "")) == "talk":
+		_busy.erase(mem.worker_id)
+		plan_ready.emit(mem.worker_id, parsed)
+		return
+
 	var problem := _schema_problem(parsed, ctx)
 	if problem != "":
 		# One retry with the error appended, then the cached archetype. This is
@@ -587,7 +588,8 @@ func _on_reply(result: int, code: int, body: PackedByteArray, instruction: Strin
 		return
 
 	parsed["source"] = "model"
-	ArchetypeLibrary.store(key, parsed)
+	if key != "":
+		ArchetypeLibrary.store(key, parsed)
 	plan_ready.emit(mem.worker_id, parsed)
 
 
@@ -596,7 +598,43 @@ func _offline_answer(instruction: String, mem: WorkerMemory, plot: Plot,
 	fallbacks += 1
 	_busy.erase(mem.worker_id)
 	var plan := ArchetypeLibrary.fallback(instruction, mem, plot, int(ctx.get("tier", 1)))
+	# No recognised job. Saying so is the whole answer — a hut was the old
+	# guess, and it is what walked them off when the words were not an order.
+	if plan.is_empty():
+		plan = {
+			"kind": "talk",
+			"worker_line": "I cannot think that through just now, and I will not guess at a job.",
+			"source": "fallback",
+		}
 	plan_ready.emit(mem.worker_id, plan)
+
+
+## Tool calls on the first choice, in the OpenAI shape every gateway here uses.
+func _tool_calls(raw: String) -> Array:
+	var json := JSON.new()
+	if json.parse(raw) != OK or not (json.data is Dictionary):
+		return []
+	var choices: Variant = (json.data as Dictionary).get("choices", [])
+	if not (choices is Array) or (choices as Array).is_empty():
+		return []
+	var msg: Variant = ((choices as Array)[0] as Dictionary).get("message", {})
+	if not (msg is Dictionary):
+		return []
+	var calls: Variant = (msg as Dictionary).get("tool_calls", [])
+	if not (calls is Array):
+		return []
+	var out: Array = []
+	for c: Variant in calls:
+		if not (c is Dictionary):
+			continue
+		var fn: Variant = (c as Dictionary).get("function", {})
+		if not (fn is Dictionary):
+			continue
+		out.append({
+			"name": str((fn as Dictionary).get("name", "")),
+			"arguments": (fn as Dictionary).get("arguments", {}),
+		})
+	return out
 
 
 # -------------------------------------------------------------------- parsing

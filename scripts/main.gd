@@ -53,6 +53,9 @@ func _ready() -> void:
 	if "--looktest" in args:
 		add_child(load("res://scripts/dev/look_test.gd").new())
 		return
+	if "--tooltest" in args:
+		add_child(load("res://scripts/dev/tool_test.gd").new())
+		return
 	_world_seed = int(Time.get_unix_time_from_system()) & 0x7FFFFFFF
 	for arg in args:
 		if arg.begins_with("--seed="):

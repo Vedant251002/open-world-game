@@ -263,7 +263,12 @@ const NUMBER_WORDS := {
 static var _cache: Dictionary = {}
 
 
-static func guess_archetype(instruction: String) -> String:
+## The building they actually named, or "" when the sentence names none.
+##
+## guess_archetype() cannot return "" — a missing building used to become a
+## hut, and "what do you want" is not a hut. Callers that must have a building
+## still use guess_archetype(). Callers that are allowed to do nothing use this.
+static func named_archetype(instruction: String) -> String:
 	var text := instruction.to_lower()
 	# Longest match wins, so "tower block" is not read as "tower" and an
 	# "apartment block" is not read as a "block of".
@@ -273,7 +278,12 @@ static func guess_archetype(instruction: String) -> String:
 		if word.length() > best_len and text.find(word) >= 0:
 			best = KEYWORDS[word]
 			best_len = word.length()
-	return best if best != "" else "hut"
+	return best
+
+
+static func guess_archetype(instruction: String) -> String:
+	var named := named_archetype(instruction)
+	return named if named != "" else "hut"
 
 
 ## How many floors the instruction asked for, or 0 if it did not say.
@@ -870,7 +880,11 @@ static func fallback(instruction: String, mem: WorkerMemory, plot: Plot,
 	if not land.is_empty():
 		return land
 
-	var arch := guess_archetype(instruction)
+	# No named building means there is no offline plan. Guessing a hut here is
+	# how "what do you want" and "hi" turned into a house.
+	var arch := named_archetype(instruction)
+	if arch == "":
+		return {}
 	var spec := (BASE.get(arch, BASE["hut"]) as Dictionary).duplicate(true)
 	spec["kind"] = "building"
 	spec["archetype"] = arch

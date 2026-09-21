@@ -105,6 +105,13 @@ If the instruction is too vague for you to act on, given your character:
   "worker_line": "<how you say it, in character>"
 }"""
 
+const TOOL_RULES := """HOW YOU ANSWER
+You have tools. Call one. The tool call is the whole of your answer — do not also write a JSON plan.
+- Call reply when they greeted you, asked you something, misspoke, or did not give you a job. "What do you want", and anything like it, is reply. A typo is not a job.
+- Call a work tool only for a job they actually asked for. Do not invent a building, an errand, or a place.
+- Several work tools, in order, only when the order really has parts. Four is the most.
+- reply together with a work tool means you say that line and then do the job. reply alone means you stay where you are."""
+
 const RULES := """RULES
 - Use ONLY the vocabulary listed under AVAILABLE. Never invent a material, module, roof, orientation or step.
 - One step unless the order really has parts. Two steps that could have been one is not thoroughness, it is a second job nobody asked for.
@@ -118,7 +125,7 @@ const RULES := """RULES
   This is the most important field: your employer must be able to see why you did what you did."""
 
 
-static func system(mem: WorkerMemory, ctx: Dictionary) -> String:
+static func system(mem: WorkerMemory, ctx: Dictionary, as_tools: bool = false) -> String:
 	var tier := int(ctx.get("tier", 1))
 	var role: Role = ctx.get("role", null)
 	var lines: Array[String] = []
@@ -126,7 +133,13 @@ static func system(mem: WorkerMemory, ctx: Dictionary) -> String:
 	# Who they are on the job. A builder gets the line the game always used; a
 	# role the player defined gets the character the model wrote for it, which
 	# is the whole reason a shepherd talks like a shepherd.
-	if role == null or role.id == "builder" or role.character == "":
+	if as_tools:
+		if role == null or role.id == "builder" or role.character == "":
+			lines.append("You are %s, a builder in a small town, standing in front of your employer." % mem.display_name)
+		else:
+			lines.append("You are %s, the town's %s, standing in front of your employer. %s" % [mem.display_name, role.name, role.character])
+		lines.append("You either answer them or do the job they asked, by calling a tool. You do not guess a job they did not give you.")
+	elif role == null or role.id == "builder" or role.character == "":
 		lines.append("You are %s, a builder in a small town. You convert your employer's spoken instruction into a work plan." % mem.display_name)
 	else:
 		lines.append("You are %s, the town's %s. %s" % [mem.display_name, role.name, role.character])
@@ -159,7 +172,7 @@ static func system(mem: WorkerMemory, ctx: Dictionary) -> String:
 	lines.append("")
 	lines.append(RULES)
 	lines.append("")
-	lines.append(SCHEMA)
+	lines.append(TOOL_RULES if as_tools else SCHEMA)
 	return "\n".join(lines)
 
 

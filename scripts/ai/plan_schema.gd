@@ -252,6 +252,107 @@ static func _building_spec(tier: int) -> Dictionary:
 	}
 
 
+## One tool per thing this person can actually do, plus reply.
+##
+## The model calls one of these. It does not write a plan into the message and
+## it does not get to wander off while it decides. reply is the tool for
+## everything that is not a job — a greeting, a question, a typo, "what do you
+## want". A work tool is only for a job they were actually given.
+static func tools_for(tier: int, allowed: Array = []) -> Array:
+	var tools: Array = [{
+		"type": "function",
+		"function": {
+			"name": "reply",
+			"description": ("Say something and do no work. Use this for a greeting, "
+				+ "a question, chatter, a typo, or anything that is not a clear "
+				+ "order to do one of the other tools. Do not also call a work tool."),
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"text": {"type": "string",
+						"description": "What you say out loud, one or two sentences, in your own voice."},
+				},
+				"required": ["text"],
+			},
+		},
+	}]
+	for verb: String in Steps.VERBS:
+		var v: Dictionary = Steps.VERBS[verb]
+		if int(v["tier"]) > tier:
+			continue
+		if not allowed.is_empty() and Steps.capability_of(verb) not in allowed:
+			continue
+		var props := {}
+		var required: Array = []
+		for f: String in v["required"]:
+			props[f] = _field(f, tier)
+			required.append(f)
+		for f2: String in v["optional"]:
+			props[f2] = _field(f2, tier)
+		var params := {
+			"type": "object",
+			"properties": props,
+		}
+		if not required.is_empty():
+			params["required"] = required
+		tools.append({
+			"type": "function",
+			"function": {
+				"name": verb,
+				"description": str(v["says"]) + ". Only when they asked you to do this.",
+				"parameters": params,
+			},
+		})
+	return tools
+
+
+## Tool calls, in the order the model made them, turned into the plan the
+## rest of the game already runs. A reply and no work is kind "talk" and
+## does not move anybody.
+static func from_tool_calls(calls: Array) -> Dictionary:
+	var said := ""
+	var steps: Array = []
+	for c: Variant in calls:
+		if not (c is Dictionary):
+			continue
+		var call: Dictionary = c
+		var name := str(call.get("name", ""))
+		var args := _args(call.get("arguments", {}))
+		if name == "reply":
+			var text := str(args.get("text", "")).strip_edges()
+			if text != "":
+				said = text
+			continue
+		if not Steps.known(name) or steps.size() >= Steps.MAX_STEPS:
+			continue
+		var step := {"do": name}
+		for k: Variant in args:
+			step[str(k)] = args[k]
+		steps.append(step)
+	if steps.is_empty():
+		if said == "":
+			return {}
+		return {"kind": "talk", "worker_line": said, "source": "model"}
+	return {
+		"kind": "plan",
+		"steps": steps,
+		"assumptions": [said if said != "" else "That is what you asked for, so that is what I will do."],
+		"worker_line": said if said != "" else "I will see to that.",
+		"confidence": 0.8,
+		"source": "model",
+	}
+
+
+static func _args(raw: Variant) -> Dictionary:
+	if raw is Dictionary:
+		return raw
+	if raw is String and str(raw).strip_edges() != "":
+		var j := JSON.new()
+		if j.parse(str(raw)) == OK and j.data is Dictionary:
+			return j.data
+	return {}
+
+
 ## PackedStringArray does not survive JSON.stringify as a list of strings.
 static func _names(packed: PackedStringArray) -> Array:
 	var out: Array = []

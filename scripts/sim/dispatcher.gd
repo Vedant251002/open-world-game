@@ -266,32 +266,21 @@ func instruct(worker: Worker, instruction: String) -> void:
 	# One question to the classifier first, if it will take it. It answers in
 	# a fraction of a second or not at all, so nothing is said out loud and
 	# nobody is sent walking until it has either produced the step or stood
-	# aside — a third of a second of standing still is not a wait, and the
-	# alternative is announcing "let me think about that" for an order that
-	# was about to be understood instantly.
+	# aside.
 	if quick != null and quick.available() \
 			and quick.submit(instruction, worker.memory.worker_id, _quick_labels(worker)):
 		return
 	_ask_model(worker, instruction, plot)
 
 
-## The model's turn: the slow path, and still the only one that can plan.
+## The model's turn. The actions are tools on the call. They stay where they
+## are until a tool comes back that is actually a job — "let me think" and a
+## walk to an empty plot was the model being asked to plan a building out of
+## a sentence that was not one.
 func _ask_model(worker: Worker, instruction: String, plot: Plot) -> void:
-	worker.speak("Right — let me think about that.", "talk")
-	# Off you go. The plan will catch up on the way (§5.2): a free model takes
-	# the better part of a minute, and none of that should be spent watching
-	# somebody stand still — or, worse, watching them wander.
-	worker.start_thinking(instruction, plot)
 	llm.submit(instruction, worker.memory, plot, _ctx(worker), clock, town)
 
 
-## The classifier's answer: a one-step plan to run, or {} meaning "not mine".
-##
-## A plan taken here goes through _on_plan_ready like any other, so it is
-## validated, refused, announced, remembered and carried out by exactly the
-## same code the model's plans use. That is the whole reason this is worth
-## having rather than worrying about: it cannot reach anything the model could
-## not, and it cannot skip a check the model's plan is held to.
 ## The lists the classifier is allowed to choose from, built fresh for this
 ## worker and this town.
 ##
@@ -351,6 +340,13 @@ func _quick_labels(worker: Worker) -> Dictionary:
 	}
 
 
+## The classifier's answer: a one-step plan to run, or {} meaning "not mine".
+##
+## A plan taken here goes through _on_plan_ready like any other, so it is
+## validated, refused, announced, remembered and carried out by exactly the
+## same code the model's plans use. That is the whole reason this is worth
+## having rather than worrying about: it cannot reach anything the model could
+## not, and it cannot skip a check the model's plan is held to.
 func _on_quick_decided(worker_id: String, plan: Dictionary) -> void:
 	var job: Dictionary = _open.get(worker_id, {})
 	if job.is_empty():
@@ -608,6 +604,16 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 		return
 	var worker: Worker = job["worker"]
 	var plot: Plot = job["plot"]
+	# A reply, not a job. The plot was only held in case a tool turned out to
+	# need ground, and this one does not.
+	if str(plan.get("kind", "")) == "talk":
+		_open.erase(worker_id)
+		if plot != null:
+			plot.reserved = false
+		worker.stop_thinking()
+		var said := str(plan.get("worker_line", "")).strip_edges()
+		worker.speak(said if said != "" else "I did not catch an order in that.", "talk")
+		return
 	var assumptions: Array = plan.get("assumptions", [])
 	var steps := Steps.normalise(plan)
 
