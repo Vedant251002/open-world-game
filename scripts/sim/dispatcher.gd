@@ -148,7 +148,7 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	# goes to the model, as it did before this existed. Worth having while it
 	# is new, because "is it the front door" is the first question to ask of
 	# any order that came back wrong.
-	quick.enabled = not ("--noquick" in OS.get_cmdline_args()) \
+	quick.enabled = not ("--noquick" in QuickIntent.args()) \
 		and OS.get_environment("DELEGATE_NO_QUICK") == ""
 	add_child(quick)
 	quick.decided.connect(_on_quick_decided)

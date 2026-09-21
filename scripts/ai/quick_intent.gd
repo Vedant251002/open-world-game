@@ -83,6 +83,13 @@ const SIMPLE := ["go", "follow", "wait", "rest", "station", "harvest", "collect"
 const SPLITS := [" and ", " then ", " after that", " once you", " when you",
 	";", ",", " also ", " plus ", " & "]
 
+## Where the questions go. Overridable for the same reason the proxy URL is:
+## the only honest way to test this whole path is to stand something in front
+## of it that answers on demand, and a test that can only run against a live
+## third-party service is a test that does not run.
+##   --classifier=http://127.0.0.1:8899/v1/classify   or   CLASSIFIER_URL
+var endpoint := ENDPOINT
+
 var enabled := true
 var calls_made := 0
 var taken := 0          ## orders answered here
@@ -93,8 +100,30 @@ var last_ms := 0
 var _busy := {}         ## worker_id -> true
 
 
+func _ready() -> void:
+	var from_env := OS.get_environment("CLASSIFIER_URL")
+	if from_env != "":
+		endpoint = from_env
+	for a: String in args():
+		if a.begins_with("--classifier="):
+			endpoint = a.substr(13)
+
+
+## Both halves of the command line.
+##
+## The game's own flags are passed after a bare `--`, which Godot keeps in
+## get_cmdline_user_args() and leaves out of get_cmdline_args() — so a switch
+## read from the wrong one is a switch that silently does nothing. That is not
+## hypothetical: it is how this file shipped, and --noquick did nothing at all
+## until a test ran the game and watched the override fail to apply.
+static func args() -> PackedStringArray:
+	var all := OS.get_cmdline_args()
+	all.append_array(OS.get_cmdline_user_args())
+	return all
+
+
 func available() -> bool:
-	return enabled
+	return enabled and endpoint != ""
 
 
 ## Take the order, or say you will not.
@@ -154,7 +183,7 @@ func submit(instruction: String, worker_id: String, labels: Dictionary) -> bool:
 		"tier": "fast",
 	}
 	calls_made += 1
-	var err := http.request(ENDPOINT,
+	var err := http.request(endpoint,
 		PackedStringArray(["Content-Type: application/json"]),
 		HTTPClient.METHOD_POST, JSON.stringify(payload))
 	if err != OK:
