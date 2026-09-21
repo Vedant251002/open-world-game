@@ -210,9 +210,15 @@ const LIST := {
 		"ready": true,
 		"tags": ["hunt", "hunter", "trap", "trapper", "game"],
 	},
+	# Reachable today, but only as a spoken order: Dispatcher._try_war routes
+	# "defend the well" straight to Warfare, and raiders are real (Neighbours
+	# calls warfare.raid). What is missing is a defend *step*, so a plan cannot
+	# hold it and a role cannot be worked through it — which is what `ready`
+	# means here. The old `needs` said the town had nothing to defend against,
+	# and that stopped being true the moment the kingdom started sending raids.
 	"defend": {
 		"says": "stand guard and see off trouble",
-		"ready": false, "needs": "anything to defend against",
+		"ready": false, "needs": "way to put that in a plan",
 		"tags": ["defend", "fight", "soldier", "guard", "warrior", "protect", "militia", "knight"],
 	},
 	"heal": {
