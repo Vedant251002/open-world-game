@@ -56,6 +56,46 @@ var _touch_look := Vector2.ZERO   ## drag accumulated since the last physics tic
 var _head: Node3D
 var _target: Node = null
 var _ray: RayCast3D
+## True once we have decided the desktop pointer should be locked. Stays true
+## across an alt-tab so focus coming back can ask again. False while a menu
+## or the order field owns the cursor.
+var _want_capture := false
+var _look_lock_ready := false
+
+## A one-pixel cross of the window edge used to spin the view when the pointer
+## was not locked yet and the browser reported the whole jump as one delta.
+const _FREE_LOOK_CLAMP := 160.0
+
+## Browsers will not lock the pointer from _ready: there is no user gesture
+## yet, and Godot delivers keys and clicks a frame later, which is already
+## too late for Safari. The listener below runs inside the real keydown /
+## pointerdown, which is the only moment the lock is legal.
+const _LOOK_LOCK_JS := """
+(function () {
+  if (window.__dgtLook) { return; }
+  var canvas = document.getElementById('canvas');
+  if (!canvas) { return; }
+  function arm(e) {
+    var api = window.__dgtLook;
+    if (!api || !api.want) { return; }
+    if (e && e.type === 'keydown' && (e.key === 'Escape' || e.repeat)) { return; }
+    if (e && e.target && e.target.tagName === 'INPUT') { return; }
+    if (document.pointerLockElement === canvas) { return; }
+    try { canvas.requestPointerLock(); } catch (err) {}
+  }
+  window.addEventListener('keydown', arm, true);
+  window.addEventListener('pointerdown', arm, true);
+  window.__dgtLook = {
+    want: false,
+    set: function (on) {
+      this.want = !!on;
+      if (!on && document.pointerLockElement === canvas && document.exitPointerLock) {
+        document.exitPointerLock();
+      }
+    }
+  };
+})();
+"""
 
 
 func _ready() -> void:
@@ -96,16 +136,30 @@ func _ready() -> void:
 
 	floor_max_angle = deg_to_rad(52.0)
 	floor_snap_length = 0.4
+	_install_look_lock()
 	_apply_mouse_mode()
+	var win := get_window()
+	if win != null and not win.focus_entered.is_connected(_on_window_focus):
+		win.focus_entered.connect(_on_window_focus)
+	# _ready runs before the window is key, and on the web before any click.
+	# Both refuse the grab. Ask again once the frame is actually up.
+	call_deferred("_request_capture")
 
 
-func teleport(to: Vector3, facing_yaw: float = 0.0) -> void:
+func teleport(to: Vector3, facing_yaw: float = 0.0, facing_pitch: float = 0.0) -> void:
 	global_position = to
 	yaw = facing_yaw
-	pitch = 0.0
+	pitch = clampf(facing_pitch, -1.45, 1.45)
 	velocity = Vector3.ZERO
 	rotation.y = yaw
-	_head.rotation.x = 0.0
+	_head.rotation.x = pitch
+
+
+## The ground under the spawn is a guess until the first columns finish
+## meshing. Dropping onto it must not throw away the look the player made
+## while that was happening — walking already keeps its x and z.
+func reseat(ground_y: float) -> void:
+	teleport(Vector3(global_position.x, ground_y, global_position.z), yaw, pitch)
 
 
 func set_input_enabled(on: bool) -> void:
@@ -122,12 +176,59 @@ func set_input_enabled(on: bool) -> void:
 ## touchscreen is still a desktop and keeps the capture.
 func _apply_mouse_mode() -> void:
 	if Platform.is_handheld():
+		_want_capture = false
+		_web_want_lock(false)
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		return
-	if input_enabled:
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	else:
+	_want_capture = input_enabled
+	_request_capture()
+
+
+func _on_window_focus() -> void:
+	if not _want_capture or Platform.is_handheld():
+		return
+	# Alt-tab drops the OS grab while Godot often keeps reporting CAPTURED,
+	# and a second assignment of the same mode does not ask again.
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_request_capture()
+
+
+## Ask the platform for the grab. Safe to call when we already have it.
+## On the web a second assignment of CAPTURED is a no-op once the engine has
+## stored that as the wanted mode and the browser has refused it, so the
+## wanted mode is cleared first. The DOM listener is what actually succeeds,
+## because it runs inside the key or click rather than a frame later.
+func _request_capture() -> void:
+	if Platform.is_handheld():
+		return
+	if not _want_capture:
+		_web_want_lock(false)
+		if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		return
+	_web_want_lock(true)
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		return
+	if OS.has_feature("web"):
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _install_look_lock() -> void:
+	if _look_lock_ready or not OS.has_feature("web"):
+		return
+	JavaScriptBridge.eval(_LOOK_LOCK_JS, true)
+	_look_lock_ready = true
+
+
+func _web_want_lock(on: bool) -> void:
+	if not OS.has_feature("web"):
+		return
+	_install_look_lock()
+	JavaScriptBridge.eval(
+		"window.__dgtLook && window.__dgtLook.set(%s)" % ("true" if on else "false"),
+		true)
 
 
 ## Radians of yaw/pitch a thumb drag is asking for. Accumulated rather than
@@ -172,12 +273,28 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("swap_weapon") and input_enabled and warfare != null:
 		warfare.player_swap()
 		return
-	if not input_enabled:
+	if not input_enabled or Platform.is_handheld():
 		return
-	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	if event is InputEventMouseMotion:
+		# Captured is the steady state. Until the grab lands — refused from
+		# _ready on the web, and sometimes on a desktop window that is not
+		# key yet — the cursor is still over the window and relative motion
+		# is real. Waiting for CAPTURED is what made the game walk on WASD
+		# and ignore the mouse.
 		var mm := event as InputEventMouseMotion
-		yaw -= mm.relative.x * MOUSE_SENS
-		pitch = clampf(pitch - mm.relative.y * MOUSE_SENS, -1.45, 1.45)
+		var rel := mm.relative
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			rel = rel.clamp(Vector2(-_FREE_LOOK_CLAMP, -_FREE_LOOK_CLAMP),
+				Vector2(_FREE_LOOK_CLAMP, _FREE_LOOK_CLAMP))
+		_apply_look_pixels(rel)
+
+
+## Mouse-right decreases yaw. At yaw 0 the body faces world -z, and a
+## negative yaw turns that facing toward world +x. Mouse-up raises pitch.
+## Same signs whether or not the pointer is locked.
+func _apply_look_pixels(rel: Vector2) -> void:
+	yaw -= rel.x * MOUSE_SENS
+	pitch = clampf(pitch - rel.y * MOUSE_SENS, -1.45, 1.45)
 
 
 func _physics_process(delta: float) -> void:

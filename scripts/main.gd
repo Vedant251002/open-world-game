@@ -47,6 +47,12 @@ const AUTOSAVE_SECONDS := 120.0
 
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
+	# Before the world exists. Mouse-look is a property of the player, and
+	# booting the town just to find out the camera ignores the pointer is a
+	# minute spent on voxels.
+	if "--looktest" in args:
+		add_child(load("res://scripts/dev/look_test.gd").new())
+		return
 	_world_seed = int(Time.get_unix_time_from_system()) & 0x7FFFFFFF
 	for arg in args:
 		if arg.begins_with("--seed="):
@@ -240,8 +246,7 @@ func _on_world_ready(t0: int) -> void:
 		Time.get_ticks_msec() - t0, world.loaded_columns(),
 		world.chunk_count(), world.mesh_node_count()])
 	var g := world.ground_m(player.global_position.x, player.global_position.z)
-	player.teleport(Vector3(player.global_position.x, g + 0.4,
-		player.global_position.z), PI)
+	player.reseat(g + 0.4)
 
 	var args := OS.get_cmdline_user_args()
 	_room_shots = "--rooms" in args or "--flicker" in args
