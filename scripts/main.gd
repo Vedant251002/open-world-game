@@ -272,6 +272,16 @@ func _on_world_ready(t0: int) -> void:
 		map.set_process(false)
 	if "--noworld" in args:
 		world.set_process(false)
+	if "--quickflow" in args:
+		var qf := QuickFlow.new()
+		qf.dispatch = dispatch
+		qf.crew = crew
+		qf.clock = clock
+		qf.town = town
+		qf.world = world
+		add_child(qf)
+		qf.begin()
+		return
 	if "--aitest" in args:
 		var at := AiTest.new()
 		at.dispatch = dispatch
