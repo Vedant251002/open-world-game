@@ -20,6 +20,12 @@ class_name Crew
 ## an instruction has to be murkier than before they will interrupt you. So
 ## Tobias, who checks before nearly every job, is nearly zero, and Mira, who
 ## checks nothing, is nearly one.
+##
+## Each of the three has a trade of their own. Mira, who will talk to anyone,
+## keeps the store; Tobias, the best mason of them, is the builder; Ren, who
+## never does the same thing twice, has the fields. A trade is a Role like any
+## other, so asking Mira to put up a wall gets "not my trade" — ask Tobias,
+## hire somebody else, or take Mira on as something new.
 
 signal worker_spoke(worker: Worker, line: String, kind: String)
 signal job_done(worker: Worker, patch: VoxelPatch)
@@ -29,7 +35,7 @@ signal roster_changed()
 
 const ROSTER := [
 	{
-		"id": "mira", "name": "Mira",
+		"id": "mira", "name": "Mira", "role": "shopkeeper",
 		# Fast, eager, over-literal. Starts before you finish talking and takes
 		# every word at face value, which is how the chimney ends up indoors.
 		"traits": {"speed": 0.95, "literalism": 0.95, "initiative": 0.40,
@@ -38,7 +44,7 @@ const ROSTER := [
 		"skills": {"carpentry": 2, "masonry": 1, "machining": 0, "piloting": 0},
 	},
 	{
-		"id": "tobias", "name": "Tobias",
+		"id": "tobias", "name": "Tobias", "role": "builder",
 		# Careful, slow, precise. Asks before nearly every job and is almost
 		# never wrong. Half Mira's pace, and quietly judgemental about it.
 		"traits": {"speed": 0.25, "literalism": 0.60, "initiative": 0.20,
@@ -47,7 +53,7 @@ const ROSTER := [
 		"skills": {"carpentry": 3, "masonry": 3, "machining": 1, "piloting": 0},
 	},
 	{
-		"id": "ren", "name": "Ren",
+		"id": "ren", "name": "Ren", "role": "farmer",
 		# Creative, confident, doesn't listen. Your instruction is a starting
 		# suggestion. Sometimes the best building in town, sometimes a demolition.
 		"traits": {"speed": 0.60, "literalism": 0.08, "initiative": 0.95,
@@ -76,6 +82,15 @@ const CITIZEN_NAMES := ["Ada", "Bram", "Cora", "Dov", "Elin", "Faye", "Gil",
 const CITIZENS := 12
 const FAR := 45.0
 const CITIZEN_WANDER_M := 22.0
+
+## Where each trade works from, first that exists. A builder waits at the
+## workshop between jobs and a farmer at the field, or the square until
+## there is one.
+const POSTS := {
+	"shopkeeper": ["store"],
+	"builder": ["workshop"],
+	"farmer": ["field", "barn", "granary", "square"],
+}
 
 var workers: Array[Worker] = []          ## everyone: crew and citizens
 var by_id: Dictionary = {}
@@ -106,7 +121,7 @@ func spawn(world: VoxelWorld, nav: NavGrid, clock: GameClock, town: Town,
 		var mem := WorkerMemory.make(str(d["id"]), str(d["name"]),
 			d["traits"], d["disposition"], d["skills"])
 		var w := _raise(mem, at)
-		w.role = roles.get_role("builder")
+		w.role = roles.get_role(str(d.get("role", "builder")))
 		w.hired = true
 		w.employer = employer
 		w.follow_slot = i
@@ -238,6 +253,16 @@ func hire(w: Worker, role: Role) -> void:
 	roster_changed.emit()
 
 
+## Leaving somebody at a place instead of at your heels: the shopkeeper
+## behind the counter, not trailing you round the town. They keep to a few
+## paces of it between jobs, and "follow me" undoes it like any other posting.
+func post(w: Worker, at: Vector3) -> void:
+	w.employer = null
+	w.wander_m = 3.0
+	w.home = Vector3(at.x, _world.ground_m(at.x, at.z), at.z)
+	w.global_position = w.home + Vector3(0, 0.3, 0)
+
+
 ## Letting somebody go. They keep their name and their memory of you, and go
 ## back to being a citizen — which means the next time you talk to them, they
 ## remember what happened.
@@ -264,7 +289,7 @@ func snapshot() -> Array:
 			"id": w.memory.worker_id, "name": w.memory.display_name,
 			"hired": w.hired, "role": w.role.id if w.role != null else "citizen",
 			"pos": w.global_position, "home": w.home,
-			"memory": w.memory.to_dict(), "standing": w.standing,
+			"memory": w.memory.to_dict(), "standing": w.standing, "trades": true,
 			"goal": w.goal.to_dict() if w.goal != null else {},
 		})
 	return out
@@ -284,6 +309,13 @@ func restore(saved: Array) -> void:
 		var gd: Dictionary = e.get("goal", {})
 		w.goal = Goal.from_dict(gd) if not gd.is_empty() else null
 		var role_id := str(e.get("role", "citizen"))
+		# Saves from before the three had trades have them all as builders.
+		# That was the only job there was, not a choice, so they take up the
+		# trade they have now. A save that has "trades" chose.
+		if not e.has("trades") and role_id == "builder":
+			for d: Dictionary in ROSTER:
+				if str(d["id"]) == w.memory.worker_id:
+					role_id = str(d.get("role", "builder"))
 		if bool(e.get("hired", false)):
 			if not w.hired or (w.role != null and w.role.id != role_id):
 				hire(w, roles.get_role(role_id))

@@ -48,6 +48,9 @@ var _aim_at: Worker = null
 
 
 func begin() -> void:
+	# Mira keeps the store in the game. These runs are about Mira's pace and
+	# literalism on a building site, so Mira is put back to building for them.
+	crew.get_worker("mira").role = crew.roles.get_role("builder")
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	dispatch.plan_accepted.connect(func(w: Worker, a: Array) -> void:
 		_assume_worker = w.display_name()
@@ -338,6 +341,8 @@ func _check_follow() -> void:
 	_follow_checked = true
 	var far := 0
 	for w: Worker in crew.hired():
+		if w.employer == null:
+			continue                  # posted somewhere, like the shopkeeper
 		var d := w.global_position.distance_to(player.global_position)
 		print("[crew] %s is %.1f m from the employer" % [w.display_name(), d])
 		if d > 14.0:

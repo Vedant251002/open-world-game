@@ -46,6 +46,13 @@ var clock: GameClock
 var nav: NavGrid
 var props_root: Node3D
 var llm: LLM
+## Everybody talking as themselves. See Conversation. Preloaded rather than
+## named, so a checkout the editor has not scanned yet still finds it.
+const ConversationScript := preload("res://scripts/ai/conversation.gd")
+var conversation: RefCounted = ConversationScript.new()
+## A line in flight: tag -> {worker, heard, situation, kind}.
+var _talk_ctx: Dictionary = {}
+var _talk_serial := 0
 var map: MapScreen
 var farm: Farm
 var livestock: Livestock
@@ -156,6 +163,7 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	llm.question_ready.connect(_on_question_ready)
 	llm.failed.connect(_on_llm_failed)
 	llm.answered.connect(_on_answered)
+	llm.line_ready.connect(_on_line_ready)
 	llm.role_ready.connect(_on_role_ready)
 	llm.round_ready.connect(_on_round_ready)
 	llm.status.connect(func(t2: String) -> void: status.emit(t2))
@@ -187,6 +195,12 @@ func instruct(worker: Worker, instruction: String) -> void:
 	if Answers.is_question(instruction):
 		_answer(worker, instruction)
 		return
+	# "Hi", "how are you", "thanks" — talk, not work. Said to anyone, busy or
+	# not, and answered by them rather than by the planner, which used to try
+	# to turn a greeting into a building.
+	if _is_small_talk(instruction):
+		converse(worker, instruction)
+		return
 
 	# "Save" and "start over" are said to whoever is nearest. They are about
 	# the game rather than the town, and they come first so that they work
@@ -215,14 +229,18 @@ func instruct(worker: Worker, instruction: String) -> void:
 	# talk — the question path above still runs — and they will tell you how
 	# to change that.
 	if not worker.hired:
-		spoke.emit(worker, "I do not work for you. Take me on and I might.", "talk")
+		converse(worker, instruction,
+			"This is not an order you have to follow, since you do not work for them. Answer it as yourself: you might be willing, curious, amused or put out, and you might mention they could take you on properly.",
+			"", "I do not work for you. Take me on and I might.")
 		return
 
 	if _open.has(worker.memory.worker_id):
 		status.emit("%s is still thinking." % worker.display_name())
 		return
 	if worker.busy():
-		spoke.emit(worker, "I am in the middle of something.", "refuse")
+		converse(worker, instruction,
+			"You are busy — %s — and cannot take anything new on until that is done. Say so in your own way." % worker.status_text(),
+			"", "I am in the middle of something.", "refuse")
 		return
 
 	# "Wait here" and "follow me" are instructions like any other — the player
@@ -367,16 +385,23 @@ func _answer(worker: Worker, question: String) -> void:
 	# About themselves first. "What do you do" has one right answer and the
 	# role holds it; the records and the model are for everything else.
 	var about := _answer_about_role(worker, question)
-	if about != "":
-		worker.speak(about, "talk")
-		return
-	var line := Answers.reply(question, worker, town, village, clock, player,
-		farm, livestock, wildlife, warfare)
+	var line := about
+	if line == "":
+		line = Answers.reply(question, worker, town, village, clock, player,
+			farm, livestock, wildlife, warfare)
 	if line == "" and realm != null:
 		line = realm.answer(worker, question)
-	worker.memory.remember(clock.day, "You asked me: \"%s\"" % question, 0.0, {
-		"kind": "told", "question": question,
-	})
+	if about == "":
+		worker.memory.remember(clock.day, "You asked me: \"%s\"" % question, 0.0, {
+			"kind": "told", "question": question,
+		})
+	# With a model, the records are what they know and the model is how they
+	# say it: the same fact, in this person's voice, never the same sentence
+	# twice. Without one, the records' own line.
+	if ai_online():
+		converse(worker, question, "", line,
+			line if line != "" else "I could not tell you, sorry.")
+		return
 	if line != "":
 		worker.speak(line, "talk")
 		return
@@ -428,6 +453,79 @@ static func _list_words(ids: Array) -> String:
 		return "".join(words)
 	var last: String = words.pop_back()
 	return ", ".join(words) + " and " + last
+
+
+# ------------------------------------------------------------- conversation
+
+const SMALL_TALK := ["hi", "hey", "hello", "hiya", "yo", "howdy", "oi", "morning",
+	"good morning", "good afternoon", "good evening", "good night", "evening",
+	"how are you", "how are things", "how is it going", "how's it going",
+	"how are you doing", "how you doing", "what's up", "whats up", "sup",
+	"thanks", "thank you", "cheers", "ta", "bye", "goodbye", "see you",
+	"see ya", "well done", "sorry", "nice to meet you",
+	"pleased to meet you", "you there", "excuse me"]
+
+
+## Whether this is chat rather than an order: a greeting or a pleasantry, on
+## its own or with a name or a few words after it.
+static func _is_small_talk(text: String) -> bool:
+	var t := text.to_lower().strip_edges()
+	for ch in [",", ".", "!", "?", ";", ":"]:
+		t = t.replace(ch, " ")
+	t = " ".join(t.split(" ", false))
+	if t == "":
+		return false
+	# The greeting and at most a name after it: "hi mira", "thanks ren". Any
+	# more and there is probably an order in it ("hi, build a hut"), which is
+	# the planner's to hear.
+	for p: String in SMALL_TALK:
+		if t == p:
+			return true
+		if t.begins_with(p + " ") and t.substr(p.length() + 1).split(" ", false).size() <= 2:
+			return true
+	return false
+
+
+## Somebody saying something in their own words: an answer to the player, or
+## a reaction to what just happened to them. Anything in the game can call
+## this — a home being walked into, a building going up — and the person
+## says it the way they would. `fallback` is what they say with no model.
+func converse(worker: Worker, heard: String, situation: String = "",
+		facts: String = "", fallback: String = "", kind: String = "talk") -> void:
+	if worker == null or not is_instance_valid(worker):
+		return
+	if fallback == "":
+		fallback = "Mm." if heard != "" else "…"
+	if llm == null or not llm.available():
+		worker.speak(fallback, kind)
+		return
+	worker.murmur("…")
+	_talk_serial += 1
+	var tag := str(_talk_serial)
+	_talk_ctx[tag] = {"worker": worker, "heard": heard, "situation": situation,
+		"kind": kind}
+	var req: Dictionary = conversation.call("build", worker, heard, situation, facts,
+		town, clock, realm)
+	llm.talk(worker.memory.worker_id, str(req["system"]), req["messages"], tag, fallback)
+
+
+func _on_line_ready(worker_id: String, text: String, tag: String) -> void:
+	var ctx: Dictionary = _talk_ctx.get(tag, {})
+	_talk_ctx.erase(tag)
+	# Anything older for the same person was superseded while they thought.
+	for k: String in _talk_ctx.keys():
+		var c: Dictionary = _talk_ctx[k]
+		if is_instance_valid(c["worker"]) and (c["worker"] as Worker).memory.worker_id == worker_id \
+				and int(k) < int(tag):
+			_talk_ctx.erase(k)
+	var worker: Worker = ctx.get("worker", null)
+	if worker == null or not is_instance_valid(worker):
+		worker = crew.get_worker(worker_id) if crew != null else null
+	if worker == null:
+		return
+	worker.speak(text, str(ctx.get("kind", "talk")))
+	conversation.call("record", worker, str(ctx.get("heard", "")),
+		str(ctx.get("situation", "")), text)
 
 
 func _on_answered(worker_id: String, text: String) -> void:
@@ -612,7 +710,17 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 			plot.reserved = false
 		worker.stop_thinking()
 		var said := str(plan.get("worker_line", "")).strip_edges()
-		worker.speak(said if said != "" else "I did not catch an order in that.", "talk")
+		var heard := str(job.get("instruction", ""))
+		# The planner's own reply is already the model speaking; it goes on
+		# the record like any other line. A stock "I did not catch that" is
+		# not — it is a person answered, in their own words, instead.
+		if said == "" or str(plan.get("source", "")) == "fallback":
+			converse(worker, heard,
+				"What they said is not a job you can see how to do. Answer them as yourself.",
+				"", said if said != "" else "I did not catch an order in that.")
+			return
+		worker.speak(said, "talk")
+		conversation.call("record", worker, heard, "", said)
 		return
 	var assumptions: Array = plan.get("assumptions", [])
 	var steps := Steps.normalise(plan)
@@ -1921,9 +2029,9 @@ func _try_critique(worker: Worker, instruction: String) -> bool:
 ## A new day: everyone with a standing task lines up for it.
 ##
 ## Not the busy — a night watchman still on the round, a builder halfway up a
-## wall — and not the three unless they have been given one, because the
-## starting crew's job is to wait for you. Somebody who was told to wait
-## somewhere is left waiting.
+## wall. The three have their trades' mornings like anyone: Mira opens the
+## store and Ren sees to the crop, while Tobias, whose trade has none, waits
+## for you. Somebody who was told to wait somewhere is left waiting.
 func _on_morning(_day: int) -> void:
 	if crew == null:
 		return
@@ -2142,7 +2250,7 @@ func _tick_goals(delta: float) -> void:
 
 
 ## Who an order in a round goes to. A name; "new:<job>", which takes somebody
-## on first; "role:<job>", anyone hired as it; "builder", one of the three;
+## on first; "role:<job>", anyone hired as it; "builder", anyone who can build;
 ## "anyone", whoever is free. Null when the right person is not free yet.
 func _resolve_who(who: String, foreman: Worker, _order: String) -> Worker:
 	var w := who.to_lower().strip_edges()
@@ -2170,9 +2278,12 @@ func _resolve_who(who: String, foreman: Worker, _order: String) -> Worker:
 	if w.begins_with("role:"):
 		return _idle_with_role(RoleBook.canonical(Role.id_of(w.substr(5))), foreman)
 	if w == "builder" or w == "a builder" or w == "the builders":
-		for id2: String in ["mira", "tobias", "ren"]:
-			var b := crew.get_worker(id2)
-			if b != null and b.hired and not b.busy() and not _open.has(id2) and not _running.has(id2):
+		# Whoever can build, not whoever started with you: Mira keeps the
+		# store now, and a homesteader taken on later can put up a wall.
+		for b: Worker in crew.hired():
+			var id2 := b.memory.worker_id
+			if b != foreman and b.role != null and b.role.can("build") and not b.busy() \
+					and not _open.has(id2) and not _running.has(id2):
 				return b
 		return null
 	if w == "anyone" or w == "somebody" or w == "someone" or w == "":
@@ -2291,7 +2402,8 @@ func _try_roles(worker: Worker, instruction: String) -> bool:
 			_open.erase(worker.memory.worker_id)
 			crew.dismiss(worker)
 			worker.memory.remember(clock.day, "Let go.", -0.3)
-			spoke.emit(worker, "Right. I will be about, if you change your mind.", "talk")
+			converse(worker, "", "The person you worked for has just let you go. You are back to being an ordinary resident of the town.",
+				"", "Right. I will be about, if you change your mind.")
 		return true
 
 	var m := _re_hire.search(t)
@@ -2406,8 +2518,10 @@ func _finish_hire(target: Worker, role: Role, line: String = "") -> void:
 	target.memory.remember(clock.day, "Taken on as %s." % Validator.an(role.name), 0.3)
 	target.memory.nudge("trust_in_player", 0.1)
 	if line == "":
-		line = "Right. I am your %s, then." % role.name
-	target.speak(line, "talk")
+		converse(target, "", "You have just been taken on as the town's %s by the person in front of you. %s" % [
+			role.name, role.description], "", "Right. I am your %s, then." % role.name)
+	else:
+		target.speak(line, "talk")
 	plan_accepted.emit(target, ["Taken on as %s." % Validator.an(role.name),
 		"Can do: %s." % ", ".join(role.ready_capabilities()),
 		("Cannot do yet: %s." % ", ".join(role.planned_capabilities()))

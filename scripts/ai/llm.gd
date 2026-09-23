@@ -23,6 +23,10 @@ signal answered(worker_id: String, text: String)
 signal role_ready(key: String, role: Dictionary, source: String)
 ## A morning's round toward a goal: {"done", "orders": [{who, order}], "note"}.
 signal round_ready(worker_id: String, round: Dictionary, source: String)
+## Something a person said in their own words: a reply in a conversation, or
+## what they came out with when something happened to them. `tag` is the
+## caller's, handed back so it knows which moment this was for.
+signal line_ready(worker_id: String, text: String, tag: String)
 
 ## OpenCode Zen, which speaks the OpenAI chat-completions shape.
 ##
@@ -214,6 +218,12 @@ var _chatting: Dictionary = {}
 const ANSWER_TOKENS := 220
 ## A role is a short list and a paragraph. Six hundred is generous.
 const ROLE_TOKENS := 600
+## A line of speech. Short on purpose: people in the street say a sentence or
+## two, not a paragraph.
+const TALK_TOKENS := 260
+## Workers with a line in flight, and the newest thing waiting behind it.
+var _talking: Dictionary = {}
+var _talk_next: Dictionary = {}
 
 
 # ---------------------------------------------------------------- submission
@@ -300,6 +310,59 @@ func ask(question: String, mem: WorkerMemory, ctx: Dictionary, clock: GameClock,
 		http.queue_free()
 		_chatting.erase(mem.worker_id)
 		answered.emit(mem.worker_id, "I could not tell you just now.")
+
+
+## Somebody speaking as themselves. The caller writes the whole conversation
+## — who they are, what they know, what was said — and gets back one line.
+##
+## One in flight per person. Anything said while they are still answering is
+## kept, newest only, and sent the moment the first reply lands, so a player
+## who types three things quickly gets an answer to the last rather than
+## three answers to stale ones. Offline, or on any failure, `fallback` is
+## said instead, so nobody ever stands there mute.
+func talk(worker_id: String, system: String, messages: Array, tag: String,
+		fallback: String) -> void:
+	if not available():
+		line_ready.emit(worker_id, fallback, tag)
+		return
+	if _talking.get(worker_id, false):
+		_talk_next[worker_id] = [system, messages, tag, fallback]
+		return
+	_talking[worker_id] = true
+
+	var http := HTTPRequest.new()
+	http.timeout = TIMEOUT
+	http.use_threads = true
+	add_child(http)
+	http.request_completed.connect(
+		func(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+			http.queue_free()
+			_talking.erase(worker_id)
+			var raw := body.get_string_from_utf8()
+			_log("talk", worker_id, tag, "http=%d result=%d\n%s" % [code, result, raw])
+			var text := ""
+			if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+				text = _plain_text(raw)
+			else:
+				last_error = _gateway_message(raw)
+			line_ready.emit(worker_id, text if text != "" else fallback, tag)
+			if _talk_next.has(worker_id):
+				var n: Array = _talk_next[worker_id]
+				_talk_next.erase(worker_id)
+				talk(worker_id, n[0], n[1], n[2], n[3]),
+		CONNECT_ONE_SHOT)
+
+	var route := _route()
+	var msgs: Array = [{"role": "system", "content": system}]
+	msgs.append_array(messages)
+	var body := {"model": model, "temperature": 0.9, "messages": msgs}
+	_finish_body(body, TALK_TOKENS)
+	calls_made += 1
+	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
+			JSON.stringify(body)) != OK:
+		http.queue_free()
+		_talking.erase(worker_id)
+		line_ready.emit(worker_id, fallback, tag)
 
 
 ## Composing a role. One call, once per role name the town has never heard of;
@@ -439,6 +502,11 @@ func _plain_text(raw: String) -> String:
 		return ""
 	var msg: Variant = ((choices as Array)[0] as Dictionary).get("message", {})
 	var text := str((msg as Dictionary).get("content", "")).strip_edges()
+	# Reasoning models on some gateways put their thinking in the content.
+	# Nobody says that out loud.
+	var think_end := text.rfind("</think>")
+	if think_end >= 0:
+		text = text.substr(think_end + 8).strip_edges()
 	if text.begins_with("```"):
 		var nl := text.find("\n")
 		text = text.substr(nl + 1) if nl >= 0 else text

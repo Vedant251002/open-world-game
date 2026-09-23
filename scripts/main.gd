@@ -22,6 +22,8 @@ var player: Player
 var map: MapScreen
 var inventory: InventoryScreen
 var touch: TouchControls
+var pause_menu: CanvasLayer
+const PauseMenuScript := preload("res://scripts/ui/pause_menu.gd")
 var props_root: Node3D
 var clock: GameClock
 var nav: NavGrid
@@ -56,6 +58,15 @@ func _ready() -> void:
 	if "--tooltest" in args:
 		add_child(load("res://scripts/dev/tool_test.gd").new())
 		return
+	# Fullscreen from the first frame. Tests, benches and screenshots keep the
+	# window they were given: a shot framed at 1600x900 is not framed at 5K.
+	var dev := false
+	for a in args:
+		if a.find("test") >= 0 or a.find("bench") >= 0 or a.find("shot") >= 0 \
+				or a.find("probe") >= 0:
+			dev = true
+	if not dev:
+		PauseMenuScript.start_fullscreen(args)
 	_world_seed = int(Time.get_unix_time_from_system()) & 0x7FFFFFFF
 	for arg in args:
 		if arg.begins_with("--seed="):
@@ -148,6 +159,11 @@ func _ready() -> void:
 	inventory.name = "Inventory"
 	add_child(inventory)
 	inventory.setup(town, player, map)
+
+	pause_menu = PauseMenuScript.new()
+	pause_menu.name = "PauseMenu"
+	add_child(pause_menu)
+	pause_menu.setup(player, not dev)
 
 	touch = TouchControls.new()
 	touch.name = "Touch"
@@ -268,6 +284,7 @@ func _on_world_ready(t0: int) -> void:
 		_raise_crew()
 		if not _save.is_empty():
 			_restore_people()
+		_post_crew()
 		_arm_saving()
 	if "--nostream" in args:
 		streamer.set_process(false)
@@ -628,6 +645,7 @@ func _raise_crew() -> void:
 	realm.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
 	dispatch.realm = realm
 	hud.realm = realm
+	map.realm = realm
 	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
 	# assumption panel rather than a toast that scrolls away.
@@ -768,6 +786,21 @@ func _restore_town() -> void:
 ## The people, their jobs and memories, the fields and the flock. After the
 ## crew is raised from the seed, so the same seed gives the same people and
 ## each is then told who they had become.
+## The three start at their work, not at your heels: Mira behind the store
+## counter, Tobias at the workshop, Ren out at the field. After a restore, so
+## a saved town sends them back there rather than to wherever they stood.
+## Anyone whose place is not in the town yet follows you instead.
+func _post_crew() -> void:
+	for w: Worker in crew.hired():
+		if w.role == null or not Crew.POSTS.has(w.role.id):
+			continue
+		for place: String in Crew.POSTS[w.role.id]:
+			var at := dispatch._resolve_place(place, w)
+			if not at.is_empty():
+				crew.post(w, at["pos"])
+				break
+
+
 func _restore_people() -> void:
 	crew.roles.from_dict(_save.get("roles", {}))
 	crew.restore(_save.get("crew", []))
@@ -808,7 +841,12 @@ func _arm_saving() -> void:
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST and SaveGame.enabled:
+	if what != NOTIFICATION_WM_CLOSE_REQUEST:
+		return
+	# The pointer first: the save takes a moment, and a captured cursor for
+	# that moment is a game that looks like it will not let go.
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if SaveGame.enabled:
 		_save_now("quit")
 
 

@@ -1786,6 +1786,17 @@ func speak(line: String, kind: String = "talk") -> void:
 	_say(line, kind)
 
 
+## Over their head only, not in the subtitles: the "…" of somebody about to
+## answer you, while the model works out what they say.
+func murmur(line: String) -> void:
+	if bubble == null:
+		return
+	bubble.text = line
+	bubble.modulate = _bubble_tint("talk")
+	bubble.visible = true
+	_bubble_left = 12.0
+
+
 func _acknowledge() -> String:
 	match memory.worker_id:
 		"mira": return "Already going"

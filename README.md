@@ -37,8 +37,15 @@ Desktop builds for Windows, Linux and macOS are attached to every tagged
 | Look       | mouse             | drag on the right of the screen |
 | Talk       | E                 | TALK                           |
 | Map        | M                 | MAP                            |
-| Menu       | Esc               | ESC                            |
+| Pause / quit | Esc             | ESC                            |
+| Fullscreen | F11               | —                              |
+| Quit       | Cmd+Q (saves)     | —                              |
 | Frame stats| F3                | —                              |
+
+The game starts fullscreen. Esc pauses it and frees the mouse, with buttons
+to resume, switch between fullscreen and a window, or save and quit. Clicking
+away to another app pauses it too, so the cursor is never held while you are
+somewhere else.
 
 ## Run from source
 
@@ -73,6 +80,46 @@ Browser builds have no environment to read, so the deployed version goes
 through `proxy/worker.js`, which holds the key on Cloudflare. It speaks to
 either gateway — `wrangler secret put GROQ_API_KEY` is all that is needed to
 move it across.
+
+## The crew
+
+The three who work for you each have a trade. **Mira** keeps the store off
+the square: behind the counter from the first day, opening up each morning
+and selling what the town has spare. **Tobias** is the builder, and waits at the
+workshop between jobs. **Ren** farms, waits out at the field (or by the well
+until there is one), and brings in whatever is ripe each morning. Ask one of them for something outside their
+trade and they will tell you it is not their job. Ask Tobias instead, hire
+somebody from the street, or give them a new job with **hire you as a
+builder**. None of them follows you about; walk over to talk, or say **follow me** to
+bring one along. Anybody you hire from the street still falls in behind you.
+
+## Talking to people
+
+Everybody in town is played by the model, not just your crew. Say hello to a
+stranger, ask the shopkeeper how business is, tease Ren, or walk into
+someone's house, and they answer in their own words. What they say comes from
+their temperament, their job (or lack of one), where they live, how they feel
+about you, what they remember you doing, and the last few things the two of
+you said. They follow a conversation and do not repeat themselves.
+
+Facts still come from the town's records, and the model only says them in the
+person's voice, so the numbers stay right. Orders still go through the
+planner. Talking to someone never builds or hires anything on its own. With no
+API key, everyone falls back to their stock lines.
+
+## The map and people's homes
+
+Open the map (M) for a list of everything in town. Every building is
+numbered, with its street, who works there and who lives there, and the same
+numbers are marked on the map. Below the list is where each of your people is
+right now. Your people are drawn on the map by name, and everybody else as a
+small dot.
+
+The people in the streets each have a bed somewhere, and a house somebody
+lives in is marked in red. Those are private. Walk into one and whoever lives
+there stops what they are doing, comes over and tells you off. Stay more than
+a few seconds and you are put out of the door, and they remember it. Taverns
+and inns have beds too, but they are open to everyone.
 
 ## Goals
 
@@ -125,6 +172,7 @@ Pass these after `--`, e.g. `godot4 --path . -- --seed=7 --nofar`:
 | Flag           | Effect                                              |
 | -------------- | --------------------------------------------------- |
 | `--seed=N`     | fix the world seed                                   |
+| `--windowed`   | start in a window instead of fullscreen              |
 | `--provider=X` | force `groq` or `opencode` for one run               |
 | `--fresh`      | ignore the save and start a new town                 |
 | `--nosave`     | never write the save                                 |
