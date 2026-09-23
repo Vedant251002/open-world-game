@@ -16,6 +16,19 @@ class_name AIProvider
 ## followed by the offline library.
 
 const PROVIDERS := {
+	# OpenAI-compatible chat completions. The base is fixed; the model id and
+	# the key come from .env (CHAT_MODEL, CHAT_API_KEY) because they change
+	# and they must not live in the source.
+	"chat": {
+		"endpoint": "https://chat-api.hetsaraiya.com/v1/chat/completions",
+		"key_env": "CHAT_API_KEY",
+		"model_env": "CHAT_MODEL",
+		"default_model": "",
+		"schema": "none",
+		"max_tokens_field": "max_tokens",
+		"reasoning": false,
+		"label": "Chat API",
+	},
 	# Free, no card, and fast enough that the worker does not have to be sent
 	# walking to hide the wait. gpt-oss-120b is on the free plan at 30 requests
 	# a minute and supports strict structured outputs.
@@ -49,9 +62,9 @@ const PROVIDERS := {
 	},
 }
 
-## Tried in this order when nothing has been named. Groq first: it is the one
-## that can promise the JSON parses.
-const PREFERENCE := ["groq", "opencode"]
+## Tried in this order when nothing has been named. The chat API first, once
+## its key is actually in .env; otherwise the same order as before.
+const PREFERENCE := ["chat", "groq", "opencode"]
 
 
 static func known(name: String) -> bool:
@@ -82,3 +95,9 @@ static func schema_mode(name: String) -> String:
 ## that silently caps the reply at the default.
 static func token_field(name: String) -> String:
 	return str(of(name)["max_tokens_field"])
+
+
+## Whether this gateway understands the non-standard "reasoning" field.
+## OpenAI-compatible servers reject a body that contains it.
+static func wants_reasoning(name: String) -> bool:
+	return bool(of(name).get("reasoning", false))

@@ -10,6 +10,15 @@ var _fails: Array[String] = []
 
 
 func _ready() -> void:
+	if AIProvider.endpoint("chat") != "https://chat-api.hetsaraiya.com/v1/chat/completions":
+		_fails.append("chat endpoint is %s" % AIProvider.endpoint("chat"))
+	if AIProvider.wants_reasoning("chat"):
+		_fails.append("the chat API was marked as wanting a reasoning field")
+	if AIProvider.token_field("chat") != "max_tokens":
+		_fails.append("chat token field is %s" % AIProvider.token_field("chat"))
+	if AIProvider.PREFERENCE[0] != "chat":
+		_fails.append("chat is not the first provider tried")
+
 	var tools: Array = PlanSchema.tools_for(1, [])
 	var names: Array[String] = []
 	for t: Variant in tools:

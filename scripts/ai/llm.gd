@@ -132,10 +132,8 @@ func _ready() -> void:
 ## Which gateway to talk to.
 ##
 ## Named outright with --provider= or AI_PROVIDER, and otherwise decided by
-## which key is actually present — Groq first, because it is the one that can
-## promise the reply parses. Falling back to the old gateway rather than going
-## offline matters: a missing Groq key should cost the schema guarantee, not
-## the AI.
+## which key is actually present. The chat API wins when CHAT_API_KEY is set.
+## A missing key falls through rather than going offline.
 func _pick_provider() -> void:
 	var named := OS.get_environment("AI_PROVIDER")
 	if named == "":
@@ -158,6 +156,14 @@ func _pick_provider() -> void:
 
 func available() -> bool:
 	return (api_key != "" or proxy_url != "") and not offline
+
+
+## Token budget, and the reasoning flag only for gateways that understand it.
+## A plain OpenAI-compatible server rejects a body that contains "reasoning".
+func _finish_body(body: Dictionary, tokens: int) -> void:
+	body[AIProvider.token_field(provider)] = tokens
+	if AIProvider.wants_reasoning(provider):
+		body["reasoning"] = {"exclude": true}
 
 
 ## Where a request goes, and with what on it.
@@ -282,13 +288,12 @@ func ask(question: String, mem: WorkerMemory, ctx: Dictionary, clock: GameClock,
 	var body := {
 		"model": model,
 		"temperature": 0.6,
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": Prompt.chat_system(mem, ctx)},
 			{"role": "user", "content": Prompt.chat_user(question, mem, ctx, clock, town)},
 		],
 	}
-	body[AIProvider.token_field(provider)] = ANSWER_TOKENS
+	_finish_body(body, ANSWER_TOKENS)
 	calls_made += 1
 	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
 			JSON.stringify(body)) != OK:
@@ -341,13 +346,12 @@ func compose_role(key: String, name: String, description: String,
 	var body := {
 		"model": model,
 		"temperature": 0.5,
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": Prompt.role_system()},
 			{"role": "user", "content": Prompt.role_user(name, description, ctx)},
 		],
 	}
-	body[AIProvider.token_field(provider)] = ROLE_TOKENS
+	_finish_body(body, ROLE_TOKENS)
 	if AIProvider.schema_mode(provider) != "none":
 		body["response_format"] = {
 			"type": "json_schema", "json_schema": PlanSchema.role_schema(),
@@ -405,13 +409,12 @@ func plan_round(worker: Worker, goal: Goal, crew: Crew, town: Town,
 	var body := {
 		"model": model,
 		"temperature": 0.6,
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": Prompt.round_system(worker.memory, worker.role)},
 			{"role": "user", "content": Prompt.round_user(goal, crew, town, clock, farm, livestock)},
 		],
 	}
-	body[AIProvider.token_field(provider)] = ROLE_TOKENS
+	_finish_body(body, ROLE_TOKENS)
 	if AIProvider.schema_mode(provider) != "none":
 		body["response_format"] = {"type": "json_schema", "json_schema": PlanSchema.round_schema()}
 	_log("round_request", wid, goal.text, Prompt.round_system(worker.memory, worker.role)
@@ -481,12 +484,6 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 	var body := {
 		"model": model,
 		"temperature": 0.7,
-		# Several of these models think out loud into a separate field that
-		# shares the token budget with the answer. Left on, the reasoning eats
-		# three thousand tokens and the JSON is cut off mid-string, which is
-		# not a worse plan but no plan at all. Models that do not reason
-		# ignore this.
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": sys},
 			{"role": "user", "content": usr},
@@ -494,8 +491,10 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 	}
 	# Newer gateways renamed max_tokens when reasoning models made the old name
 	# ambiguous, and quietly ignore the old one — which caps the reply at their
-	# default and truncates exactly the plans this was raised to fit.
-	body[AIProvider.token_field(provider)] = MAX_TOKENS
+	# default and truncates exactly the plans this was raised to fit. A plain
+	# OpenAI-compatible server does not have a reasoning field at all, and
+	# rejects the body if one is sent.
+	_finish_body(body, MAX_TOKENS)
 
 	# The actions are tools. The model calls one; it does not write the plan
 	# into the message. A gateway that also locks the whole reply to a JSON
