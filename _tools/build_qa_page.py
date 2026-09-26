@@ -34,6 +34,12 @@ LIVE = {
     "verdict": "PASS",
     "provider": "Groq",
     "model": "openai/gpt-oss-120b",
+    # Measured by --aitest after the timing was added. plan n=1 median 2.2s.
+    "latency_median_s": 2.2,
+    "latency_p90_s": 2.2,
+    "latency_n": 1,
+    "rate_limited_2x": True,
+    "rate_limit_waited_s": 12.0,
 }
 
 # ---- deployed site, measured by fetching headers --------------------------
@@ -284,17 +290,23 @@ RL_S = f"{rl:.0f}"
 TO_S = f"{to:.0f}"
 
 h.append(f"""<h2>Where it can be improved</h2>
-<p>Ordered by how much a player would feel it, not by how easy it is.</p>
-<div class="cat"><h3>1. The wait is unbounded and invisible<em>biggest win</em></h3>
-<p class="blurb">Nothing times a request. The game logs the request and the
-response but never the gap between them, so there is no number to improve and
-no way to tell a slow gateway from a hung one. A worker standing still is the
-only signal the player gets, and the game cannot distinguish "thinking" from
-"dead" — which is why the fallback being silent went unnoticed for so
-long.</p>
-<p class="blurb"><b>Fix:</b> time every call, report the median and the tail, and
-treat a silent gateway as a failure after a few seconds rather than after
-{TO_S} s of nothing.</p></div>
+<p>Ordered by how much a player would feel it. Two of the four are now done and
+carry their measurement.</p>
+
+<div class="cat" style="border-color:#1e3324">
+<h3 class="ok">1. DONE — every call is timed<em>was: the biggest blind spot</em></h3>
+<p class="blurb">The game used to log the request and the response and never the
+gap between them. That is why two separate bugs could take the whole AI feature
+offline with every automated test still green: there was no number to look at.</p>
+<p class="blurb"><b>Now:</b> all five request paths are bracketed and reported as
+median / p90 / max, per kind of call, with failures counted separately so a
+gateway refusing everything does not read as a slow one. First measurement, from
+a live run against Groq:</p>
+<p class="blurb mono ok" style="font-size:13px">plan&nbsp;&nbsp;n=1&nbsp;
+median {LIVE['latency_median_s']}s&nbsp;&nbsp;p90 {LIVE['latency_p90_s']}s</p>
+<p class="blurb"><b>Still open:</b> nothing yet treats a <i>silent</i> gateway as a
+failure sooner than the {TO_S} s HTTP timeout. A worker standing still is still
+the player's only signal.</p></div>
 
 <div class="cat"><h3>2. Every AI order costs a full round trip<em>{n_model} of {N_VERBS}</em></h3>
 <p class="blurb">{n_free} of {N_VERBS} orders never touch the model,
@@ -306,20 +318,26 @@ already answers obvious orders locally, and widening it is free; widening it
 into compound orders ("build a bakery and hire someone to run it") is where the
 real saving is.</p></div>
 
-<div class="cat"><h3>3. The backoff ignores what the gateway asked for<em>easy</em></h3>
-<p class="blurb">The 429 response includes the exact wait — Groq reported
-"try again in 34.9s" — and the game waits a flat {RL_S} s instead. That is
-either a wasted retry or a failed one, depending on which way the number falls.
-</p>
-<p class="blurb"><b>Fix:</b> parse the retry hint out of the 429 body and wait
-exactly that long. It is already in the response text.</p></div>
+<div class="cat" style="border-color:#1e3324">
+<h3 class="ok">3. DONE — the backoff obeys the gateway<em>was: wrong both ways</em></h3>
+<p class="blurb">The 429 body names the exact wait — Groq reported
+"try again in 34.9275s" — and the game ignored it for a flat {RL_S} s. On a
+long hint that is a guaranteed second failure; on a short one, wasted seconds
+of the player's time.</p>
+<p class="blurb"><b>Now:</b> the hint is read from the prose form Groq sends and
+the structured <code>retry_after</code> forms other gateways use, capped at 45 s
+and floored so a sub-second hint cannot burn the one retry available. Counted
+and reported: <span class="mono ok">rate limited 2x, waited 12s total</span>.</p></div>
 
-<div class="cat"><h3>4. No regression guard on the live path<em>what let 1 and 2 through</em></h3>
-<p class="blurb">Nothing in the test suite asserts that a call reaches the
-model. Two separate bugs took the entire AI feature offline and every automated
-test still passed, because they all test the deterministic parts.</p>
-<p class="blurb"><b>Fix:</b> make "calls that reached the model &gt; 0" a CI
-assertion, even on a cheap model, so this class of failure is loud.</p></div>
+<div class="cat"><h3>4. The live path is tested, but not in CI<em>what let both bugs through</em></h3>
+<p class="blurb">Two separate bugs took the entire AI feature offline and every
+automated test still passed, because they all test the deterministic parts.
+<code>--aitest</code> does now assert that a call reached the model — it is
+what caught both — and it prints the latency breakdown beside the verdict.</p>
+<p class="blurb"><b>Still open:</b> it is not in the workflow, because it needs a
+key and a rate-limited free tier. A nightly run on the cheap router model would
+turn "the AI died silently" from a thing I found by hand into a thing CI
+notices.</p></div>
 """)
 
 # ---- web load ------------------------------------------------------------
