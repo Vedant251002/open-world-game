@@ -23,32 +23,14 @@ signal answered(worker_id: String, text: String)
 signal role_ready(key: String, role: Dictionary, source: String)
 ## A morning's round toward a goal: {"done", "orders": [{who, order}], "note"}.
 signal round_ready(worker_id: String, round: Dictionary, source: String)
+## The router has decided what a sentence is. `reply` is the model's object
+## — kind plan / chat / question — or {"kind": "offline"} when there is no
+## model, or {"kind": "failed", "reason": ...} when there was one and it did
+## not answer. The dispatcher owns what happens next in every case.
+signal routed(worker_id: String, reply: Dictionary)
 
-## OpenCode Zen, which speaks the OpenAI chat-completions shape.
-##
-## The model is not a constant: it is read from .env at boot so it can be
-## changed without a rebuild. That matters here more than usual, because the
-## gateway carries seventy models, most of them billed, and which of the free
-## ones is answering today is an operational question rather than a design one.
-##
-## The account has no credits, so the model has to be one of the free ids.
-## Measured on the same workshop prompt:
-##
-##   nemotron-3-ultra-free        44 s, complete JSON, every attempt
-##   ling-3.0-flash-fin-free     2.7 s, but capped near 250 output tokens on the
-##                               free tier, so a full spec is always truncated
-##   nemotron-3.5-lightning-free  59 s, spends its whole budget reasoning
-##   mimo-v2.5-free               a daily quota, then 429 for the rest of the day
-##   muse-spark-*-contributor-free, deepseek-v4-flash-free   down upstream
-##
-## So the choice is the slow one that finishes its sentences. Forty seconds
-## would be intolerable if the player watched it — which is why the worker now
-## sets off for the plot the moment the order is given, and the call lands while
-## they are walking. That was always the design (§5.2); it just was not built.
-const ENDPOINT := "https://opencode.ai/zen/v1/chat/completions"
-
-## The browser build cannot call ENDPOINT. OpenCode Zen sends no CORS headers,
-## so the request is refused before it leaves the page — that is a rule of the
+## The browser build cannot call a gateway directly. None of them send CORS
+## headers, so the request is refused before it leaves the page — that is a rule of the
 ## browser, not a missing setting, and no key in the build would change it.
 ##
 ## So a browser build goes through proxy/worker.js instead, which holds the key
@@ -60,10 +42,9 @@ const ENDPOINT := "https://opencode.ai/zen/v1/chat/completions"
 ## need it — they can call the API directly with a key from the environment —
 ## but the browser build has no other way to reach a model at all.
 const PROXY_URL := "https://delegate-ai.delegate-ai-proxy.workers.dev"
-const DEFAULT_MODEL := "nemotron-3-ultra-free"
 ## Which gateway is answering. Chosen at boot by which key is present, Groq
 ## first — see AIProvider.PREFERENCE and _pick_provider.
-var provider := "opencode"
+var provider := "orcarouter"
 ## Generous. A full spec with five modules and three assumptions runs past
 ## sixteen hundred tokens, and a truncated reply is not a poor plan, it is no
 ## plan at all: the JSON never closes, so nothing can parse it.
@@ -77,11 +58,17 @@ const TIMEOUT := 90.0
 ## token bucket to have refilled a little, short enough that it is over before
 ## the worker has reached the plot.
 const RATE_LIMIT_WAIT := 6.0
+## And the longest. A gateway that asks for a minute is asking for longer than
+## anybody will stand in a field waiting; past this the offline library is the
+## better answer.
+const RATE_LIMIT_WAIT_MAX := 30.0
 const LOG_DIR := "user://ai_log"
 
 var api_key := ""
 var proxy_url := ""
-var model := DEFAULT_MODEL
+var model := ""
+## The router's model. See AIProvider: the small one, for every sentence.
+var fast_model := ""
 var last_error := ""
 var offline := false          ## forced by --offline, or by having no key
 
@@ -104,9 +91,9 @@ func _ready() -> void:
 
 	# A local override beats the compiled-in one, so the Worker can be tested
 	# against a dev deployment without editing and rebuilding the game.
-	proxy_url = OS.get_environment("OPENCODE_PROXY_URL")
+	proxy_url = OS.get_environment("AI_PROXY_URL")
 	if proxy_url == "":
-		proxy_url = _read_env("res://.env", "OPENCODE_PROXY_URL")
+		proxy_url = _read_env("res://.env", "AI_PROXY_URL")
 	if proxy_url == "":
 		proxy_url = PROXY_URL
 	for arg2 in OS.get_cmdline_user_args():
@@ -124,6 +111,15 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--model="):
 			model = arg.substr(8)
+	var fast_env := str(AIProvider.of(provider).get("fast_model_env", ""))
+	fast_model = OS.get_environment(fast_env) if fast_env != "" else ""
+	if fast_model == "" and fast_env != "":
+		fast_model = _read_env("res://.env", fast_env)
+	if fast_model == "":
+		fast_model = str(AIProvider.of(provider).get("default_fast_model", model))
+	for arg3 in OS.get_cmdline_user_args():
+		if arg3.begins_with("--fast-model="):
+			fast_model = arg3.substr(13)
 	if "--offline" in OS.get_cmdline_user_args():
 		offline = true
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(LOG_DIR))
@@ -132,10 +128,10 @@ func _ready() -> void:
 ## Which gateway to talk to.
 ##
 ## Named outright with --provider= or AI_PROVIDER, and otherwise decided by
-## which key is actually present — Groq first, because it is the one that can
-## promise the reply parses. Falling back to the old gateway rather than going
-## offline matters: a missing Groq key should cost the schema guarantee, not
-## the AI.
+## which key is actually present — Groq first, because it answers without
+## thinking for a thousand tokens first. Falling through to the next gateway
+## rather than going offline matters: a missing Groq key should cost some
+## speed, not the AI.
 func _pick_provider() -> void:
 	var named := OS.get_environment("AI_PROVIDER")
 	if named == "":
@@ -153,7 +149,7 @@ func _pick_provider() -> void:
 				or _read_env("res://.env", env_name) != "":
 			provider = name
 			return
-	provider = "opencode"
+	provider = "orcarouter"
 
 
 func available() -> bool:
@@ -164,8 +160,8 @@ func available() -> bool:
 ##
 ## A key in hand wins, and the proxy is the fallback. This is the reverse of
 ## what it used to be, and the reason is that the proxy holds one key for one
-## gateway: routing a Groq request through a Worker whose secret is an OpenCode
-## key sends it to the wrong place with the wrong credentials. Trying the key
+## gateway: routing a Groq request through a Worker whose secret is an
+## OrcaRouter key sends it to the wrong place with the wrong credentials. Trying the key
 ## you actually have is the only rule that stays true as gateways are added.
 ##
 ## The browser still has no key and still goes through the proxy, which is the
@@ -210,8 +206,178 @@ const ANSWER_TOKENS := 220
 const ROLE_TOKENS := 600
 
 
+# -------------------------------------------------------------------- routing
+
+## Sentences the router is still deciding about.
+var _routing: Dictionary = {}
+## A route reply is a verb and a few fields, or a line. Four hundred and
+## fifty covers a four-step plan with a building brief in it, and the ceiling
+## is charged against the free tier's per-minute budget whether the reply
+## uses it or not.
+const ROUTE_TOKENS := 450
+
+
+## Every sentence said to a worker starts here. The small model reads it
+## against the catalogue and says what it is; nothing in the engine matches a
+## word of it. See Prompt.router_system for what it is shown.
+func route(instruction: String, mem: WorkerMemory, ctx: Dictionary,
+		clock: GameClock, town: Town, crew: Crew) -> void:
+	if _routing.get(mem.worker_id, false):
+		status.emit("%s is still thinking." % mem.display_name)
+		return
+	if not available():
+		routed.emit(mem.worker_id, {"kind": "offline"})
+		return
+	_routing[mem.worker_id] = true
+	_route_request(instruction, mem, ctx, clock, town, crew, 0, "", fast_model)
+
+
+## `with_model` is which of the two answers this attempt. It is the small one
+## every time but the one after a rate limit — see _on_route_reply.
+func _route_request(instruction: String, mem: WorkerMemory, ctx: Dictionary,
+		clock: GameClock, town: Town, crew: Crew, attempt: int, repair: String,
+		with_model: String) -> void:
+	var sys := Prompt.router_system(mem, ctx)
+	var usr := Prompt.router_user(instruction, mem, ctx, clock, town, crew)
+	if repair != "":
+		usr += "\n\nYour previous reply could not be used: %s\nReturn corrected JSON only." % repair
+
+	var http := HTTPRequest.new()
+	http.timeout = TIMEOUT
+	http.use_threads = true
+	add_child(http)
+	http.request_completed.connect(
+		func(result: int, code: int, h: PackedStringArray, body: PackedByteArray) -> void:
+			http.queue_free()
+			_on_route_reply(result, code, h, body, instruction, mem, ctx, clock, town,
+				crew, attempt, with_model),
+		CONNECT_ONE_SHOT)
+
+	var route_to := _route()
+	var body := {
+		"model": with_model,
+		"temperature": 0.3,
+		"messages": [
+			{"role": "system", "content": sys},
+			{"role": "user", "content": usr},
+		],
+	}
+	body.merge(AIProvider.quiet_body(provider, "low"))
+	body[AIProvider.token_field(provider)] = AIProvider.budget(provider, ROUTE_TOKENS)
+	if AIProvider.schema_mode(provider) != "none":
+		var allowed: Array = []
+		var role: Role = ctx.get("role", null)
+		if role != null and role.id != "builder":
+			for c: String in role.ready_capabilities():
+				allowed.append(c)
+		body["response_format"] = {
+			"type": "json_schema",
+			"json_schema": PlanSchema.router_schema(int(ctx.get("tier", 1)), allowed),
+		}
+	var fmt := JSON.stringify(body.get("response_format", {}))
+	_log("route", mem.worker_id, instruction, "%s\n\n---\n\n%s\n\n--- schema (%d chars)\n%s"
+		% [sys, usr, fmt.length(), fmt])
+	calls_made += 1
+	if http.request(str(route_to["url"]), route_to["headers"], HTTPClient.METHOD_POST,
+			JSON.stringify(body)) != OK:
+		http.queue_free()
+		_routing.erase(mem.worker_id)
+		routed.emit(mem.worker_id, {"kind": "failed", "reason": "could not send"})
+
+
+func _on_route_reply(result: int, code: int, headers: PackedStringArray, body: PackedByteArray,
+		instruction: String, mem: WorkerMemory, ctx: Dictionary, clock: GameClock,
+		town: Town, crew: Crew, attempt: int, with_model: String) -> void:
+	var raw := body.get_string_from_utf8()
+	_log("routed", mem.worker_id, instruction, "http=%d result=%d\n%s" % [code, result, raw])
+
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		last_error = ("timed out after %.0f s" % TIMEOUT) if result == HTTPRequest.RESULT_TIMEOUT \
+			else _gateway_message(raw)
+		push_warning("[llm] router %s failed http=%d result=%d: %s" % [with_model, code, result, last_error])
+		if attempt == 0 and _worth_retrying(result, code, raw):
+			retries += 1
+			# A per-minute token budget is counted per model, so the one the
+			# router has just exhausted is not the one the designer uses. The
+			# big model can answer a routing question perfectly well — it is
+			# only slower and dearer, which is the right thing to be when the
+			# alternative is telling the player to say it again. Waiting out
+			# the bucket comes first; this is what happens when that is not
+			# enough.
+			var next_model := with_model
+			if code == 429 or code == 413:
+				await get_tree().create_timer(_retry_after(headers)).timeout
+				if with_model != model:
+					next_model = model
+					status.emit("%s is busy; asking %s." % [fast_model, model])
+			_route_request(instruction, mem, ctx, clock, town, crew, 1, "", next_model)
+			return
+		_routing.erase(mem.worker_id)
+		status.emit("%s: %s" % [with_model, last_error])
+		routed.emit(mem.worker_id, {"kind": "failed", "reason": last_error})
+		return
+
+	var parsed := _extract(raw)
+	var problem := _route_problem(parsed)
+	if problem != "":
+		if attempt == 0:
+			retries += 1
+			_route_request(instruction, mem, ctx, clock, town, crew, 1, problem, with_model)
+			return
+		_routing.erase(mem.worker_id)
+		push_warning("[llm] router rejected twice: %s" % problem)
+		routed.emit(mem.worker_id, {"kind": "failed", "reason": problem})
+		return
+
+	_routing.erase(mem.worker_id)
+	routed.emit(mem.worker_id, parsed)
+
+
+## Shape only. Whether the town can do it is the validator's, and whether
+## the building fits is the designer's.
+func _route_problem(d: Dictionary) -> String:
+	if d.is_empty():
+		return "the reply was not JSON"
+	var kind := str(d.get("kind", ""))
+	if kind == "chat":
+		return ""
+	if kind == "question":
+		if str(d.get("question", "")).strip_edges() == "":
+			return "kind was question but no question was given"
+		return ""
+	# A small model's favourite near miss is to answer with the verb as the
+	# kind — {"kind": "standing", "steps": [{"do": "standing", ...}]} — which
+	# is a correct plan with a wrong label on it. Refusing that costs a round
+	# trip to be told something the reply already said, so it is read as what
+	# it plainly is. Anything with no steps in it is still refused.
+	if kind != "plan":
+		if not (d.get("steps", null) is Array) or (d["steps"] as Array).is_empty():
+			return "kind must be exactly \"plan\", \"chat\" or \"question\""
+		d["kind"] = "plan"
+	var steps: Array = d.get("steps", []) if d.get("steps", null) is Array else []
+	if steps.is_empty():
+		return "a plan needs at least one step"
+	if steps.size() > Steps.MAX_STEPS:
+		return "at most %d steps — this is one order, not a project" % Steps.MAX_STEPS
+	for s: Variant in steps:
+		if not (s is Dictionary):
+			return "every step must be an object"
+		var verb := str((s as Dictionary).get("do", ""))
+		if verb == "":
+			return "every step needs a \"do\""
+		if not Steps.known(verb):
+			return "\"%s\" is not a verb — use only the ones listed" % verb
+		if verb == "build" and str((s as Dictionary).get("brief", "")).strip_edges() == "" \
+				and not ((s as Dictionary).get("spec", null) is Dictionary):
+			return "a build step needs a brief in words"
+	return ""
+
+
 # ---------------------------------------------------------------- submission
 
+## The designer. Only a building brief comes here now: the router has
+## already decided the sentence is a build, and this is the model that can
+## hold a floor plan in its head.
 func submit(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 		clock: GameClock, town: Town) -> void:
 	if busy_for(mem.worker_id):
@@ -229,8 +395,7 @@ func submit(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 	# last built on this plot. The old livestock branch in Dispatcher hid this by
 	# never letting such an order reach here; now that orders compose, it has to
 	# be said properly.
-	if not hit.is_empty() and _instruction_is_plain(instruction) \
-			and ArchetypeLibrary.land_plan(instruction, int(ctx.get("tier", 1))).is_empty() 			and ArchetypeLibrary.errand_plan(instruction).is_empty():
+	if not hit.is_empty() and _instruction_is_plain(instruction):
 		cache_hits += 1
 		_log("cache", mem.worker_id, instruction, JSON.stringify(hit))
 		plan_ready.emit(mem.worker_id, hit)
@@ -282,15 +447,15 @@ func ask(question: String, mem: WorkerMemory, ctx: Dictionary, clock: GameClock,
 
 	var route := _route()
 	var body := {
-		"model": model,
+		"model": fast_model,
 		"temperature": 0.6,
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": Prompt.chat_system(mem, ctx)},
 			{"role": "user", "content": Prompt.chat_user(question, mem, ctx, clock, town)},
 		],
 	}
-	body[AIProvider.token_field(provider)] = ANSWER_TOKENS
+	body.merge(AIProvider.quiet_body(provider, "low"))
+	body[AIProvider.token_field(provider)] = AIProvider.budget(provider, ANSWER_TOKENS)
 	calls_made += 1
 	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
 			JSON.stringify(body)) != OK:
@@ -343,13 +508,13 @@ func compose_role(key: String, name: String, description: String,
 	var body := {
 		"model": model,
 		"temperature": 0.5,
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": Prompt.role_system()},
 			{"role": "user", "content": Prompt.role_user(name, description, ctx)},
 		],
 	}
-	body[AIProvider.token_field(provider)] = ROLE_TOKENS
+	body.merge(AIProvider.quiet_body(provider, "medium"))
+	body[AIProvider.token_field(provider)] = AIProvider.budget(provider, ROLE_TOKENS)
 	if AIProvider.schema_mode(provider) != "none":
 		body["response_format"] = {
 			"type": "json_schema", "json_schema": PlanSchema.role_schema(),
@@ -405,15 +570,15 @@ func plan_round(worker: Worker, goal: Goal, crew: Crew, town: Town,
 
 	var route := _route()
 	var body := {
-		"model": model,
+		"model": fast_model,
 		"temperature": 0.6,
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": Prompt.round_system(worker.memory, worker.role)},
 			{"role": "user", "content": Prompt.round_user(goal, crew, town, clock, farm, livestock)},
 		],
 	}
-	body[AIProvider.token_field(provider)] = ROLE_TOKENS
+	body.merge(AIProvider.quiet_body(provider, "low"))
+	body[AIProvider.token_field(provider)] = AIProvider.budget(provider, ROLE_TOKENS)
 	if AIProvider.schema_mode(provider) != "none":
 		body["response_format"] = {"type": "json_schema", "json_schema": PlanSchema.round_schema()}
 	_log("round_request", wid, goal.text, Prompt.round_system(worker.memory, worker.role)
@@ -469,9 +634,9 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 	http.use_threads = true
 	add_child(http)
 	http.request_completed.connect(
-		func(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+		func(result: int, code: int, h: PackedStringArray, body: PackedByteArray) -> void:
 			http.queue_free()
-			_on_reply(result, code, body, instruction, mem, plot, ctx, clock, town,
+			_on_reply(result, code, h, body, instruction, mem, plot, ctx, clock, town,
 				key, attempt),
 		CONNECT_ONE_SHOT)
 
@@ -483,21 +648,21 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 	var body := {
 		"model": model,
 		"temperature": 0.7,
-		# Several of these models think out loud into a separate field that
-		# shares the token budget with the answer. Left on, the reasoning eats
-		# three thousand tokens and the JSON is cut off mid-string, which is
-		# not a worse plan but no plan at all. Models that do not reason
-		# ignore this.
-		"reasoning": {"exclude": true},
 		"messages": [
 			{"role": "system", "content": sys},
 			{"role": "user", "content": usr},
 		],
 	}
+	# Several of these models think out loud into a separate field that shares
+	# the token budget with the answer. Left on, the reasoning eats three
+	# thousand tokens and the JSON is cut off mid-string, which is not a worse
+	# plan but no plan at all. How a gateway is told to stop is its own
+	# business — see AIProvider — and telling the wrong one is a 400.
+	body.merge(AIProvider.quiet_body(provider, "medium"))
 	# Newer gateways renamed max_tokens when reasoning models made the old name
 	# ambiguous, and quietly ignore the old one — which caps the reply at their
 	# default and truncates exactly the plans this was raised to fit.
-	body[AIProvider.token_field(provider)] = MAX_TOKENS
+	body[AIProvider.token_field(provider)] = AIProvider.budget(provider, MAX_TOKENS)
 
 	# And the point of the whole exercise: on a gateway that constrains its
 	# decoding, ask it to. The reply then cannot come back as unparseable JSON,
@@ -510,7 +675,7 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 				allowed.append(c)
 		body["response_format"] = {
 			"type": "json_schema",
-			"json_schema": PlanSchema.for_tier(int(ctx.get("tier", 1)), allowed),
+			"json_schema": PlanSchema.for_tier(int(ctx.get("tier", 1)), allowed, "design"),
 		}
 	var payload := JSON.stringify(body)
 	_log("request", mem.worker_id, instruction, sys + "\n\n---\n\n" + usr)
@@ -522,9 +687,9 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 		_offline_answer(instruction, mem, plot, ctx)
 
 
-func _on_reply(result: int, code: int, body: PackedByteArray, instruction: String,
-		mem: WorkerMemory, plot: Plot, ctx: Dictionary, clock: GameClock, town: Town,
-		key: String, attempt: int) -> void:
+func _on_reply(result: int, code: int, headers: PackedStringArray, body: PackedByteArray,
+		instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
+		clock: GameClock, town: Town, key: String, attempt: int) -> void:
 	var raw := body.get_string_from_utf8()
 	_log("response", mem.worker_id, instruction, "http=%d result=%d\n%s" % [code, result, raw])
 
@@ -544,7 +709,7 @@ func _on_reply(result: int, code: int, body: PackedByteArray, instruction: Strin
 		# not retrying is that the player gets the stock building instead of the
 		# one they asked for. A retry of the SAME model is not a fallback chain:
 		# it never quietly substitutes a different one.
-		if attempt == 0 and _worth_retrying(result, code):
+		if attempt == 0 and _worth_retrying(result, code, raw):
 			retries += 1
 			status.emit("%s: %s — trying once more." % [model, last_error])
 			# A rate limit is the one failure where retrying at once is worse
@@ -554,7 +719,7 @@ func _on_reply(result: int, code: int, body: PackedByteArray, instruction: Strin
 			# burns the one retry, and drops the player to the offline library.
 			# The wait is free: the worker is walking to the plot regardless.
 			if code == 429:
-				await get_tree().create_timer(RATE_LIMIT_WAIT).timeout
+				await get_tree().create_timer(_retry_after(headers)).timeout
 			_request(instruction, mem, plot, ctx, clock, town, key, 1, "")
 			return
 
@@ -676,10 +841,39 @@ static func _first_object(text: String) -> Dictionary:
 ## a 401 will say the same thing every time — a bad model id, or an empty
 ## account — and retrying only doubles the wait before the player finds out.
 ## A timeout is excluded too: it has already cost ninety seconds.
-static func _worth_retrying(result: int, code: int) -> bool:
+static func _worth_retrying(result: int, code: int, raw: String = "") -> bool:
 	if result != HTTPRequest.RESULT_SUCCESS:
 		return result != HTTPRequest.RESULT_TIMEOUT
-	return code >= 500 or code == 429
+	if code >= 500 or code == 429:
+		return true
+	# A per-minute token budget is refused as 413 rather than 429 on some
+	# gateways, and 413 otherwise means "this will never fit" — so the body
+	# has to be read to tell a wait from a dead end.
+	if code == 413:
+		var m := _gateway_message(raw).to_lower()
+		return m.find("per minute") >= 0 or m.find("rate limit") >= 0 \
+			or m.find("tpm") >= 0
+	return false
+
+
+## How long the gateway says to wait, within reason. Asking is much better
+## than guessing: a token bucket that refills in four seconds should not cost
+## thirty, and one that needs twenty should not be poked at six.
+static func _retry_after(headers: PackedStringArray) -> float:
+	var wait := RATE_LIMIT_WAIT
+	for h: String in headers:
+		var low := h.to_lower()
+		if not (low.begins_with("retry-after") or low.find("ratelimit-reset") >= 0):
+			continue
+		var value := low.substr(low.find(":") + 1).strip_edges()
+		var secs := 0.0
+		if value.ends_with("ms"):
+			secs = float(value.trim_suffix("ms")) / 1000.0
+		else:
+			secs = float(value.trim_suffix("s"))
+		if secs > 0.0:
+			wait = maxf(wait, secs + 0.5)
+	return clampf(wait, RATE_LIMIT_WAIT, RATE_LIMIT_WAIT_MAX)
 
 
 ## A human-readable reason out of a gateway error body.
@@ -772,6 +966,8 @@ func describe() -> String:
 		else ", schema-locked"
 	if api_key == "":
 		return "%s via the proxy, model %s%s" % [name, model, held]
+	if fast_model != model:
+		return "%s, %s routing, %s designing%s" % [name, fast_model, model, held]
 	return "%s, model %s%s" % [name, model, held]
 
 

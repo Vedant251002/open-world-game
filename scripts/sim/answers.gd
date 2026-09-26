@@ -602,9 +602,29 @@ static func _find_material(t: String) -> String:
 	for w: String in t.split(" ", false):
 		if LARDER_WORDS.has(w):
 			return str(LARDER_WORDS[w])
-		if Dispatcher.MATERIAL_WORDS.has(w):
-			return str(Dispatcher.MATERIAL_WORDS[w])
+		if MATERIAL_WORDS.has(w):
+			return str(MATERIAL_WORDS[w])
 	return ""
+
+
+## What a player calls a material, mapped to what the stores call it. The left
+## side is the vocabulary of somebody standing in a field; the right side is a
+## key in Town.stock. For answering "how much stone have we got" — orders go
+## through the router, which is shown the real names.
+const MATERIAL_WORDS := {
+	"stone": "cobble", "stones": "cobble", "rock": "cobble", "rocks": "cobble",
+	"cobble": "cobble", "granite": "granite", "gravel": "gravel",
+	"concrete": "concrete", "asphalt": "asphalt",
+	"wood": "timber", "timber": "timber", "logs": "timber", "log": "timber",
+	"tree": "timber", "trees": "timber", "lumber": "timber",
+	"plank": "plank", "planks": "plank", "oak": "dark_oak",
+	"thatch": "thatch", "straw": "thatch", "reed": "thatch",
+	"sand": "sand", "sandstone": "sandstone", "glass": "glass",
+	"clay": "brick", "brick": "brick", "bricks": "brick", "tile": "clay_tile",
+	"dirt": "dirt", "soil": "dirt", "earth": "dirt",
+	"iron": "steel_frame", "ore": "steel_frame", "steel": "steel_frame",
+	"metal": "sheet_metal", "chrome": "chrome",
+}
 
 
 static func _standing(archs: Array[String], town: Town) -> Array[Dictionary]:

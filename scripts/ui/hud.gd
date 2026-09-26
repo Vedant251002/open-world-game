@@ -13,12 +13,15 @@ signal instruction_given(worker: Worker, text: String)
 signal answer_given(worker: Worker, text: String)
 signal harvest_wanted(tile: Vector2i)
 
-const BG := Color(0.06, 0.055, 0.05, 0.82)
-const INK := Color(0.94, 0.92, 0.87)
-const DIM := Color(0.72, 0.70, 0.66)
-const WARN := Color(1.0, 0.86, 0.52)
-const COIN := Color(0.98, 0.83, 0.42)
-const DEBT := Color(0.94, 0.51, 0.42)
+## The palette now lives in UiTheme, named by role. These aliases stay so the
+## forty-odd call sites below do not all change at once, and so a reader can
+## still see at a glance which semantic colour a line is painting.
+const BG := UiTheme.PANEL
+const INK := UiTheme.INK
+const DIM := UiTheme.DIM
+const WARN := UiTheme.WARN
+const COIN := UiTheme.ACCENT
+const DEBT := UiTheme.ALERT
 
 var player: Player
 var crew: Crew
@@ -43,6 +46,11 @@ var _crew_tint: Array[Color] = []
 var minimap: Minimap
 var _typing_for: Worker = null
 var _root: Control
+## The crosshair and its target dot. The dot is the cheapest useful signal in
+## the whole interface: it answers "is there someone there?" without the player
+## having to read a line of text or look away from the middle of the screen.
+var _crosshair: Control
+var _crosshair_dot: ColorRect
 var _prompt: Label
 var _clockline: Label
 var _crewbox: VBoxContainer
@@ -63,6 +71,9 @@ var _subtitle_who: Label
 var _subtitle_line: Label
 var _subtitle_left := 0.0
 var _phrases: HFlowContainer
+## The conversation, kept per person, down the left of the screen.
+var chat: ChatPanel
+var _chat_button: Button
 ## Sized for a thumb rather than a cursor.
 var _touch := false
 ## On the web the text field is a real HTML input laid over the canvas —
@@ -91,7 +102,12 @@ func _build() -> void:
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
-	_root.add_child(_make_crosshair())
+
+	_crosshair = UiTheme.crosshair(7.0, 3.0, 2.0)
+	_root.add_child(_crosshair)
+	_crosshair_dot = UiTheme.crosshair_dot()
+	_crosshair_dot.visible = false
+	_root.add_child(_crosshair_dot)
 
 	_clockline = _label("", 32 if _touch else 18, INK)
 	_clockline.position = Vector2(22, 18)
@@ -128,7 +144,7 @@ func _build() -> void:
 	# themselves any other way on a keyboard — the phone build has buttons for
 	# both, which is why this line is not drawn there.
 	if not _touch:
-		_keys = _label("[I] stores      [M] map", 14, Color(0.55, 0.53, 0.50))
+		_keys = _label("[I] stores      [M] map      [C] chat", 14, Color(0.55, 0.53, 0.50))
 		# Below the roster, which is three lines of fifteen-point text starting
 		# at seventy and therefore finishes around a hundred and thirty.
 		_keys.position = Vector2(22, 142)
@@ -171,6 +187,30 @@ func _build() -> void:
 	# be able to claim the pointer.
 	_ignore_mouse(_root)
 
+	# The chat panel lives outside _root: its tabs and field are meant to be
+	# clicked, and it is only ever visible while the pointer is free.
+	chat = ChatPanel.new()
+	chat.name = "Chat"
+	chat.setup(crew, clock, _touch)
+	chat.sent.connect(_on_chat_sent)
+	chat.closed.connect(_on_chat_closed)
+	add_child(chat)
+	# A way in that is not a key, for anyone who does not know [C]. The
+	# pointer is captured while walking, so this is for the moments it is
+	# free — the phone build has a button of its own.
+	if not _touch:
+		_chat_button = Button.new()
+		_chat_button.text = "chat  [C]"
+		_chat_button.focus_mode = Control.FOCUS_NONE
+		_chat_button.add_theme_font_size_override("font_size", 14)
+		_chat_button.set_anchors_preset(Control.PRESET_CENTER_LEFT)
+		_chat_button.offset_left = 14
+		_chat_button.offset_right = 96
+		_chat_button.offset_top = -16
+		_chat_button.offset_bottom = 16
+		_chat_button.pressed.connect(toggle_chat)
+		add_child(_chat_button)
+
 
 static func _ignore_mouse(node: Node) -> void:
 	for child: Node in node.get_children():
@@ -191,23 +231,8 @@ static func _ignore_mouse(node: Node) -> void:
 ## the centre of the screen, which is exactly where the crosshair is: a ColorRect
 ## defaults to MOUSE_FILTER_STOP, so the crosshair swallowed every mouse-motion
 ## event before _unhandled_input could see it and mouse-look stopped working
-## entirely.
-func _make_crosshair() -> Control:
-	var c := Control.new()
-	c.set_anchors_preset(Control.PRESET_CENTER)
-	c.offset_left = -3
-	c.offset_top = -3
-	c.offset_right = 3
-	c.offset_bottom = 3
-	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var r := ColorRect.new()
-	r.color = Color(1, 1, 1, 0.5)
-	r.set_anchors_preset(Control.PRESET_FULL_RECT)
-	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	c.add_child(r)
-	return c
-
-
+## entirely. UiTheme.crosshair() sets MOUSE_FILTER_IGNORE on every blade for
+## the same reason, and that comment is why it must keep doing so.
 func _build_bar() -> void:
 	_bar = PanelContainer.new()
 	_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
@@ -270,6 +295,8 @@ func _build_subtitle() -> void:
 ## Only what is said to the player — work chatter and errand reports go by in
 ## the bubble as they always did, and the strip is for answers and questions.
 func subtitle(w: Worker, line: String, kind: String) -> void:
+	if chat != null:
+		chat.log_line(w, "them", line, kind)
 	if kind not in ["talk", "question", "refuse", "done"]:
 		return
 	_subtitle_who.text = w.display_name()
@@ -352,26 +379,16 @@ func _place_minimap() -> void:
 	minimap.position = Vector2(26.0, h - minimap.radius * 2.0 - 26.0)
 
 
+## The theme owns both of these now, so that the palette and the scale live in
+## one file. The old versions here hard-coded a border alpha, a corner radius
+## and a 1px shadow at a fixed size, which meant no setting could change any of
+## them and the phone build could not ask for larger type.
 static func _panel_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = BG
-	sb.border_color = Color(1, 1, 1, 0.14)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(4)
-	sb.set_content_margin_all(12)
-	return sb
+	return UiTheme.panel()
 
 
 static func _label(text: String, size: int, colour: Color) -> Label:
-	var l := Label.new()
-	l.text = text
-	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_color", colour)
-	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
-	l.add_theme_constant_override("shadow_offset_x", 1)
-	l.add_theme_constant_override("shadow_offset_y", 1)
-	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return l
+	return UiTheme.label(text, size, colour)
 
 
 # ------------------------------------------------------------------- runtime
@@ -383,6 +400,12 @@ func _on_looked_at(node: Node) -> void:
 	_crop = null
 	if _target == null and node is Node3D and (node as Node3D).has_meta("crop_tile"):
 		_crop = node as Node3D
+	# The centre dot is the cheapest useful signal in the interface: the player
+	# learns there is someone to talk to from the centre of the screen, without
+	# reading a line of text or moving their gaze off the thing they are
+	# looking at. It is hidden again the moment the ray loses them.
+	if _crosshair_dot != null:
+		_crosshair_dot.visible = _target != null or _crop != null
 
 
 func _process(delta: float) -> void:
@@ -475,6 +498,43 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("menu") and _typing_for != null:
 		_close_bar()
 		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("chat") and _typing_for == null:
+		toggle_chat()
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("menu") and chat != null and chat.open:
+		chat.hide_panel()
+		get_viewport().set_input_as_handled()
+
+
+## The chat panel owns the pointer while it is up, like the bar does.
+func toggle_chat() -> void:
+	if chat == null:
+		return
+	if chat.open:
+		chat.hide_panel()
+		return
+	if _typing_for != null:
+		_close_bar()
+	chat.show_panel()
+	if minimap != null:
+		minimap.visible = false
+	player.set_input_enabled(false)
+
+
+func _on_chat_closed() -> void:
+	if minimap != null:
+		minimap.visible = true
+	if _typing_for == null:
+		player.set_input_enabled(true)
+
+
+## A line typed in the panel goes exactly where a line from the bar goes.
+func _on_chat_sent(w: Worker, said: String) -> void:
+	chat.log_line(w, "you", said)
+	if w.pending_question != "":
+		answer_given.emit(w, said)
+	else:
+		instruction_given.emit(w, said)
 
 
 ## Opens the instruction bar from outside, for the screenshot rig.
@@ -487,6 +547,8 @@ func open_for(w: Worker) -> void:
 ## waiting for words rather than for movement.
 func _open_bar(w: Worker) -> void:
 	_typing_for = w
+	if chat != null:
+		chat.select(w)
 	_bar.visible = true
 	# You are talking, not navigating — and on a phone the instruction bar is
 	# nearly the width of the screen and lands straight on top of the map.
@@ -537,6 +599,8 @@ func _on_submit(text: String) -> void:
 	_close_bar()
 	if w == null or said == "":
 		return
+	if chat != null:
+		chat.log_line(w, "you", said)
 	if answering:
 		answer_given.emit(w, said)
 	else:

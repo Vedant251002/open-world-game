@@ -22,6 +22,10 @@ class_name BoxKit
 static var _meshes: Dictionary = {}
 static var _materials: Dictionary = {}
 
+## The weave shader, loaded once. See paint() for why the figures do not use
+## the world's PBR texture arrays.
+const _PAINT_SHADER := preload("res://scripts/core/figure_paint.gdshader")
+
 
 ## A box of this size. Sizes repeat constantly — every hen has the same legs —
 ## so the key is the size in millimetres, which is finer than anything modelled
@@ -37,16 +41,30 @@ static func mesh(size: Vector3) -> BoxMesh:
 	return m
 
 
-## Matte paint in this colour. Roughness is fixed at 0.9 because everything
-## drawn with this is cloth, skin, wool or wood — nothing here is shiny, and a
-## second parameter would fragment the cache for no visible gain.
-static func paint(colour: Color) -> StandardMaterial3D:
+## Matte paint in this colour, with a woven surface.
+##
+## These are the workers, the animals, the carts — every figure in the game,
+## and they were the last thing in the world still completely flat: a single
+## albedo colour with no normal map, no roughness variation and no texture of
+## any kind. A flock of hens at 0.1 m each read as painted plastic next to a
+## wall that had thatch grain in it.
+##
+## They cannot use the world's PBR texture arrays, because they are not
+## surface materials — a hen's flank is wool and a worker's coat is cloth, and
+## neither of those is one of the 41 world materials. What they get instead is
+## a fine procedural weave derived from world position, which is enough to
+## break the specular highlight up and stop a limb reading as a solid block.
+## The cache is keyed on colour exactly as before, because the whole point of
+## this file is that a hundred boxes share a dozen materials.
+static func paint(colour: Color) -> ShaderMaterial:
 	var key := colour.to_rgba32()
-	var m: StandardMaterial3D = _materials.get(key)
+	var m: ShaderMaterial = _materials.get(key)
 	if m == null:
-		m = StandardMaterial3D.new()
-		m.albedo_color = colour
-		m.roughness = 0.9
+		m = ShaderMaterial.new()
+		m.shader = _PAINT_SHADER
+		var lin := colour.srgb_to_linear()
+		m.set_shader_parameter("paint_albedo", Vector3(lin.r, lin.g, lin.b))
+		m.set_shader_parameter("paint_rough", 0.88)
 		_materials[key] = m
 	return m
 

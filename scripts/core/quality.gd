@@ -63,13 +63,36 @@ static func apply(viewport: Viewport, plr: Player, streamer: ChunkStreamer) -> v
 ## feature flag — so it fell through to the full desktop profile and then ran
 ## it through gl_compatibility, where TAA does not exist, MSAA costs a great
 ## deal more than it does under Vulkan, and every draw call is a WebGL call.
-## That is the configuration most likely to be behind "it lags", because it is
-## the one anybody can reach by opening a link.
+## That is the configuration most likely to be behind "it lags", because it
+## is the one anybody can reach by opening a link.
 static func _trim_desktop(viewport: Viewport) -> void:
 	viewport.msaa_3d = Viewport.MSAA_DISABLED
 
+	# Anisotropy on every texture in the world. Without it the mip chain picks
+	# a blur level by the texel's shortest axis, so a wall seen at a grazing
+	# angle — which is how you look at every building in a village you are
+	# walking through — resolves to the mip level for the steepest view rather
+	# than the average. The baked normal maps lose their relief first, and a
+	# brick wall with no relief at a glancing angle is the exact thing this
+	# whole texture pass existed to fix.
+	#
+	# This is a project setting rather than a RenderingServer call: the
+	# TEXTURE_FILTER_* enum on RenderingServer belongs to the 2D canvas
+	# (TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC and friends are
+	# CanvasItemTextureFilter values), and 3D materials take their sampler state
+	# from rendering/textures/default_filters/anisotropic_filtering_level, which
+	# Quality.apply reads back out of ProjectSettings to report it honestly.
+	#
+	# 4x is not an arbitrary maximum. The measurement behind the texture scale
+	# table puts most surfaces 1-2 m from the camera, and at 74 degrees of FOV a
+	# 1600 px viewport spans about 1.9 m there, so a texel is roughly a
+	# thousandth of the screen. Past 4x the extra taps sample a mip level the
+	# 1024 px source can no longer resolve.
+	print("[delegate] desktop profile: TAA, no MSAA, %dx aniso" % [
+		int(ProjectSettings.get_setting(
+			"rendering/textures/default_filters/anisotropic_filtering_level", 4))])
+
 	if not Platform.is_web():
-		print("[delegate] desktop profile: TAA, no MSAA")
 		return
 
 	viewport.use_taa = false

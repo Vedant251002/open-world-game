@@ -94,7 +94,8 @@ func _process(delta: float) -> void:
 			_check_follow()
 			var mira: Worker = crew.get_worker("mira")
 			print("[crew] telling Mira: build a small bakery near the well")
-			dispatch.instruct(mira, "build a small bakery near the well")
+			dispatch.take_plan_for_test(mira, "build a small bakery near the well",
+				[{"do": "build", "brief": "a small bakery near the well"}])
 			_phase = 1
 			_t = 0.0
 		1:
@@ -126,7 +127,9 @@ func _process(delta: float) -> void:
 			var tobias: Worker = crew.get_worker("tobias")
 			print("[crew] telling Tobias: plant a big wheat field")
 			_assumptions = []
-			dispatch.instruct(tobias, "plant a big wheat field")
+			dispatch.take_plan_for_test(tobias, "plant a big wheat field",
+				[{"do": "sow", "crop": "wheat", "size": [10, 10]}],
+				["A big field is ten metres a side.", "Wheat, since you did not say."])
 			_phase = 4
 			_t = 0.0
 		4:
@@ -169,7 +172,8 @@ func _process(delta: float) -> void:
 			if _hens_before < 0:
 				_hens_before = livestock.count_of("hen")
 				print("[crew] telling Ren: bring some hens")
-				dispatch.instruct(ren, "bring some hens")
+				dispatch.take_plan_for_test(ren, "bring some hens",
+					[{"do": "stock", "species": "hen", "count": 4}])
 			elif livestock.count_of("hen") > _hens_before:
 				print("[crew] hens: %d -> %d, %d animals in all" % [
 					_hens_before, livestock.count_of("hen"), livestock.total()])
@@ -222,8 +226,11 @@ func _process(delta: float) -> void:
 				_cage_before = livestock.count_of("hen")
 				_pens_before = _pen_count()
 				print("[crew] telling Mira: build a cage for the hens and put them in it")
-				dispatch.instruct(mira,
-					"build a cage for the hens and put them in it")
+				dispatch.take_plan_for_test(mira,
+					"build a cage for the hens and put them in it", [
+						{"do": "enclose", "id": "pen", "size": [6, 6]},
+						{"do": "stock", "species": "hen", "count": 4, "into": "pen"},
+					])
 			elif _pen_count() > _pens_before \
 					and livestock.count_of("hen") > _cage_before:
 				_check_cage()

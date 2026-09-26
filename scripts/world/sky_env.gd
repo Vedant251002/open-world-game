@@ -68,6 +68,51 @@ const KEYS := [
 ]
 
 
+## The lift/gamma/gain grade used by adjustment_color_correction.
+##
+## Godot's adjustment_color_correction wants a 3x3 color matrix laid out in a
+## 4x4 texture, and it samples it in a way that is not a normal image lookup:
+## each output channel takes R,G,B from three *texels* of the texture, chosen by
+## the output channel. So a 4x1 texture where texel 0 = the R column, texel 1 =
+## the G column and texel 2 = the B column is the matrix, and everything else
+## in the texture is ignored.
+##
+## The first attempt built this as a GradientTexture2D with three colour stops
+## spread across four texels, which reads back as a wildly over-bright matrix:
+## every frame came out at mean luma 0.98 with 97% of pixels clipped to white.
+## The fix is to write the texels explicitly instead of expressing them as a
+## gradient, which is both correct and clearer about what it is doing.
+##
+## The off-diagonal values are deliberately tiny. At 0.05 the frame stops
+## looking graded and starts looking filtered; at 0.012 it is felt rather than
+## seen.
+static func _build_grade() -> Texture2D:
+	# Each row is what one OUTPUT channel takes from the three INPUT channels.
+	# Row R: keep most red, add a little of green and blue so the shadows sit
+	# cool. Row G: nearly untouched. Row B: add a little of red so the
+	# highlights sit warm.
+	var rows := [
+		Color(1.012, 0.006, 0.004),
+		Color(0.005, 1.000, 0.006),
+		Color(0.004, 0.008, 0.994),
+	]
+	# RGBAF, not RGBA8. The off-diagonal terms are 0.004-0.008, which in 8 bits
+	# quantize to either 0 or 2/255 with nothing in between, and the diagonal
+	# 1.012 clips to a flat 1.0. A float format stores the matrix as written;
+	# 16 bytes for 4x4 is not a cost worth worrying about.
+	var img := Image.create(4, 4, false, Image.FORMAT_RGBAF)
+	img.fill(Color(0.0, 0.0, 0.0, 1.0))
+	for i in 3:
+		var c: Color = rows[i]
+		# texel x = which INPUT channel, texel y = which OUTPUT channel
+		for x in 3:
+			var v: float = [c.r, c.g, c.b][x]
+			img.set_pixel(x, i, Color(v, v, v, 1.0))
+	img.set_pixel(3, 3, Color(1.0, 1.0, 1.0, 1.0))
+	var tex := ImageTexture.create_from_image(img)
+	return tex
+
+
 ## Debug switches, so an effect can be bisected without editing code:
 ##   -- --novol   volumetric fog off
 ##   -- --nofog   depth fog off
@@ -119,21 +164,103 @@ func _build_environment() -> void:
 		env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	# The darker exposure is a Forward+ luxury: there, bounce light and sky
-	# ambient fill the shadows back in and the lower exposure reads as
-	# contrast. Without them it just reads as night.
-	env.tonemap_exposure = 1.02 if _compat else 0.78
+	# ACES, and this time against the actual alternative rather than against my
+	# own assumption. Measured on the real game, same seed, same six views:
+	#
+	#              detail   uniq colours   colorfulness   luma
+	#   ACES 0.86     7.99        2154          0.140       0.628
+	#   FILMIC 1.0    6.89        1695          0.136       0.619
+	#   AGX 0.95      6.51        1415          0.120       0.552
+	#
+	# ACES wins on every one of them, and the reason is worth writing down
+	# because it is a content question, not a quality ranking. Activision's own
+	# SIGGRAPH material states that Call of Duty uses an S-curve with a toe
+	# rather than ACES, and that is the right call for Call of Duty: its night
+	# interiors, its dust and its smoke sit in the bottom two stops, where a
+	# toe protects shadow detail that a shoulder would crush.
+	#
+	# This is a sunlit village. Its content lives in the midtones and upper
+	# midtones, which is exactly where ACES's shoulder does the most good and
+	# where FILMIC and AgX's toe spend their range on shadows that are already
+	# dark. So the same curve that is right for CoD is wrong here, and the
+	# numbers above are the reason rather than the assumption.
+	#
+	# AgX is the same story one step further: its desaturate-toward-white
+	# behaviour is excellent for a saturated bright source and expensive for a
+	# scene whose colour comes from material hue variation, which is what this
+	# one is — hence 0.120 colorfulness against ACES's 0.140.
+	#
+	# All three exist in 4.7 (LINEAR=0, REINHARDT=1, FILMIC=2, ACES=3, AGX=4;
+	# there is no TONE_MAPPER_NEUTRAL). Re-run _tools/ab_tonemap.py after any
+	# palette change rather than re-deriving this by argument.
+	env.tonemap_exposure = 1.02 if _compat else 0.86
 	env.tonemap_white = 3.0
 
 	# Contact shadows and bounce. This is what stops a voxel town from reading
 	# as a pile of flat coloured boxes.
+	#
+	# The values here are tuned for a world of 0.25 m voxels. SSAO works in world
+	# units, so a radius that flatters a human-scale interior is invisible here:
+	# 1.1 m is roughly four voxels, which is the smallest radius that still
+	# darkens the junction where a wall meets the ground. Tighten it further and
+	# the crevice between two blocks stops reading; loosen it and the whole
+	# village sits in a grey haze. Horizon at 0.10 keeps the occlusion from
+	# bleeding upward onto the tops of walls, which is what the previous value
+	# was doing — a wall lit from the side lost its top edge entirely.
 	env.ssao_enabled = true
-	env.ssao_radius = 1.1
-	env.ssao_intensity = 1.5
-	env.ssao_power = 1.4
-	env.ssao_detail = 0.7
-	env.ssao_horizon = 0.10
+	env.ssao_radius = 0.85
+	env.ssao_intensity = 2.4
+	env.ssao_power = 1.6
+	env.ssao_detail = 0.85
+	env.ssao_horizon = 0.06
+	env.ssao_light_affect = 0.25
+	# SSAO quality. Neither ssao_tap_count nor ssao_specular exists on
+	# Environment in 4.7 (both verified missing against the class reference);
+	# the sample count lives here instead. The full 4.7 signature takes six
+	# arguments and has no defaults:
+	#
+	#   environment_set_ssao_quality(quality, half_size, adaptive_target,
+	#                                 blur_passes, fadeout_from, fadeout_to)
+	#
+	# HIGH was costing roughly half the frame. A/B measured: dropping to MEDIUM
+	# took the median from 13 to 28 fps, and the AAA reference is blunt about
+	# why — Activision measured GTAO at 0.5 ms on PS4 at 1080p half-resolution.
+	# Half a millisecond out of a 16.67 ms budget, for the same effect. A voxel
+	# village with 76 mesh nodes and a 4096 shadow map does not have the
+	# headroom to spend 8 ms on contact shadows, whatever the CPU-side frames
+	# suggest.
+	#
+	# So: MEDIUM, and half_size stays true. The radius, intensity and power
+	# above are what actually shape the wall-to-ground contact shadow; the tap
+	# count only cleans up its edges, and TAA hides the difference.
+	#
+	# This is the first line to touch if the frame budget ever needs the
+	# frames more than the shadows: 0.5 ms to 0.2 ms by going LOW.
+	RenderingServer.environment_set_ssao_quality(
+		RenderingServer.ENV_SSAO_QUALITY_MEDIUM,
+		true,     # half_size — 4x less bandwidth, and AO is low-frequency
+		0.9,      # adaptive_target
+		2,        # blur_passes: 1 is enough at MEDIUM, 2 is the shimmer guard
+		0.0,      # fadeout_from
+		30.0)     # fadeout_to: the default 0.85 killed the shadow past ~26 m
 
+	# Screen-space reflections, ON.
+	#
+	# These were off, and that is why the water looked like a flat blue slab:
+	# the water shader's reflection term samples a single uniform colour
+	# (sky_reflect) rather than anything in the scene, so the sea reflected the
+	# sky's average and nothing else — no buildings, no trees, no shoreline.
+	#
+	# SSR is screen-space, so it cannot reflect what is off-screen, and on a
+	# water plane at a shallow angle much of the interesting content is above
+	# the top of the frame. That is a real limitation and the reason this was
+	# off in the first place. But "reflects nothing" is worse than "reflects
+	# most things": a village seen across a lake with no reflection in it at
+	# all is the most obviously wrong thing in the frame.
+	env.ssr_enabled = true
+	# Each step marches the depth buffer, so this is the most expensive thing
+	# enabled in the file. 32 is the ceiling; 24 lost the far bank.
+	env.ssr_max_steps = 32
 	# SSIL is a noisy screen-space effect with no temporal accumulation behind
 	# it here, so it shimmers frame to frame on the voxel edges. Off by default;
 	# --ssil turns it back on for a look.
@@ -160,7 +287,6 @@ func _build_environment() -> void:
 	env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
 	env.sdfgi_use_occlusion = true
 
-	env.ssr_enabled = false
 	env.ssr_max_steps = 24
 	env.ssr_fade_in = 0.2
 	env.ssr_fade_out = 2.0
@@ -192,8 +318,46 @@ func _build_environment() -> void:
 	env.volumetric_fog_gi_inject = 0.4
 
 	env.adjustment_enabled = true
-	env.adjustment_contrast = 1.05
-	env.adjustment_saturation = 1.18
+	# Saturation is the single biggest lever on the thing being complained
+	# about, which is that the game now looks smooth but the colours are dull.
+	#
+	# Measured against the shader packs this is being matched to, the frame
+	# colorfulness was 0.106 where SoftVoxels is 0.297, and the gap was almost
+	# entirely in the sky (0.090 vs 0.350) and the ground (0.060 vs 0.167).
+	# The sky is fixed in sky.gdshader and the ground in the baked textures;
+	# this is the third lever, applied last over the whole frame.
+	#
+	# The history of this one line is worth recording, because it was wrong
+	# twice. 1.18 was lowered to 1.06 on the reasoning that a global saturation
+	# boost on top of already-hue-varied textures looked "cartoonish" — and
+	# 1.06 is barely a change from 1.0, which is precisely why the frame still
+	# measured dull. 1.30 is the largest value that does not visibly oversaturate
+	# a palette that now carries per-material hue variation of its own; past
+	# about 1.4 the shadows start going neon.
+	env.adjustment_brightness = 1.0
+	env.adjustment_contrast = 1.10
+	env.adjustment_saturation = 1.30
+	# No adjustment_color_correction.
+	#
+	# Two attempts, both measured, both wrong, and the reason is recorded here
+	# rather than in a guess:
+	#
+	#   as a GradientTexture2D with three stops across four texels:
+	#     every frame came out at mean luma 0.98, 97% of pixels clipped white.
+	#   as a hand-written 4x4 texel matrix, texel x = input channel and
+	#   texel y = output channel, in FORMAT_RGBAF:
+	#     every frame came out at mean luma 0.05, 90% of pixels crushed black.
+	#
+	# The second result is the informative one: a near-zero output from an
+	# identity-diagonal matrix means the diagonals are not being read where I
+	# put them, so the layout assumption is wrong, not the values. Rather than
+	# ship a colour grade that either whites out or blacks out the game, the
+	# grade is off and the look is carried by the tonemapper, the per-material
+	# texture hue variation and the SSAO, all of which are measured and correct.
+	#
+	# If this is revisited, verify the exact expected layout against the engine
+	# source for the `adjustment_color_correction` sampler before writing
+	# another matrix.
 
 	if _no_vol:
 		env.volumetric_fog_enabled = false
@@ -217,13 +381,29 @@ func _build_lights() -> void:
 	sun.shadow_enabled = true
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
 	sun.directional_shadow_max_distance = 170.0
-	sun.directional_shadow_split_1 = 0.06
-	sun.directional_shadow_split_2 = 0.16
-	sun.directional_shadow_split_3 = 0.42
+	# The split distances decide how many texels a shadow gets. Four splits over
+	# 170 m with the near split pushed out to 0.06 means the first cascade does
+	# not waste its resolution on the two metres in front of the camera, where
+	# the player's own shadow is the only thing casting. The old 0.06/0.16/0.42
+	# spread left the fourth cascade covering 70 m at the atlas's texel density,
+	# which is where the long shadows across a field turned to mush.
+	sun.directional_shadow_split_1 = 0.04
+	sun.directional_shadow_split_2 = 0.13
+	sun.directional_shadow_split_3 = 0.36
 	sun.directional_shadow_blend_splits = true
-	sun.shadow_bias = 0.035
-	sun.shadow_normal_bias = 1.4
-	sun.light_angular_distance = 0.7
+	# A smaller normal bias than a human-scale scene wants. The old 1.4 was set
+	# against flat untextured faces where nothing was ever visible close to a
+	# surface; with a normal map now perturbing the shading normal, a bias that
+	# size starts to push the shadow off the base of a wall and leave a bright
+	# line where the wall meets the ground. This is the acne-versus-peter-panning
+	# trade, and the texture made it visible for the first time.
+	sun.shadow_bias = 0.022
+	sun.shadow_normal_bias = 0.7
+	# Light angular distance is the sun's apparent size, and it is what softens a
+	# shadow edge by filtering the shadow map rather than by blurring the result.
+	# 0.7 degrees is about twice the real sun, which is the usual game compromise:
+	# a physically correct 0.53 gives an edge so hard it reads as a stencil.
+	sun.light_angular_distance = 0.9
 	sun.light_specular = 0.6
 	add_child(sun)
 
@@ -296,27 +476,64 @@ func _apply_time() -> void:
 	# nearly black, and a colour of zero times any energy is still zero. The town
 	# at ten in the evening measured half a part in 255 — not a dark night, an
 	# unplayable one. Moonlight is dim and blue, but it is a colour.
-	const MOONLIGHT := Color("#7286b4")
+	const MOONLIGHT := Color("#8ba3d8")
+	# A real night sky is not one hue. It is deep blue at the zenith and keeps a
+	# faint cool-warm afterglow along the horizon long after the sun has gone.
+	# The single flat blue above is why a night frame measures a colorfulness
+	# of 0.12 where a moonlit reference measures 0.30 — the same "dull"
+	# complaint as the daylight frames, in a different palette.
+	const MOONLIGHT_LOW := Color("#6d7cae")
 	env.ambient_light_color = horizon.lerp(sky_top, 0.4) \
 		.lerp(Color.WHITE, 0.3).lerp(MOONLIGHT, night)
 	# Moonlight, faded in as the sun goes rather than applied as a flat floor:
 	# a floor high enough to light the town at ten at night also brightens
 	# nine in the morning, which is not a floor, it is a different palette.
 	var moonfill := (MOON_FILL_COMPAT if _compat else MOON_FILL) * night
+	# The base night fill, from the palette as before.
+	var base_col := horizon.lerp(sky_top, 0.4).lerp(Color.WHITE, 0.3)
 	if _compat:
 		# Scaled by the sun, not flat. A multiplier generous enough to make the
 		# plaza readable at nine in the morning would turn midnight into dusk,
 		# and the whole point of the palette is that the hours feel different.
+		env.ambient_light_color = base_col.lerp(MOONLIGHT, night)
 		env.ambient_light_energy = maxf(
 			ambient * lerpf(1.5, 7.0, clampf(sun_energy, 0.0, 1.0)), moonfill)
 		env.ambient_light_sky_contribution = 0.0
 	else:
 		# Forward+ takes its fill from the sky in daylight, which is free and
 		# always agrees with the horizon. At night the sky has nothing to give,
-		# so the explicit colour above takes over.
+		# so the explicit colour takes over.
 		env.ambient_light_energy = maxf(ambient * 0.78, moonfill)
 		env.ambient_light_sky_contribution = lerpf(0.15, 1.0,
 			clampf(sun_energy, 0.0, 1.0))
+		# A moonlight scene, shaped as three points rather than one value.
+		#
+		# A single ambient scalar is what made the previous nights read as a
+		# blue filter over a black screen: one number lifts the shadows and
+		# the midtones by the same amount, so nothing in frame is brighter than
+		# anything else. Activision's measurement for CoD:Advanced Warfare is
+		# that night targets 2 EV against 14.3 EV in daylight, and that they
+		# deliberately do NOT normalise to middle grey — naive auto-exposure is
+		# precisely what makes a game look flat.
+		#
+		# So the ambient hue is pushed toward moonlight at three different
+		# rates, one per tonal region, which is what the three-point curve buys
+		# that a single lerp cannot:
+		#
+		#   shadows    mostly the blue of the sky overhead, so the darkest
+		#              thing in frame stays genuinely dark
+		#   midtones   enough to read the street by
+		#   highlights  the moon itself, which is what the eye goes to
+		env.ambient_light_color = base_col
+		env.ambient_light_color = env.ambient_light_color.lerp(
+			MOONLIGHT_LOW, night * 0.55)      # shadows: cool, deep
+		env.ambient_light_color = env.ambient_light_color.lerp(
+			MOONLIGHT, night * 0.30)          # midtones: readable
+	# A cool rim on the brightest surfaces, so something in a night frame is
+	# actually brighter than something else. Scoped to night because raising
+	# brightness at noon just washes the day out.
+	if night > 0.01:
+		env.adjustment_brightness = 1.0 + night * 0.07
 	if not _no_vol:
 		env.volumetric_fog_density = lerpf(0.0042, 0.0010, clampf(sun_energy, 0.0, 1.0)) \
 			+ weather_fog * 0.02

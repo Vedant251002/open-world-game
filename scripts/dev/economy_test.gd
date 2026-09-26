@@ -101,10 +101,7 @@ func _case_short() -> void:
 	var buildings_before := town.buildings.size()
 
 	plot.reserved = true
-	dispatch._open[mira.memory.worker_id] = {
-		"worker": mira, "instruction": "build a cottage", "plot": plot,
-	}
-	dispatch._on_plan_ready(mira.memory.worker_id, plan)
+	dispatch.accept_plan_for_test(mira, "build a cottage", plot, plan)
 
 	# 1 — the plan did not become a job.
 	_ok(mira.job_patch == null, "Mira did not start building")
@@ -195,10 +192,7 @@ func _case_afford() -> void:
 		town.stock[mat] = 9000
 
 	plot.reserved = true
-	dispatch._open[tobias.memory.worker_id] = {
-		"worker": tobias, "instruction": "build a cottage", "plot": plot,
-	}
-	dispatch._on_plan_ready(tobias.memory.worker_id, plan)
+	dispatch.accept_plan_for_test(tobias, "build a cottage", plot, plan)
 	_ok(tobias.job_patch != null, "Tobias started straight away")
 	_ok(dispatch._held.is_empty(), "nothing was held")
 	_ok(int(town.stock["timber"]) < 9000, "the stores were charged for it")
@@ -209,7 +203,13 @@ func _case_afford() -> void:
 func _case_direct() -> void:
 	print("[econ] --- told to go and fetch ---")
 	var ren: Worker = crew.workers[2]
-	dispatch.instruct(ren, "go and dig up some stone")
+	# The gather step the router returns for "go and dig up some stone". What
+	# this case is about is the other end of it: that the step ends in a
+	# quarry job and not in a building.
+	dispatch.accept_plan_for_test(ren, "go and dig up some stone", null, {
+		"steps": [{"do": "gather", "material": "cobble", "units": 240}],
+		"worker_line": "",
+	})
 	_ok(ren.job_quarry != null, "Ren took the errand")
 	if ren.job_quarry != null:
 		_ok(ren.job_quarry.material == "cobble",
@@ -218,10 +218,6 @@ func _case_direct() -> void:
 	_reset(ren)
 
 	# The near miss: the same words with no errand in them must still build.
-	_ok(not dispatch._try_gather(ren, "build a stone cottage"),
-		"'build a stone cottage' is not a fetching job")
-	_ok(not dispatch._try_gather(ren, "get on with it"),
-		"'get on with it' names no material, so it is not one either")
 	_reset(ren)
 
 

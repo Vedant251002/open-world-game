@@ -286,7 +286,9 @@ func on_day(day: int) -> void:
 
 	# Newcomers, while there are beds for them.
 	var free := beds() - housed()
-	if free > 0 and homeless() == 0 and mood_avg() > 0.45:
+	var law: Node = realm.system("Law")
+	var open := law == null or not law.has_method("borders_open") or bool(law.call("borders_open"))
+	if free > 0 and homeless() == 0 and mood_avg() > 0.45 and open:
 		_arrive(1)
 	_assign_homes()
 
@@ -330,27 +332,27 @@ func kill(c: Citizen, how: String) -> void:
 
 ## "give Ada a home in the cottage", "house Bram in the hut", "move Cora to
 ## the apartment". Anything that names a person and a place to live.
-func try_order(worker: Worker, text: String) -> bool:
-	var t := text.to_lower()
-	if Realm.has_phrase(t, ["build", "put up", "construct", "erect", "make a", "plant"]):
-		return false
-	if not (Realm.has_word(t, ["house", "home", "lodge", "rehouse", "live"])
-			or Realm.has_phrase(t, ["a home", "a bed", "a roof", "move in"])):
-		return false
-	var who: Citizen = null
-	for c: Citizen in alive():
-		if Realm.has_word(t, [c.name.to_lower()]):
-			who = c
-			break
+func verbs() -> Dictionary:
+	return {
+		"house": {
+			"says": "give a named citizen a bed — anywhere with one free, or in a named kind of building",
+			"required": ["who"],
+			"optional": ["place"],
+			"instant": true,
+		},
+	}
+
+
+func run(worker: Worker, step: Dictionary) -> String:
+	if str(step.get("do", "")) != "house":
+		return "failed"
+	var who := by_name(str(step.get("who", "")))
 	if who == null:
-		return false
+		return "There is nobody here called %s." % str(step.get("who", "")).capitalize()
 	var want := ""
-	var best_len := 0
-	for word: String in ArchetypeLibrary.KEYWORDS:
-		var arch := str(ArchetypeLibrary.KEYWORDS[word])
-		if BEDS.has(arch) and word.length() > best_len and Realm.has_word(t, [word]):
-			want = arch
-			best_len = word.length()
+	if step.has("place"):
+		var rec0 := realm.building_named(str(step["place"]))
+		want = str(rec0.get("archetype", str(step["place"]).to_lower().replace(" ", "_")))
 	var home: Dictionary = {}
 	for rec: Dictionary in realm.town.buildings:
 		if want != "" and str(rec["archetype"]) != want:
@@ -359,13 +361,12 @@ func try_order(worker: Worker, text: String) -> bool:
 			home = rec
 			break
 	if home.is_empty():
-		worker.speak("There is no bed free%s for %s." % [
-			" in a %s" % want.replace("_", " ") if want != "" else "", who.name])
-		return true
+		return "There is no bed free%s for %s." % [
+			" in a %s" % want.replace("_", " ") if want != "" else "", who.name]
 	who.home_id = int(home["id"])
 	worker.speak("%s will sleep at the %s from tonight." % [who.name, str(home["archetype"]).replace("_", " ")])
 	realm.note("homes", "%s moved into the %s." % [who.name, str(home["archetype"]).replace("_", " ")])
-	return true
+	return "done"
 
 
 func try_answer(_worker: Worker, text: String) -> String:

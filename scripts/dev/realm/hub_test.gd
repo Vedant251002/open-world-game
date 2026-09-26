@@ -40,7 +40,7 @@ func _run() -> void:
 	_check(a.find("live here") >= 0, "population answers: %s" % a)
 	a = realm.answer(w, "what happened today?")
 	_check(a.find("founded") >= 0, "chronicle answers: %s" % a)
-	_check(realm.handle(w, "fly to the moon") == false, "nonsense is not taken")
+	_check(realm.run(w, {"do": "fly_to_the_moon"}) == false, "nonsense is not taken")
 	var day0 := clock.day
 	clock.advance(24.0)
 	_check(clock.day == day0 + 1, "day turned to %d" % clock.day)

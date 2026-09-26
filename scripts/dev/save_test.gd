@@ -66,15 +66,21 @@ func _process(delta: float) -> void:
 			# Somebody from the street, given a job the presets do not have, so
 			# the role has to be composed and then kept.
 			_hand = crew.citizens()[0]
-			dispatch.instruct(_hand, "hire you as a lamplighter: walks the streets at dusk lighting the lamps")
+			dispatch.take_plan_for_test(_hand, "hire you as a lamplighter",
+				[{"do": "hire", "role": "lamplighter",
+					"description": "walks the streets at dusk lighting the lamps"}])
 			if not _hand.hired or _hand.role == null or _hand.role.id != "lamplighter":
 				_fails.append("the lamplighter was not hired")
 			# And a shepherd with a pen, so there is a voxel change that is not
 			# a founding building.
 			var shep: Worker = crew.citizens()[0]
-			dispatch.instruct(shep, "hire you as a shepherd")
+			dispatch.take_plan_for_test(shep, "hire you as a shepherd",
+				[{"do": "hire", "role": "shepherd"}])
 			print("[save] telling the shepherd: fence a pen and put 4 sheep in it")
-			dispatch.instruct(shep, "fence a pen and put 4 sheep in it")
+			dispatch.take_plan_for_test(shep, "fence a pen and put 4 sheep in it", [
+				{"do": "enclose", "id": "pen", "size": [6, 6]},
+				{"do": "stock", "species": "sheep", "count": 4, "into": "pen"},
+			])
 			_phase = 1
 			_t = 0.0
 		1:

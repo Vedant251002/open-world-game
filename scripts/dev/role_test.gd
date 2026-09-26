@@ -97,7 +97,7 @@ func _process(delta: float) -> void:
 			_was_at = _pick.global_position
 			print("[role] telling %s (not hired): build a hut" % _pick.display_name())
 			_lines.clear()
-			dispatch.instruct(_pick, "build a hut")
+			dispatch.take_plan_for_test(_pick, "build a hut", [{"do": "build", "brief": "a hut"}])
 			if _lines.is_empty() or _lines[0].find("do not work for you") < 0:
 				_fails.append("a citizen took an order without being hired")
 			if _pick.hired:
@@ -121,7 +121,7 @@ func _process(delta: float) -> void:
 			# Hire, offline: the keyword composer writes the job up on the spot.
 			var before := crew.hired().size()
 			print("[role] telling %s: hire you as a shepherd" % _pick.display_name())
-			dispatch.instruct(_pick, "hire you as a shepherd")
+			dispatch.take_plan_for_test(_pick, "hire you as a shepherd", [{"do": "hire", "role": "shepherd"}])
 			if crew.hired().size() != before + 1:
 				_fails.append("hiring did not add to the crew (%d -> %d)"
 					% [before, crew.hired().size()])
@@ -144,7 +144,7 @@ func _process(delta: float) -> void:
 			_refusals.clear()
 			_lines.clear()
 			print("[role] telling the shepherd: build a hut")
-			dispatch.instruct(_pick, "build a hut")
+			dispatch.take_plan_for_test(_pick, "build a hut", [{"do": "build", "brief": "a hut"}])
 			if "outside_role" not in _refusals:
 				_fails.append("the shepherd was not refused a building (got %s)"
 					% str(_refusals))
@@ -157,7 +157,7 @@ func _process(delta: float) -> void:
 			_sheep_before = livestock.count_of("sheep")
 			_accepted = 0
 			print("[role] telling the shepherd: bring 4 sheep")
-			dispatch.instruct(_pick, "bring 4 sheep")
+			dispatch.take_plan_for_test(_pick, "bring 4 sheep", [{"do": "stock", "species": "sheep", "count": 4}])
 			if _accepted == 0:
 				_fails.append("the shepherd's own trade was not accepted")
 			_phase = 6
@@ -187,7 +187,7 @@ func _process(delta: float) -> void:
 			print("[role] telling the shepherd: go to the well  (%.0f m away)"
 				% _was_at.distance_to(_well))
 			_accepted = 0
-			dispatch.instruct(_pick, "go to the well")
+			dispatch.take_plan_for_test(_pick, "go to the well", [{"do": "go", "place": "well"}])
 			if _accepted == 0:
 				_fails.append("'go to the well' was not accepted")
 			_phase = 8
@@ -209,7 +209,8 @@ func _process(delta: float) -> void:
 			var second: Worker = crew.citizens()[0]
 			print("[role] telling %s: hire you as a driver: drives people from place to place in a cart"
 				% second.display_name())
-			dispatch.instruct(second, "hire you as a driver: drives people from place to place in a cart")
+			dispatch.take_plan_for_test(second, "hire you as a driver", [{"do": "hire", "role": "driver",
+				"description": "drives people from place to place in a cart"}])
 			if not second.hired or second.role == null or second.role.id != "driver":
 				_fails.append("the driver was not hired")
 			elif not second.role.can("drive"):
@@ -231,12 +232,12 @@ func _process(delta: float) -> void:
 		10:
 			# Letting somebody go puts them back in the street.
 			var n := crew.hired().size()
-			dispatch.instruct(_pick, "you're fired")
+			dispatch.take_plan_for_test(_pick, "you're fired", [{"do": "dismiss"}])
 			if _pick.hired or crew.hired().size() != n - 1:
 				_fails.append("dismissal did not take")
 			# And the three are not dismissable.
 			var mira: Worker = crew.get_worker("mira")
-			dispatch.instruct(mira, "you're fired")
+			dispatch.take_plan_for_test(mira, "you're fired", [{"do": "dismiss"}])
 			if not mira.hired:
 				_fails.append("Mira was dismissed, and she is the game")
 			_phase = 11
@@ -264,7 +265,7 @@ func _process(delta: float) -> void:
 		13:
 			# A foreman: an order that becomes an order to somebody else.
 			_foreman = crew.citizens()[0]
-			dispatch.instruct(_foreman, "hire you as a foreman")
+			dispatch.take_plan_for_test(_foreman, "hire you as a foreman", [{"do": "hire", "role": "foreman"}])
 			if not _foreman.hired or not _foreman.role.can("delegate"):
 				_fails.append("the foreman cannot delegate: %s" % (_foreman.role.summary() if _foreman.role else "no role"))
 				_phase = 15
@@ -274,7 +275,8 @@ func _process(delta: float) -> void:
 				_foreman.debug_state(), str(_foreman.job_errand.get("kind", "-")),
 				str(_foreman._holding), _foreman.pondering])
 			print("[role] telling the foreman: tell mira to go to the well")
-			dispatch.instruct(_foreman, "tell mira to go to the well")
+			dispatch.take_plan_for_test(_foreman, "tell mira to go to the well",
+				[{"do": "delegate", "who": "mira", "order": "go to the well"}])
 			_phase = 14
 			_t = 0.0
 		14:
@@ -289,10 +291,10 @@ func _process(delta: float) -> void:
 		15:
 			# An accountant: the numbers, said out loud.
 			_clerk = crew.citizens()[0]
-			dispatch.instruct(_clerk, "hire you as an accountant")
+			dispatch.take_plan_for_test(_clerk, "hire you as an accountant", [{"do": "hire", "role": "accountant"}])
 			_lines.clear()
 			print("[role] telling the accountant: give me a report")
-			dispatch.instruct(_clerk, "give me a report")
+			dispatch.take_plan_for_test(_clerk, "give me a report", [{"do": "report"}])
 			_phase = 16
 			_t = 0.0
 		16:
@@ -311,10 +313,11 @@ func _process(delta: float) -> void:
 		17:
 			# A merchant: stock out, coins in.
 			_trader = crew.citizens()[0]
-			dispatch.instruct(_trader, "hire you as a merchant")
+			dispatch.take_plan_for_test(_trader, "hire you as a merchant", [{"do": "hire", "role": "merchant"}])
 			_coins_before = town.coins
 			print("[role] telling the merchant: sell 20 timber  (purse %d)" % town.coins)
-			dispatch.instruct(_trader, "sell 20 timber")
+			dispatch.take_plan_for_test(_trader, "sell 20 timber",
+				[{"do": "trade", "action": "sell", "kind": "timber", "count": 20}])
 			_phase = 18
 			_t = 0.0
 		18:
@@ -335,14 +338,14 @@ func _process(delta: float) -> void:
 			if shep == null:
 				# Dismissed earlier; take somebody on again.
 				shep = crew.citizens()[0]
-				dispatch.instruct(shep, "hire you as a shepherd")
+				dispatch.take_plan_for_test(shep, "hire you as a shepherd", [{"do": "hire", "role": "shepherd"}])
 			if shep.busy():
 				if _t > 20.0:
 					_fails.append("the shepherd is busy: %s" % shep.status_text())
 					_phase = 21
 				return
 			print("[role] telling the shepherd: feed the sheep")
-			dispatch.instruct(shep, "feed the sheep")
+			dispatch.take_plan_for_test(shep, "feed the sheep", [{"do": "tend"}])
 			_phase = 20
 			_t = 0.0
 		20:
@@ -361,10 +364,10 @@ func _process(delta: float) -> void:
 		21:
 			# Trees: a forester plants a grove, which is a patch like a fence.
 			var f: Worker = crew.citizens()[0]
-			dispatch.instruct(f, "hire you as a forester")
+			dispatch.take_plan_for_test(f, "hire you as a forester", [{"do": "hire", "role": "forester"}])
 			_works.clear()
 			print("[role] telling the forester: plant 3 trees")
-			dispatch.instruct(f, "plant 3 trees")
+			dispatch.take_plan_for_test(f, "plant 3 trees", [{"do": "plant_tree", "count": 3}])
 			_phase = 22
 			_t = 0.0
 		22:
@@ -389,7 +392,7 @@ func _process(delta: float) -> void:
 			_lines.clear()
 			print("[role] telling Mira: demolish the hut  (%d buildings; Mira %s at %s)" % [
 				_buildings_before, mira.status_text(), str(mira.global_position.round())])
-			dispatch.instruct(mira, "demolish the hut")
+			dispatch.take_plan_for_test(mira, "demolish the hut", [{"do": "demolish", "place": "hut"}])
 			_phase = 24
 			_t = 0.0
 		24:
@@ -416,7 +419,8 @@ func _process(delta: float) -> void:
 					_phase = 27
 				return
 			_lines.clear()
-			dispatch.instruct(m2, "every morning, go to the well")
+			dispatch.take_plan_for_test(m2, "every morning, go to the well",
+				[{"do": "standing", "order": "go to the well"}])
 			if m2.standing_task() != "go to the well":
 				_fails.append("the standing task was not set (got '%s')" % m2.standing_task())
 			_lines.clear()
@@ -464,7 +468,8 @@ func _process(delta: float) -> void:
 			var morale_before := float(m3.memory.disposition["morale"])
 			_lines.clear()
 			print("[role] telling Mira: no, I wanted a thatch roof")
-			dispatch.instruct(m3, "no, I wanted a thatch roof")
+			dispatch.take_plan_for_test(m3, "no, I wanted a thatch roof",
+				[{"do": "learn", "about": "roof_material", "value": "thatch"}])
 			var said := _lines[_lines.size() - 1] if not _lines.is_empty() else ""
 			print("[role] Mira's morale %.2f -> %.2f; wants roof_material=%s" % [
 				morale_before, float(m3.memory.disposition["morale"]), m3.memory.wants("roof_material")])
@@ -491,13 +496,14 @@ func _process(delta: float) -> void:
 					fm = w
 			if fm == null:
 				fm = crew.citizens()[0]
-				dispatch.instruct(fm, "hire you as a foreman")
+				dispatch.take_plan_for_test(fm, "hire you as a foreman", [{"do": "hire", "role": "foreman"}])
 			_hired_before_goal = crew.hired().size()
 			_accepted = 0
 			_lines.clear()
 			_goal_days.clear()
 			print("[role] telling %s: your goal is to get a farm going" % fm.display_name())
-			dispatch.instruct(fm, "your goal is to get a farm going")
+			dispatch.take_plan_for_test(fm, "your goal is to get a farm going",
+				[{"do": "goal", "goal": "get a farm going"}])
 			if fm.goal == null:
 				_fails.append("the foreman did not take the goal")
 				_phase = 31
@@ -572,9 +578,13 @@ func _check_catalogue() -> void:
 			continue          # questions, not plans
 		if not Steps.known(id):
 			_fails.append("capability %s is ready but has no step" % id)
-	# And every verb must be a capability, or a role could never include it.
-	for verb: String in Steps.VERBS:
-		if not Capabilities.known(verb):
+	# And every verb a job can be made of must be a capability, or a role
+	# could never include it. The exceptions are the verbs marked for
+	# anyone — hiring, saving, the kingdom's own orders — which are the
+	# player's to give through whoever they are talking to and belong to no
+	# trade.
+	for verb: String in Steps.all():
+		if not Steps.for_anyone(verb) and not Capabilities.known(verb):
 			_fails.append("verb %s is not a capability" % verb)
 
 

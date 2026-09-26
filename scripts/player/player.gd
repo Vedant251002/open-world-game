@@ -202,7 +202,7 @@ func _physics_process(delta: float) -> void:
 
 	var stick_run := _touch_move.length() >= TOUCH_SPRINT_AT
 	var running := Input.is_action_pressed("move_sprint") or stick_run
-	var speed := SPRINT_SPEED if (input_enabled and running) else WALK_SPEED
+	var speed := (SPRINT_SPEED if (input_enabled and running) else WALK_SPEED) * speed_scale
 	var rate := ACCEL if is_on_floor() else AIR_ACCEL
 
 	if in_water:
@@ -239,11 +239,11 @@ func _physics_process(delta: float) -> void:
 	var planar := Vector2(velocity.x, velocity.z).length()
 	if is_on_floor() and planar > 0.4:
 		_bob += delta * planar * 1.5
-		_head.position.y = EYE_HEIGHT + sin(_bob * 2.0) * 0.035
+		_head.position.y = EYE_HEIGHT + eye_offset + sin(_bob * 2.0) * 0.035
 		_head.rotation.z = sin(_bob) * 0.006
 	else:
 		_bob = 0.0
-		_head.position.y = lerpf(_head.position.y, EYE_HEIGHT, delta * 8.0)
+		_head.position.y = lerpf(_head.position.y, EYE_HEIGHT + eye_offset, delta * 8.0)
 		_head.rotation.z = lerpf(_head.rotation.z, 0.0, delta * 8.0)
 	# Recoil and blast, on top of whatever the bob decided.
 	if _kick_t > 0.0:

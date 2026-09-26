@@ -4,7 +4,8 @@ class_name Dispatcher
 ##
 ## The pipeline is the whole game (voxel-module-spec.md §0):
 ##
-##   instruction -> LLM (or the offline library) -> plan
+##   instruction -> the router (a small, fast model) -> plan, chat or question
+##   a build step in the plan -> the designer (the large model) -> a spec
 ##   plan -> pre-validator -> a typed error, or a list of one to four steps
 ##   step -> the part of the town that already does that work
 ##   patch -> the stores, which either cover the bill or do not
@@ -15,6 +16,13 @@ class_name Dispatcher
 ## can go in it — and because the alternative, which this had, was a growing
 ## pile of keyword matches in instruct() that could each hear one kind of order
 ## and none of them hear two. See Steps for the verbs and _advance for the loop.
+##
+## Nothing in here reads the sentence. There used to be a stack of keyword
+## routes at the top of instruct() — "follow me", "get some stone", "every
+## morning", "hire X as Y", the war orders, and one try_order() per realm
+## system — and each heard one phrasing of one thing and none of them
+## composed. They are all verbs in Steps now, the router decides which, and
+## this file only carries out what it decided.
 ##
 ## The stores are a gate, not a counter. Nothing is started that the town
 ## cannot finish; a plan it cannot pay for is held whole and somebody is sent
@@ -58,8 +66,17 @@ var player: Node3D
 ## other moment at which every worker is known to exist.
 var crew: Crew: set = _set_crew
 
-## worker_id -> {"worker": Worker, "instruction": String, "plot": Plot}
+## worker_id -> {"worker": Worker, "instruction": String, "plot": Plot,
+##   "plan": Dictionary, "steps": Array, "designing": int}
+## A plan the router has returned and the designer is still drawing a
+## building for. `designing` is the index of the build step in hand.
 var _open: Dictionary = {}
+
+## worker_id -> the sentence the router is deciding about.
+var _said: Dictionary = {}
+## worker_id -> the sentence the router answered with a question, so the
+## answer can be put back with it.
+var _asked: Dictionary = {}
 
 ## worker_id -> an accepted plan being carried out, one step at a time.
 ##
@@ -137,7 +154,8 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	llm = LLM.new()
 	llm.name = "LLM"
 	add_child(llm)
-	llm.plan_ready.connect(_on_plan_ready)
+	llm.routed.connect(_on_routed)
+	llm.plan_ready.connect(_on_designed)
 	llm.question_ready.connect(_on_question_ready)
 	llm.failed.connect(_on_llm_failed)
 	llm.answered.connect(_on_answered)
@@ -163,94 +181,186 @@ func describe_ai() -> String:
 
 
 func instruct(worker: Worker, instruction: String) -> void:
-	# A question is not an order, and it does not matter how busy they are: a
-	# worker halfway up a wall can still tell you what they are doing. This
-	# comes before every guard below for exactly that reason.
+	var id := worker.memory.worker_id
+	if _open.has(id) or _said.has(id):
+		status.emit("%s is still thinking." % worker.display_name())
+		return
+	# Off to the router. Every sentence, whoever said it and however busy they
+	# are: a worker halfway up a wall can still be asked what they are doing,
+	# and it is the router that decides that this is a question and not an
+	# order. The guards for "busy" and "does not work for you" come after, once
+	# it is known what was asked.
+	_said[id] = instruction
+	llm.route(instruction, worker.memory, _ctx(worker), clock, town, crew)
+
+
+## The router has decided what the sentence was.
+func _on_routed(worker_id: String, reply: Dictionary) -> void:
+	var instruction := str(_said.get(worker_id, ""))
+	_said.erase(worker_id)
+	var worker := crew.get_worker(worker_id) if crew != null else null
+	if worker == null:
+		return
+	match str(reply.get("kind", "")):
+		"chat":
+			_answer(worker, instruction)
+		"question":
+			if str(reply.get("worker_line", "")) != "" \
+					and str(reply["worker_line"]) != str(reply["question"]):
+				worker.speak(str(reply["worker_line"]), "talk")
+			_asked[worker_id] = instruction
+			worker.ask_player(str(reply["question"]))
+		"offline":
+			_offline_order(worker, instruction)
+		"failed":
+			spoke.emit(worker, "Sorry — I lost the thread of that. Say it again in a moment.", "refuse")
+		"plan":
+			_take_plan(worker, instruction, reply)
+		_:
+			spoke.emit(worker, "I am not sure what you want me to do.", "refuse")
+
+
+## No model. The plan library can still stand in for a building; for the
+## rest there is nobody to decide what the sentence meant, and saying so is
+## better than a guess.
+func _offline_order(worker: Worker, instruction: String) -> void:
+	# The router is what tells an order from a question, so without it there
+	# has to be something. This is the one place in the game that still reads
+	# the player's words, and it only ever chooses between answering and
+	# building — never between one order and another.
 	if Answers.is_question(instruction):
 		_answer(worker, instruction)
 		return
-
-	# "Save" and "start over" are said to whoever is nearest. They are about
-	# the game rather than the town, and they come first so that they work
-	# whoever is asked, busy or not.
-	if _try_game(worker, instruction):
-		return
-	if _try_standing(worker, instruction):
-		return
-	if _try_goal(worker, instruction):
-		return
-
-	# Being told they got it wrong, or what you like. Learned first, whatever
-	# else the sentence asks for: "no, thatch — build it again" both teaches
-	# and orders, and the order that follows is planned knowing it.
-	if _try_critique(worker, instruction):
-		return
-
-	# Taking somebody on, letting them go, or writing a job up. These are about
-	# who works for you rather than what gets built, so they go before every
-	# other guard: you can hire somebody who is standing about, and you can
-	# define a job while the whole crew is busy.
-	if _try_roles(worker, instruction):
-		return
-
-	# Somebody who does not work for you does not take your orders. They will
-	# talk — the question path above still runs — and they will tell you how
-	# to change that.
 	if not worker.hired:
 		spoke.emit(worker, "I do not work for you. Take me on and I might.", "talk")
-		return
-
-	if _open.has(worker.memory.worker_id):
-		status.emit("%s is still thinking." % worker.display_name())
 		return
 	if worker.busy():
 		spoke.emit(worker, "I am in the middle of something.", "refuse")
 		return
-
-	# "Wait here" and "follow me" are instructions like any other — the player
-	# says them, so they go through the same text field as everything else
-	# rather than becoming a key nobody would find (pillar P1).
-	if _try_posting(worker, instruction):
-		return
-
-	# A new order replaces whatever this one was still holding out for.
-	_forget_held(worker)
-
-	# "Go and get some stone" does not need a model to understand it, and the
-	# model costs the better part of a minute. This is the one keyword route
-	# left, and it is a shortcut rather than a translation: it produces the same
-	# gather step the model would have produced, and anything it is not certain
-	# about it declines and lets the model have.
-	#
-	# The field and livestock routes that used to sit here are gone. They were
-	# doing the model's job with a word list, which meant "fence the top corner
-	# and put the hens in it" matched on "hens", went straight to the flock, and
-	# the fence was never built or mentioned — the order was half-heard rather
-	# than refused. Both are steps now, and a plan can hold them together.
-	if _try_gather(worker, instruction):
-		return
-	if _try_war(worker, instruction):
-		return
-	# The kingdom's own orders: taxes, decrees, marriages, hunts, the lot.
-	if realm != null and realm.handle(worker, instruction):
-		return
-
 	var plot := _choose_plot(worker)
 	if plot == null:
-		spoke.emit(worker, "There is nowhere left to put it. Clear a plot first.",
-			"refuse")
+		spoke.emit(worker, "There is nowhere left to put it. Clear a plot first.", "refuse")
 		return
-
+	var plan := ArchetypeLibrary.fallback(instruction, worker.memory, plot, int(_ctx(worker)["tier"]))
+	_forget_held(worker)
 	plot.reserved = true
 	_open[worker.memory.worker_id] = {
 		"worker": worker, "instruction": instruction, "plot": plot,
+		"plan": plan, "steps": Steps.normalise(plan), "designing": -1,
 	}
-	worker.speak("Right — let me think about that.", "talk")
-	# Off you go. The plan will catch up on the way (§5.2): a free model takes
-	# the better part of a minute, and none of that should be spent watching
-	# somebody stand still — or, worse, watching them wander.
-	worker.start_thinking(instruction, plot)
-	llm.submit(instruction, worker.memory, plot, _ctx(worker), clock, town)
+	_accept(worker.memory.worker_id)
+
+
+## A plan from the router. The guards live here, after the sentence is
+## understood and before anything is done about it, and they are about
+## the steps rather than the words: a plan of nothing but "save" or "hire
+## me" is anybody's to give and no trouble to a busy worker; a plan with a
+## walk in it is neither.
+func _take_plan(worker: Worker, instruction: String, plan: Dictionary) -> void:
+	var steps := Steps.normalise(plan)
+	if steps.is_empty():
+		spoke.emit(worker, "I am not sure what you want me to do.", "refuse")
+		return
+	var needs_hands := false
+	var needs_employer := false
+	var wants_plot := false
+	for st: Dictionary in steps:
+		var verb := str(st.get("do", ""))
+		if not Steps.instant(verb):
+			needs_hands = true
+		if not Steps.for_anyone(verb):
+			needs_employer = true
+		if verb == "build":
+			wants_plot = true
+
+	# Somebody who does not work for you does not take your orders. They will
+	# talk, and they will tell you how to change that.
+	if needs_employer and not worker.hired:
+		spoke.emit(worker, "I do not work for you. Take me on and I might.", "talk")
+		return
+	if needs_hands and worker.busy():
+		spoke.emit(worker, "I am in the middle of something.", "refuse")
+		return
+	# In bed with a fever, say. The realm's systems get the last word on
+	# whether this person can do anything at all today.
+	if needs_hands and realm != null:
+		var why := realm.cannot_work(worker)
+		if why != "":
+			spoke.emit(worker, why, "refuse")
+			return
+	if needs_hands:
+		# A new order replaces whatever this one was still holding out for.
+		_forget_held(worker)
+		worker.stop_wandering()
+
+	var plot: Plot = null
+	if wants_plot:
+		plot = _choose_plot(worker)
+		if plot == null:
+			spoke.emit(worker, "There is nowhere left to put it. Clear a plot first.", "refuse")
+			return
+		plot.reserved = true
+
+	_open[worker.memory.worker_id] = {
+		"worker": worker, "instruction": instruction, "plot": plot,
+		"plan": plan, "steps": steps, "designing": -1,
+	}
+	_design_next(worker.memory.worker_id)
+
+
+## Hand the next undesigned build step to the designer, or accept the plan
+## if there is none. A brief is the router's words for a building; the spec
+## is the designer's drawing of it, and the validator wants the drawing.
+func _design_next(worker_id: String) -> void:
+	var job: Dictionary = _open.get(worker_id, {})
+	if job.is_empty():
+		return
+	var worker: Worker = job["worker"]
+	var steps: Array = job["steps"]
+	for i in steps.size():
+		var st: Dictionary = steps[i]
+		if str(st.get("do", "")) != "build" or st.get("spec", null) is Dictionary:
+			continue
+		job["designing"] = i
+		var brief := str(st.get("brief", job["instruction"]))
+		if str(job["plan"].get("worker_line", "")) != "" and i == 0:
+			worker.speak(str(job["plan"]["worker_line"]), "talk")
+		else:
+			worker.speak("Right — let me think how that should look.", "talk")
+		# Off you go. The drawing will catch up on the way (§5.2): the designer
+		# takes a while, and none of that should be spent standing still.
+		worker.start_thinking(brief, job["plot"])
+		llm.submit(brief, worker.memory, job["plot"], _ctx(worker), clock, town)
+		return
+	_accept(worker_id)
+
+
+## The designer has drawn a building for the step in hand.
+func _on_designed(worker_id: String, designed: Dictionary) -> void:
+	var job: Dictionary = _open.get(worker_id, {})
+	if job.is_empty():
+		return
+	var i := int(job.get("designing", -1))
+	var drawn := Steps.normalise(designed)
+	if i < 0 or drawn.is_empty():
+		return
+	var steps: Array = job["steps"]
+	var mine: Dictionary = steps[i]
+	var spec_step: Dictionary = drawn[0]
+	mine["spec"] = spec_step.get("spec", {})
+	mine.erase("brief")
+	steps[i] = mine
+	# The designer's assumptions are about the building; they go on the end
+	# of the router's, which are about the order.
+	var assumptions: Array = job["plan"].get("assumptions", [])
+	for a2: Variant in designed.get("assumptions", []):
+		if str(a2) not in assumptions:
+			assumptions.append(str(a2))
+	job["plan"]["assumptions"] = assumptions
+	if str(job["plan"].get("worker_line", "")) == "":
+		job["plan"]["worker_line"] = str(designed.get("worker_line", ""))
+	job["designing"] = -1
+	_design_next(worker_id)
 
 
 ## Something the player wants to know rather than have done.
@@ -333,137 +443,6 @@ func _on_answered(worker_id: String, text: String) -> void:
 	worker.speak(text, "talk")
 
 
-# ------------------------------------------------------------------ fighting
-
-const CRAFT_WORDS := ["make", "craft", "forge", "produce", "manufacture", "prepare",
-	"load", "cast", "mould", "build", "assemble"]
-const RECRUIT_WORDS := ["recruit", "enlist", "train", "raise", "hire", "muster", "conscript"]
-const SOLDIER_WORDS := ["soldier", "soldiers", "men", "army", "militia", "guards",
-	"troops", "company", "fighters"]
-const ARM_WORDS := ["arm", "equip", "issue", "hand out", "give the men", "give them", "give everyone"]
-const ATTACK_WORDS := ["attack", "charge", "fight", "engage", "kill", "drive off", "go after"]
-const DEFEND_WORDS := ["defend", "guard", "protect", "hold", "watch"]
-const RAID_WORDS := ["test the defences", "test the defenses", "sound the alarm",
-	"drill", "call a raid", "simulate a raid"]
-const TAKE_WORDS := ["give me", "hand me", "i want", "i will take", "i'll take",
-	"pass me", "let me have"]
-
-
-## Orders about the army, the armoury and the enemy. Keyword routes, like the
-## errands: none of these needs a model to understand and all of them need to
-## happen the moment they are said.
-func _try_war(worker: Worker, instruction: String) -> bool:
-	if warfare == null:
-		return false
-	var text := instruction.to_lower().strip_edges()
-	var item := Arsenal.find_in(text)
-
-	# "test the defences" — a raid, now.
-	if _has_phrase(text, RAID_WORDS):
-		warfare.raid(3 + warfare.soldiers.size() / 2)
-		worker.speak("Here they come. To your posts!", "refuse")
-		return true
-
-	# "give me a rifle" — the player takes one.
-	if _has_phrase(text, TAKE_WORDS) and item != "" and Arsenal.is_weapon(item):
-		var r := warfare.arm_player(item)
-		worker.speak(str(r["line"]), "talk" if r["ok"] else "refuse")
-		return true
-
-	# "recruit five soldiers"
-	if _has_word(text, RECRUIT_WORDS) and _has_word(text, SOLDIER_WORDS):
-		var n := _count_in(text, 3)
-		var r2 := warfare.recruit(n)
-		worker.speak(str(r2["line"]), "done" if r2["ok"] else "refuse")
-		return true
-
-	# "arm the men with rifles"
-	if _has_phrase(text, ARM_WORDS) and item != "" and Arsenal.is_weapon(item):
-		var r3 := warfare.arm_soldiers(item)
-		worker.speak(str(r3["line"]), "done" if r3["ok"] else "refuse")
-		return true
-
-	# "attack the raiders"
-	if _has_word(text, ATTACK_WORDS) and (_has_word(text, ["raiders", "raider", "them",
-			"enemy", "bandits", "attackers", "invaders"]) or warfare.raiders.size() > 0):
-		var r4 := warfare.attack()
-		worker.speak(str(r4["line"]), "done" if r4["ok"] else "refuse")
-		return true
-
-	# "defend the well" / "guard the armoury" / "hold here"
-	if _has_word(text, DEFEND_WORDS) and _has_word(text, ["well", "plaza", "square",
-			"here", "armoury", "armory", "barracks", "town", "gate", "bakery", "store",
-			"tavern", "me"]):
-		var at := _defend_point(text, worker)
-		var r5 := warfare.defend(at)
-		worker.speak(str(r5["line"]), "done" if r5["ok"] else "refuse")
-		return true
-
-	# "make 40 shot" / "forge some rifles" / "load grenades"
-	if item != "" and _has_word(text, CRAFT_WORDS) and not _has_word(text, ["armoury", "armory", "barracks"]):
-		return _craft(worker, item, _count_in(text, int(Arsenal.item(item)["batch"])))
-
-	return false
-
-
-func _craft(worker: Worker, item: String, count: int) -> bool:
-	var stand := warfare.armoury_stand()
-	if stand == Vector3.INF:
-		worker.speak("We have no armoury. Say \"build an armoury\" and I will put one up first.", "refuse")
-		return true
-	var batches := Arsenal.batches_for(item, count)
-	var short := warfare.short_for(item, batches)
-	if not short.is_empty():
-		worker.speak("For %d %s I am short %s." % [
-			batches * int(Arsenal.item(item)["batch"]), Arsenal.label(item),
-			Resources.describe(short)], "refuse")
-		return true
-	if worker.busy():
-		worker.speak("I am in the middle of something.", "refuse")
-		return true
-	var job := warfare.start_craft(item, count)
-	var line := "%d %s — about %d hours at the armoury." % [
-		job.made(), Arsenal.label(item), int(ceil(job.total_hours))]
-	if not worker.take_craft_job(job, stand, line):
-		# Give the materials back; the job never started.
-		town.refund(Arsenal.bill(item, batches))
-		worker.speak("I cannot get to the armoury from here.", "refuse")
-	return true
-
-
-func _defend_point(text: String, worker: Worker) -> Vector3:
-	if _has_word(text, ["here", "me"]) and player != null:
-		return player.global_position
-	for key: String in ["armoury", "barracks", "bakery", "store", "tavern"]:
-		if text.find(key) >= 0:
-			for rec: Dictionary in town.buildings:
-				if str(rec["archetype"]) == key:
-					return warfare.stand_at(rec)
-	return village.well_pos
-
-
-func _has_phrase(text: String, phrases: Array) -> bool:
-	for p: String in phrases:
-		if text.find(p) >= 0:
-			return true
-	return false
-
-
-## The first number in the sentence, or the default. "a dozen" is twelve.
-func _count_in(text: String, fallback: int) -> int:
-	if text.find("dozen") >= 0:
-		return 12
-	var words := {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-		"seven": 7, "eight": 8, "nine": 9, "ten": 10, "twenty": 20, "thirty": 30,
-		"fifty": 50, "hundred": 100}
-	for w: String in text.split(" ", false):
-		if w.is_valid_int():
-			return clampi(int(w), 1, 500)
-		if words.has(w):
-			return int(words[w])
-	return fallback
-
-
 ## The nearest free plot to the worker. The design has the player pointing at a
 ## plot eventually; until then, nearest-free is the choice a person would make.
 func _choose_plot(worker: Worker) -> Plot:
@@ -491,17 +470,23 @@ func _ctx(worker: Worker = null) -> Dictionary:
 	# a plan is never checked against a different job than it was made for.
 	if worker != null and worker.role != null:
 		c["role"] = worker.role
+	# What is going on that an order might be about — a merchant at the gate
+	# with his choices, a fire. The router cannot pick "decide" without it.
+	if realm != null:
+		c["situation"] = realm.situation()
 	return c
 
 
-func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
+## Every build step drawn: check the whole plan, and start it.
+func _accept(worker_id: String) -> void:
 	var job: Dictionary = _open.get(worker_id, {})
 	if job.is_empty():
 		return
 	var worker: Worker = job["worker"]
 	var plot: Plot = job["plot"]
+	var plan: Dictionary = job["plan"]
 	var assumptions: Array = plan.get("assumptions", [])
-	var steps := Steps.normalise(plan)
+	var steps: Array = job["steps"]
 
 	# Pre-validation, and all of it before anything starts. A plan that cannot
 	# be carried out has to be refused before a single voxel is written, and
@@ -530,15 +515,26 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 	# worker has walked off twice.
 	if steps.size() > 1:
 		var shape: Array[String] = []
-		for s: Variant in steps:
-			shape.append(Steps.describe(s as Dictionary))
+		for st: Variant in steps:
+			shape.append(Steps.describe(st as Dictionary))
 		var counts: Array[String] = ["", "", "two", "three", "four"]
 		var many: String = counts[mini(steps.size(), 4)]
 		assumptions = ["I took that as %s jobs: %s." % [many,
 			", then ".join(shape)]] + assumptions
-	if not routine:
+	# The panel is the "why did you do that" instrument, and it is worth
+	# putting on screen when there is an answer. A plan of one instant step
+	# — "save", "hire me" — is a reply rather than a job; an errand nobody
+	# had to guess at is its own explanation. A building always earns it: if
+	# the designer filled nothing in, the panel saying so is the point.
+	var wants_panel := false
+	for st2: Dictionary in steps:
+		if str(st2.get("do", "")) == "build":
+			wants_panel = true
+		elif not Steps.instant(str(st2.get("do", ""))):
+			wants_panel = wants_panel or not assumptions.is_empty()
+	if not routine and wants_panel:
 		plan_accepted.emit(worker, assumptions)
-	if str(plan.get("worker_line", "")) != "":
+	if str(plan.get("worker_line", "")) != "" and not (plot != null and steps.size() == 1):
 		worker.speak(str(plan["worker_line"]), "plan")
 
 	var run := {
@@ -617,7 +613,243 @@ func _run_step(run: Dictionary, step: Dictionary) -> String:
 				w.employer = player
 			w.speak("Right behind you.", "talk")
 			return "done"
+		"hire", "dismiss", "define_role":
+			return _step_crew(run, step)
+		"learn":      return _step_learn(run, step)
+		"standing":   return _step_standing(run, step)
+		"goal":       return _step_goal(run, step)
+		"save":
+			spoke.emit(run["worker"], "Written down.", "talk")
+			save_requested.emit()
+			return "done"
+		"restart":
+			spoke.emit(run["worker"], "Starting again, then.", "talk")
+			restart_requested.emit()
+			return "done"
+		"enlist", "arm", "attack", "defend", "forge", "drill":
+			return _step_war(run, step)
+	# A verb some system registered: the system carries it out and says how
+	# it went — "done", "started", or a line to refuse with.
+	var owner := Steps.owner_of(str(step.get("do", "")))
+	if owner != null and owner.has_method("run"):
+		var r := str(owner.call("run", run["worker"], step))
+		if r == "done" or r == "started":
+			return r
+		if r == "held":
+			return "held"
+		return _refuse_step(run, r)
 	return "failed"
+
+
+# ------------------------------------------------------------ crew and self
+
+## Taking on, letting go, writing a job up. `who` names somebody else; left
+## out, it is the person being spoken to.
+func _step_crew(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var who := str(step.get("who", "")).strip_edges()
+	var target := worker
+	if who != "" and who.to_lower() not in ["you", "me", "him", "her", "them", "yourself"]:
+		target = _worker_named(who)
+		if target == null:
+			return _refuse_step(run, "There is nobody here called %s." % who.capitalize())
+	match str(step["do"]):
+		"hire":
+			_hire_as(target, str(step.get("role", "")), str(step.get("description", "")), worker)
+		"define_role":
+			_define_role(worker, str(step.get("role", "")), str(step.get("description", "")), null)
+		"dismiss":
+			if not target.hired:
+				spoke.emit(target, "I never worked for you.", "talk")
+			elif target.memory.worker_id in ["mira", "tobias", "ren"]:
+				spoke.emit(target, "I am not going anywhere.", "talk")
+			else:
+				# Whatever plan they were in the middle of goes with them.
+				_forget_held(target)
+				_open.erase(target.memory.worker_id)
+				crew.dismiss(target)
+				target.memory.remember(clock.day, "Let go.", -0.3)
+				spoke.emit(target, "Right. I will be about, if you change your mind.", "talk")
+	return "done"
+
+
+## Being told what you like, or that you got it wrong. Learned, and felt.
+func _step_learn(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var mem := worker.memory
+	var value := str(step.get("value", "")).strip_edges().to_lower().replace(" ", "_")
+	# The model is asked for one of a short list, and mostly obliges; "roofs"
+	# for "roof_material" is the near miss worth catching, because a
+	# preference filed under a word nothing reads is a preference the player
+	# stated and never sees again.
+	var about := Critique.topic_of(str(step.get("about", "")), value)
+	if about == "":
+		return _refuse_step(run, "I did not follow what you wanted changing.")
+	var text := Critique.sentence(about, value)
+	var correcting := value.begins_with("not:") or str(run.get("instruction", "")).to_lower().begins_with("no")
+	var learned := {"about": about, "value": value, "text": text,
+		"weight": 0.55 if correcting else 0.75, "standing": not correcting}
+	mem.learn_about(about, value, text, float(learned["weight"]), worker.current_order)
+	if correcting:
+		mem.nudge("morale", -0.12 * float(mem.traits.get("criticism_sensitivity", 0.5)))
+	# Being told what you want is being trusted with it, a little.
+	mem.nudge("trust_in_player", 0.03)
+	mem.remember(clock.day, "Learned: %s." % text, 0.05 if not correcting else -0.1, {
+		"kind": "learned", "about": about, "value": value,
+	})
+	spoke.emit(worker, Critique.reaction(mem, learned), "talk")
+	# Every preference is a plan the cache must not hand back unchanged.
+	ArchetypeLibrary.clear_cache()
+	return "done"
+
+
+## "Every morning, bring in the harvest" and its opposite. Sets the task on
+## the person, over whatever their job says; an empty order clears it, and
+## clears it for good — they go back to waiting to be asked, not to the
+## role's default.
+func _step_standing(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var task := str(step.get("order", "")).strip_edges()
+	if task == "" or task.to_lower() in ["none", "nothing", "stop"]:
+		worker.standing = "-"
+		spoke.emit(worker, "Right. I will wait to be asked, then.", "talk")
+		return "done"
+	worker.standing = task
+	worker.memory.remember(clock.day, "Told to %s every morning." % task, 0.1)
+	spoke.emit(worker, "Every morning, then: %s." % task, "talk")
+	return "done"
+
+
+## "Your goal is to get a farm going." Only somebody who can give orders can
+## hold one; everybody else is told so. The first round is planned at once —
+## the mornings take it from there.
+func _step_goal(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	var goal_text := str(step.get("goal", "")).strip_edges()
+	if goal_text == "" or goal_text.to_lower() in ["none", "nothing", "drop", "stop"]:
+		if worker.goal == null:
+			spoke.emit(worker, "I had none.", "talk")
+		else:
+			spoke.emit(worker, "Right. I will leave the %s be." % _goal_word(worker.goal.text), "talk")
+			worker.goal = null
+		return "done"
+	if worker.role == null or not worker.role.can("delegate"):
+		return _refuse_step(run, "That wants somebody who can give orders — a foreman, or the mayor. I only do my own work.")
+	var g := Goal.new()
+	g.text = goal_text
+	g.given_day = clock.day
+	worker.goal = g
+	worker.memory.remember(clock.day, "Given the goal: %s." % goal_text, 0.2)
+	spoke.emit(worker, "%s. Leave it with me — I will see who we have and set them to it." % _sentence_case(goal_text), "talk")
+	_plan_round(worker)
+	return "done"
+
+
+# ------------------------------------------------------------------ fighting
+
+## Orders about the army, the armoury and the enemy. All of them happen the
+## moment they are said; forge is the one with a walk in it.
+func _step_war(run: Dictionary, step: Dictionary) -> String:
+	var worker: Worker = run["worker"]
+	if warfare == null:
+		return _refuse_step(run, "We have no means for that.")
+	var item := str(step.get("item", "")).strip_edges().to_lower().replace(" ", "_")
+	match str(step["do"]):
+		"drill":
+			warfare.raid(3 + warfare.soldiers.size() / 2)
+			worker.speak("Here they come. To your posts!", "refuse")
+			return "done"
+		"enlist":
+			var r2 := warfare.recruit(int(step.get("count", 3)))
+			worker.speak(str(r2["line"]), "done" if r2["ok"] else "refuse")
+			return "done"
+		"arm":
+			if not Arsenal.is_weapon(item):
+				return _refuse_step(run, "Arm them with what? We make %s." % ", ".join(Arsenal.all_keys()))
+			var who := str(step.get("who", "soldiers")).to_lower()
+			var r := warfare.arm_player(item) if who in ["me", "you", "player", "employer"] \
+				else warfare.arm_soldiers(item)
+			worker.speak(str(r["line"]), "done" if r["ok"] else "refuse")
+			return "done"
+		"attack":
+			var r4 := warfare.attack()
+			worker.speak(str(r4["line"]), "done" if r4["ok"] else "refuse")
+			return "done"
+		"defend":
+			var at := _defend_point(str(step.get("place", "")), worker)
+			var r5 := warfare.defend(at)
+			worker.speak(str(r5["line"]), "done" if r5["ok"] else "refuse")
+			return "done"
+		"forge":
+			if not Arsenal.is_item(item):
+				return _refuse_step(run, "Make what? The armoury turns out %s." % ", ".join(Arsenal.all_keys()))
+			return _forge(run, item, int(step.get("count", int(Arsenal.item(item)["batch"]))))
+	return "failed"
+
+
+func _forge(run: Dictionary, item: String, count: int) -> String:
+	var worker: Worker = run["worker"]
+	var stand := warfare.armoury_stand()
+	if stand == Vector3.INF:
+		return _refuse_step(run, "We have no armoury. Say \"build an armoury\" and I will put one up first.")
+	var batches := Arsenal.batches_for(item, count)
+	var short := warfare.short_for(item, batches)
+	if not short.is_empty():
+		return _refuse_step(run, "For %d %s I am short %s." % [
+			batches * int(Arsenal.item(item)["batch"]), Arsenal.label(item),
+			Resources.describe(short)])
+	var job := warfare.start_craft(item, count)
+	var line := "%d %s — about %d hours at the armoury." % [
+		job.made(), Arsenal.label(item), int(ceil(job.total_hours))]
+	if not worker.take_craft_job(job, stand, line):
+		# Give the materials back; the job never started.
+		town.refund(Arsenal.bill(item, batches))
+		return _refuse_step(run, "I cannot get to the armoury from here.")
+	return "started"
+
+
+## Where to stand and hold: with you, at a building's door, or the well.
+func _defend_point(place: String, _worker: Worker) -> Vector3:
+	var p := place.to_lower().strip_edges().trim_prefix("the ")
+	if p in ["here", "me", "you", "with me"] and player != null:
+		return player.global_position
+	for rec: Dictionary in town.buildings:
+		if str(rec["archetype"]) == p or str(rec.get("name", "")).to_lower() == p:
+			return warfare.stand_at(rec)
+	return village.well_pos
+
+
+## An order as the router would have returned it, for the tests: the steps
+## it decided on, straight into the same guards, designer and validator a
+## live one goes through. What it skips is the model that chose the steps —
+## which is the one part of the journey a deterministic test cannot have.
+func take_plan_for_test(worker: Worker, instruction: String, steps: Array,
+		assumptions: Array = [], line: String = "") -> void:
+	_take_plan(worker, instruction, {"steps": steps, "worker_line": line,
+		"assumptions": assumptions})
+
+
+## A whole plan, straight in, for the tests: no router, no designer. The
+## plan is the shape the router returns, so this is the same path an order
+## takes once it has been understood — validation, the stores, the worker.
+func accept_plan_for_test(worker: Worker, instruction: String, plot: Plot,
+		plan: Dictionary) -> void:
+	_open[worker.memory.worker_id] = {
+		"worker": worker, "instruction": instruction, "plot": plot,
+		"plan": plan, "steps": Steps.normalise(plan), "designing": -1,
+	}
+	_accept(worker.memory.worker_id)
+
+
+## One step, straight in, for the tests: no router, no designer. Returns
+## true if the step ran or was held.
+func run_step_for_test(worker: Worker, step: Dictionary) -> bool:
+	var run := {
+		"worker": worker, "steps": [step], "at": 0, "sites": {},
+		"assumptions": [], "plot": null, "instruction": str(step.get("do", "")),
+	}
+	var r := _run_step(run, step)
+	return r == "done" or r == "started" or r == "held"
 
 
 # ---------------------------------------------------------------- errands
@@ -746,6 +978,14 @@ func _step_trade(run: Dictionary, step: Dictionary) -> String:
 	var action := str(step.get("action", "sell"))
 	var kind := str(step.get("kind", ""))
 	var count := int(step.get("count", 0))
+	# The market, when there is one, sets the price and settles the sale;
+	# what is below is the town before it had a market.
+	var market: Node = realm.system("Market") if realm != null else null
+	if market != null and market.has_method("trade"):
+		var r := str(market.call("trade", worker, kind, count, action == "sell"))
+		if r == "done" or r == "started":
+			return r
+		return _refuse_step(run, r)
 	if count <= 0:
 		count = 20 if action == "sell" else 10
 	# The market is the store if there is one, and the square if there is not.
@@ -1722,7 +1962,8 @@ func _refuse(worker: Worker, plot: Plot, err: Dictionary) -> void:
 	_open.erase(worker.memory.worker_id)
 	_goal_outcome(worker, "refused")
 	worker.stop_thinking()
-	plot.reserved = false
+	if plot != null:
+		plot.reserved = false
 	# A typed error is a question, not a stack trace. This is the moment the
 	# design is built around: the worker turns "MODULE_WONT_FIT" into a sentence.
 	worker.ask_player(str(err.get("question", "I am not sure how to do that.")))
@@ -1735,14 +1976,12 @@ func _refuse(worker: Worker, plot: Plot, err: Dictionary) -> void:
 func answer(worker: Worker, reply: String) -> void:
 	var job: Dictionary = _open.get(worker.memory.worker_id, {})
 	worker.resolve_question()
-	# An answer is a preference too, said once and quietly: "use thatch" to
-	# "what should I roof it with?" is worth remembering, if not as much as
-	# being told off for getting it wrong.
-	var learned := Critique.read("i want " + reply)
-	if not learned.is_empty() and str(learned.get("about", "")) != "":
-		worker.memory.learn_about(str(learned["about"]), str(learned["value"]),
-			str(learned["text"]), 0.35, worker.current_order)
 	if job.is_empty():
+		# The question was the router's, not the designer's: the order never
+		# opened. Ask again with the answer in it.
+		var asked := str(_asked.get(worker.memory.worker_id, ""))
+		_asked.erase(worker.memory.worker_id)
+		instruct(worker, ("%s (%s)" % [asked, reply]) if asked != "" else reply)
 		return
 	_open.erase(worker.memory.worker_id)
 	# Before instruct(), not after: a worker still marked as thinking counts as
@@ -1750,56 +1989,10 @@ func answer(worker: Worker, reply: String) -> void:
 	# very call meant to restart them.
 	worker.stop_thinking()
 	var plot: Plot = job["plot"]
-	plot.reserved = false
+	if plot != null:
+		plot.reserved = false
 	instruct(worker, "%s (%s)" % [str(job["instruction"]), reply])
 
-
-
-# ------------------------------------------------------------- corrections
-
-## Words that make a sentence an order as well as a correction, so "no, thatch
-## — build it again" learns and then builds.
-const ORDER_WORDS := ["build", "put up", "make", "fence", "plant", "bring", "fetch",
-	"sow", "go ", "again", "redo", "do it", "start over on"]
-
-
-## Returns true if the sentence was ONLY a correction — learned and answered,
-## nothing left to do. False lets the rest of instruct() have it.
-func _try_critique(worker: Worker, instruction: String) -> bool:
-	var learned := Critique.read(instruction)
-	if learned.is_empty():
-		return false
-	var mem := worker.memory
-	if str(learned.get("about", "")) == "":
-		# A "no" with nothing in it. Asking is the honest move; guessing what
-		# was wrong is how the next one is wrong too.
-		mem.nudge("morale", -float(learned.get("sting", 0.0)) * float(mem.traits.get("criticism_sensitivity", 0.5)))
-		worker.ask_player("What would you have had instead?")
-		return true
-
-	if not worker.hired:
-		spoke.emit(worker, "You are not my employer.", "talk")
-		return true
-
-	mem.learn_about(str(learned["about"]), str(learned["value"]), str(learned["text"]),
-		float(learned["weight"]), worker.current_order)
-	var sting := float(learned.get("sting", 0.0)) * float(mem.traits.get("criticism_sensitivity", 0.5))
-	if sting > 0.0:
-		mem.nudge("morale", -sting)
-	# Being told what you want is being trusted with it, a little.
-	mem.nudge("trust_in_player", 0.03)
-	mem.remember(clock.day, "Learned: %s." % str(learned["text"]), 0.05 if sting == 0.0 else -0.1, {
-		"kind": "learned", "about": str(learned["about"]), "value": str(learned["value"]),
-	})
-	spoke.emit(worker, Critique.reaction(mem, learned), "talk")
-	# Every preference is a plan the cache must not hand back unchanged.
-	ArchetypeLibrary.clear_cache()
-
-	var t := instruction.to_lower()
-	for w: String in ORDER_WORDS:
-		if t.find(w) >= 0:
-			return false                # and on to the order in the same breath
-	return true
 
 
 # ----------------------------------------------------------------- mornings
@@ -1843,92 +2036,7 @@ func _tick_morning(delta: float) -> void:
 	instruct(w, task)
 
 
-## "Every morning, bring in the harvest" and its opposite. Sets the task on
-## the person, over whatever their job says; "stop" clears it, and clears it
-## for good — they go back to waiting to be asked, not to the role's default.
-const EVERY_RE := "^(?:every|each) (?:morning|day|dawn)[,:]?\\s+(?<task>.+)$"
-const DAILY_RE := "^(?:your|the) (?:daily|morning|standing) (?:job|task|work|order) is[,:]?\\s+(?<task>.+)$"
-const STOP_DAILY := ["stop your morning work", "stop your daily work", "no more morning work",
-	"no more daily work", "forget the morning job", "forget your daily job",
-	"stop doing that every morning", "no standing job", "stop your standing job"]
-var _re_every := RegEx.new()
-var _re_daily := RegEx.new()
-
-
-func _try_standing(worker: Worker, instruction: String) -> bool:
-	if _re_every.get_pattern() == "":
-		_re_every.compile(EVERY_RE)
-		_re_daily.compile(DAILY_RE)
-	var t := instruction.strip_edges().to_lower().rstrip(".!")
-	if t in STOP_DAILY:
-		worker.standing = "-"          # set, and empty: nothing, not the role's
-		spoke.emit(worker, "Right. I will wait to be asked, then.", "talk")
-		return true
-	var m := _re_every.search(t)
-	if m == null:
-		m = _re_daily.search(t)
-	if m == null:
-		return false
-	var task := m.get_string("task").strip_edges()
-	if task == "":
-		return false
-	if not worker.hired:
-		spoke.emit(worker, "I do not work for you.", "talk")
-		return true
-	worker.standing = task
-	worker.memory.remember(clock.day, "Told to %s every morning." % task, 0.1)
-	spoke.emit(worker, "Every morning, then: %s." % task, "talk")
-	return true
-
-
 # ------------------------------------------------------------------- goals
-
-## "Your goal is to get a farm going." Only somebody who can give orders can
-## hold one; everybody else is told so. The first round is planned at once —
-## the mornings take it from there.
-const GOAL_RE := "^(?:your goal is|goal:|the goal is|see to it that|make sure that|make sure|take charge of|organise|organize|set up|i want you to see to|get)\\s+(?:to )?(?<goal>.+?)[.!]?$"
-const DROP_GOAL := ["drop the goal", "forget the goal", "never mind the goal", "stop the goal",
-	"forget about the goal", "leave the goal", "no more goal"]
-var _re_goal := RegEx.new()
-
-
-func _try_goal(worker: Worker, instruction: String) -> bool:
-	if _re_goal.get_pattern() == "":
-		_re_goal.compile(GOAL_RE)
-	var t := instruction.strip_edges().to_lower().rstrip(".!")
-	if t in DROP_GOAL:
-		if worker.goal == null:
-			spoke.emit(worker, "I had none.", "talk")
-		else:
-			spoke.emit(worker, "Right. I will leave the %s be." % _goal_word(worker.goal.text), "talk")
-			worker.goal = null
-		return true
-	var m := _re_goal.search(t)
-	if m == null:
-		return false
-	# "get" alone is nearly every order there is; as a goal it needs the tail —
-	# "get a farm going" — or an explicit opener.
-	if t.begins_with("get ") and not (t.ends_with(" going") or t.ends_with(" started")
-			or t.ends_with(" running") or t.ends_with(" underway") or t.ends_with(" sorted")):
-		return false
-	var goal_text := m.get_string("goal").strip_edges()
-	if goal_text == "":
-		return false
-	if not worker.hired:
-		spoke.emit(worker, "I do not work for you.", "talk")
-		return true
-	if worker.role == null or not worker.role.can("delegate"):
-		spoke.emit(worker, "That wants somebody who can give orders — a foreman, or the mayor. I only do my own work.", "talk")
-		return true
-	var g := Goal.new()
-	g.text = goal_text
-	g.given_day = clock.day
-	worker.goal = g
-	worker.memory.remember(clock.day, "Given the goal: %s." % goal_text, 0.2)
-	spoke.emit(worker, "%s. Leave it with me — I will see who we have and set them to it." % _sentence_case(goal_text), "talk")
-	_plan_round(worker)
-	return true
-
 
 static func _sentence_case(text: String) -> String:
 	if text == "":
@@ -2110,8 +2218,6 @@ func _goal_report(worker: Worker) -> String:
 	return "%s: day %d. %s." % [_sentence_case(g.text), g.rounds, "; ".join(lines)]
 
 
-# ------------------------------------------------------------------- roles
-
 ## Taking people on and writing jobs up.
 ##
 ## Kept as sentence patterns rather than sent to the model, for the same
@@ -2119,90 +2225,6 @@ func _goal_report(worker: Worker) -> String:
 ## nothing to plan, and a forty-second pause before "you're hired" would be
 ## absurd. The job itself — what a "night watchman" is made of — is the part
 ## that goes to the model, once, the first time the town hears the name.
-const HIRE_RE := "^(?:hire|take on|employ|recruit|sign up)\\s+(?<who>you|me|him|her|them|[a-z]+)\\s+as\\s+(?:a |an |the |my )?(?<role>[a-z][a-z \\-]*?)(?:\\s*[:,;\\-–—]\\s*(?<desc>.+))?[.!]?$"
-const HIRED_RE := "^(?:you're|you are|youre|your) hired as\\s+(?:a |an |the |my )?(?<role>[a-z][a-z \\-]*?)(?:\\s*[:,;\\-–—]\\s*(?<desc>.+))?[.!]?$"
-const BE_MY_RE := "^(?:be my|work for me as|join me as|you can be my|i want you as)\\s+(?:a |an |the )?(?<role>[a-z][a-z \\-]*?)(?:\\s*[:,;\\-–—]\\s*(?<desc>.+))?[.!]?$"
-const DEFINE_RE := "^(?:define|create|make|add|write up|new)\\s+(?:a |an )?(?:new )?(?:role|job)\\s+(?:called |named |for )?(?<role>[a-z][a-z \\-]*?)\\s*(?:[:,;\\-–—]|\\bwho\\b|\\bthat\\b|\\bto\\b)?\\s*(?<desc>.*)$"
-const FIRE_RE := "^(?:you're fired|you are fired|youre fired|dismiss(?:ed)?|let you go|i'm letting you go|you can go home for good|you're let go)"
-
-var _re_hire := RegEx.new()
-var _re_hired := RegEx.new()
-var _re_be_my := RegEx.new()
-var _re_define := RegEx.new()
-var _re_fire := RegEx.new()
-
-
-func _compile_role_patterns() -> void:
-	_re_hire.compile(HIRE_RE)
-	_re_hired.compile(HIRED_RE)
-	_re_be_my.compile(BE_MY_RE)
-	_re_define.compile(DEFINE_RE)
-	_re_fire.compile(FIRE_RE)
-
-
-const SAVE_WORDS := ["save", "save the game", "save the town", "write it down",
-	"save game", "save everything"]
-const RESTART_WORDS := ["start over", "start again", "new game", "new town",
-	"wipe the save", "reset the game", "reset everything"]
-
-
-func _try_game(worker: Worker, instruction: String) -> bool:
-	var t := instruction.strip_edges().to_lower().rstrip(".!")
-	if t in SAVE_WORDS:
-		spoke.emit(worker, "Written down.", "talk")
-		save_requested.emit()
-		return true
-	if t in RESTART_WORDS:
-		spoke.emit(worker, "Starting again, then.", "talk")
-		restart_requested.emit()
-		return true
-	return false
-
-
-## Returns true if the instruction was about hiring or roles, whatever it
-## then did about it.
-func _try_roles(worker: Worker, instruction: String) -> bool:
-	if _re_hire.get_pattern() == "":
-		_compile_role_patterns()
-	var t := instruction.strip_edges().to_lower()
-
-	if _re_fire.search(t) != null:
-		if not worker.hired:
-			spoke.emit(worker, "I never worked for you.", "talk")
-		elif worker.memory.worker_id in ["mira", "tobias", "ren"]:
-			spoke.emit(worker, "I am not going anywhere.", "talk")
-		else:
-			# Whatever plan they were in the middle of goes with them.
-			_forget_held(worker)
-			_open.erase(worker.memory.worker_id)
-			crew.dismiss(worker)
-			worker.memory.remember(clock.day, "Let go.", -0.3)
-			spoke.emit(worker, "Right. I will be about, if you change your mind.", "talk")
-		return true
-
-	var m := _re_hire.search(t)
-	var target := worker
-	if m == null:
-		m = _re_hired.search(t)
-	if m == null:
-		m = _re_be_my.search(t)
-	if m != null:
-		var who := m.get_string("who") if m.names.has("who") else "you"
-		if who not in ["", "you", "me", "him", "her", "them"]:
-			target = _worker_named(who)
-			if target == null:
-				spoke.emit(worker, "There is nobody here called %s." % who.capitalize(), "talk")
-				return true
-		_hire_as(target, m.get_string("role"), m.get_string("desc"), worker)
-		return true
-
-	m = _re_define.search(t)
-	if m != null and m.get_string("role").strip_edges() != "":
-		_define_role(worker, m.get_string("role"), m.get_string("desc"), null)
-		return true
-	return false
-
-
 func _worker_named(name: String) -> Worker:
 	if crew == null:
 		return null
@@ -2306,80 +2328,3 @@ func _any_hired() -> Worker:
 	for w: Worker in crew.hired():
 		return w
 	return null
-
-
-const STAY_WORDS := ["wait", "stay", "stop", "hold"]
-const COME_WORDS := ["follow", "come", "with"]
-
-
-## Posting a worker: stand there, or come along. Returns true if that is what
-## the instruction was.
-func _try_posting(worker: Worker, instruction: String) -> bool:
-	var text := instruction.to_lower()
-	if _has_word(text, STAY_WORDS) and text.length() < 40:
-		worker.employer = null
-		worker.home = worker.global_position
-		worker.speak("I will wait here, then.", "talk")
-		return true
-	if _has_word(text, COME_WORDS) and text.length() < 40:
-		if player != null:
-			worker.employer = player
-		worker.speak("Right behind you.", "talk")
-		return true
-	return false
-
-
-# ------------------------------------------------------------------ fetching
-
-const DIG_WORDS := ["dig", "fetch", "mine", "quarry", "gather", "collect",
-	"get", "bring", "chop", "fell", "cut"]
-
-## What a player calls a material, mapped to what the stores call it. The left
-## side is the vocabulary of somebody standing in a field; the right side is a
-## key in Town.stock.
-const MATERIAL_WORDS := {
-	"stone": "cobble", "stones": "cobble", "rock": "cobble", "rocks": "cobble",
-	"cobble": "cobble", "granite": "granite", "gravel": "gravel",
-	"concrete": "concrete", "asphalt": "asphalt",
-	"wood": "timber", "timber": "timber", "logs": "timber", "log": "timber",
-	"tree": "timber", "trees": "timber", "lumber": "timber",
-	"plank": "plank", "planks": "plank", "oak": "dark_oak",
-	"thatch": "thatch", "straw": "thatch", "reed": "thatch",
-	"sand": "sand", "sandstone": "sandstone", "glass": "glass",
-	"clay": "brick", "brick": "brick", "bricks": "brick", "tile": "clay_tile",
-	"dirt": "dirt", "soil": "dirt", "earth": "dirt",
-	"iron": "steel_frame", "ore": "steel_frame", "steel": "steel_frame",
-	"metal": "sheet_metal", "chrome": "chrome",
-}
-
-
-## "go and dig up some iron" — a verb about the ground and a material. Both are
-## required: "build a stone wall" has the material and no errand, and "get on
-## with it" has the errand and no material.
-func _try_gather(worker: Worker, instruction: String) -> bool:
-	var text := instruction.to_lower()
-	if not _has_word(text, DIG_WORDS):
-		return false
-	var mat := ""
-	for word: String in MATERIAL_WORDS:
-		if _has_word(text, [word]):
-			mat = str(MATERIAL_WORDS[word])
-			break
-	if mat == "":
-		return false
-
-	var units := 240
-	for token: String in text.replace(",", " ").split(" ", false):
-		if token.is_valid_int():
-			units = clampi(int(token), 10, 4000)
-			break
-	_dig(worker, mat, units)
-	return true
-
-
-static func _has_word(text: String, words: Array) -> bool:
-	var t := " %s " % text.to_lower().replace(",", " ").replace(".", " ")
-	for w: String in words:
-		if t.find(" %s " % w) >= 0:
-			return true
-	return false

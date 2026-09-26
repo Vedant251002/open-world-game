@@ -454,16 +454,7 @@ func _fire_named_in(t: String) -> Dictionary:
 ## "put out the fire", "fight the fire at the bakery" — the worker given the
 ## order, plus every idle hired hand, turns out for it. The well is the water:
 ## a building far from it takes longer to save.
-func _order_fight_fire(worker: Worker, t: String) -> bool:
-	if _fires.is_empty():
-		worker.speak("Nothing is burning right now.")
-		return true
-	var fire := _fire_named_in(t)
-	if fire.is_empty():
-		fire = _fires[0]
-	if worker.busy():
-		worker.speak("I am busy just now — I will get to it after.")
-		return true
+func _fight_fire(worker: Worker, fire: Dictionary) -> void:
 	var rec: Dictionary = fire["rec"]
 	var door := realm.door_of(rec)
 	var name := str(rec.get("archetype", "building")).replace("_", " ")
@@ -478,7 +469,6 @@ func _order_fight_fire(worker: Worker, t: String) -> bool:
 		w2.take_errand_job("station", door, 30.0, line,
 			{"doing": "hammer", "fire_id": int(fire["id"])})
 	realm.note("fire", "The crew turned out to fight the fire at the %s." % name)
-	return true
 
 
 # -------------------------------------------------------------- fire visuals
@@ -563,7 +553,7 @@ func _build_precip() -> void:
 		return
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = BoxKit.mesh(Vector3(0.025, 0.4, 0.025))
+	mm.mesh = BoxKit.mesh(Vector3(0.014, 0.3, 0.014))
 	mm.instance_count = PRECIP_MAX
 	_precip = MultiMeshInstance3D.new()
 	_precip.name = "Precipitation"
@@ -595,7 +585,7 @@ func _set_precip_kind(kind: String) -> void:
 		_precip.multimesh.mesh = BoxKit.mesh(Vector3(0.05, 0.05, 0.05))
 		_precip.material_override = BoxKit.paint(Color(0.95, 0.97, 1.0, 0.85))
 	else:
-		_precip.multimesh.mesh = BoxKit.mesh(Vector3(0.025, 0.4, 0.025))
+		_precip.multimesh.mesh = BoxKit.mesh(Vector3(0.014, 0.3, 0.014))
 		_precip.material_override = BoxKit.paint(Color(0.78, 0.84, 0.93, 0.55))
 
 
@@ -663,18 +653,28 @@ func tick(delta: float) -> void:
 
 # --------------------------------------------------------------- talking
 
-func try_order(worker: Worker, text: String) -> bool:
-	var t := text.to_lower()
-	if Realm.has_phrase(t, ["put out the fire", "put the fire out", "fight the fire",
-			"fight the flames", "form a bucket line", "bucket line", "douse the fire",
-			"extinguish the fire", "help with the fire", "help fight the fire"]):
-		return _order_fight_fire(worker, t)
-	if Realm.has_phrase(t, ["ring the bell"]):
-		if _fires.is_empty():
-			worker.speak("No need — nothing is burning.")
-			return true
-		return _order_fight_fire(worker, t)
-	return false
+func verbs() -> Dictionary:
+	return {
+		"fight_fire": {
+			"says": "turn everyone free out with buckets against a fire — at a named building, or whichever is burning",
+			"optional": ["place"],
+		},
+	}
+
+
+func run(worker: Worker, step: Dictionary) -> String:
+	if str(step.get("do", "")) != "fight_fire":
+		return "failed"
+	if _fires.is_empty():
+		worker.speak("Nothing is burning right now.")
+		return "done"
+	var fire := _fire_named_in(str(step.get("place", "")).to_lower().replace("_", " "))
+	if fire.is_empty():
+		fire = _fires[0]
+	if worker.busy():
+		return "I am busy just now — I will get to it after."
+	_fight_fire(worker, fire)
+	return "started"
 
 
 func try_answer(_worker: Worker, text: String) -> String:

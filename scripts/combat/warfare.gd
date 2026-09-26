@@ -44,6 +44,9 @@ var player_weapons: Array[String] = []
 var player_weapon_i := -1
 var player_reload := 0.0
 var player_health := 100.0
+## Set when the player goes down, for whoever decides what that means (the
+## dynasty, for one); cleared by them with clear_fell().
+var player_fell := false
 
 var _next_raid_day := -1
 var _raid_active := false
@@ -254,6 +257,8 @@ func fire(who: Node3D, weapon: String, from: Vector3, aim: Vector3, target: Node
 		dir = _lob(from, aim, speed)
 	# Spread, in degrees, as a cone.
 	var spread := deg_to_rad(float(spec.get("spread", 1.0)))
+	if who is Fighter:
+		spread *= 1.0 - 0.5 * clampf((who as Fighter).veteran, 0.0, 1.0)
 	if spread > 0.0:
 		var axis := dir.cross(Vector3.UP).normalized()
 		if axis.length_squared() < 0.001:
@@ -363,6 +368,40 @@ func recruit(n: int) -> Dictionary:
 	line += ", %d of the company armed." % armed if armed < soldiers.size() \
 		else ", and every one of them has a gun."
 	return {"ok": true, "line": line, "made": made}
+
+
+## A soldier stood up without the recruiting — one coming home from a
+## campaign, or an ally's. Returns the fighter.
+func add_soldier(at: Vector3, weapon: String, veteran: float = 0.0) -> Fighter:
+	var s := Fighter.new()
+	s.name = "soldier_%d" % soldiers.size()
+	add_child(s)
+	var spot := at + Vector3(randf_range(-2.0, 2.0), 0.2, randf_range(-1.0, 1.0))
+	spot.y = world.ground_m(spot.x, spot.z) + 0.2
+	s.setup("town", world, nav, self, spot, weapon)
+	s.veteran = veteran
+	s.died.connect(_on_soldier_died)
+	soldiers.append(s)
+	return s
+
+
+## Something on the enemy's side that is not a raider in the field: a siege
+## engine, stood at a point with a heavy weapon and the ammunition for it.
+func add_engine(at: Vector3, weapon: String, ammo: int) -> Fighter:
+	var e := Fighter.new()
+	e.name = "engine"
+	add_child(e)
+	var spot := at
+	spot.y = world.ground_m(spot.x, spot.z) + 0.2
+	e.setup("raider", world, nav, self, spot, weapon)
+	e.ammo = ammo
+	e.max_health = 400.0
+	e.health = 400.0
+	e.display_name = "siege engine"
+	e.hold(spot)
+	e.died.connect(_on_raider_died)
+	raiders.append(e)
+	return e
 
 
 ## The best gun the stores can spare, taken out of them.
@@ -585,9 +624,14 @@ func hurt_player(dmg: float) -> void:
 		player.kick(0.5)
 	if player_health <= 0.0:
 		player_health = 100.0
+		player_fell = true
 		status.emit("You were knocked down. You come to by the well.")
 		if player.has_method("teleport"):
 			player.teleport(village.spawn_pos + Vector3(0, 1.0, 0), PI)
+
+
+func clear_fell() -> void:
+	player_fell = false
 
 
 ## For the HUD: what is in hand and what is left to fire.

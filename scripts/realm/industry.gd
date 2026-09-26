@@ -188,58 +188,68 @@ func _auto_staff() -> void:
 
 # ------------------------------------------------------------------ talking
 
-func try_order(worker: Worker, text: String) -> bool:
-	var t := text.to_lower()
-	# Building orders are the planner's, whatever else they mention.
-	if Realm.has_phrase(t, ["build", "put up", "construct", "erect", "make a", "make me",
-			"plant", "sow", "demolish", "knock down"]):
-		return false
-	var rec := _building_in(t)
-	# "take Ada off the bakery", "Ada, stop working at the store"
-	if Realm.has_phrase(t, [" off the ", " off work", "stop working", "out of the "]):
-		var c := _person_in(t)
-		if c != null and c.workplace_id >= 0:
+func verbs() -> Dictionary:
+	return {
+		"assign": {
+			"says": "set a named citizen, or some number of free people, to work at a building",
+			"required": ["place"],
+			"optional": ["who", "count"],
+			"types": {"count": "int"},
+			"instant": true,
+		},
+		"release": {
+			"says": "take a named citizen off their workplace",
+			"required": ["who"],
+			"instant": true,
+		},
+	}
+
+
+func run(worker: Worker, step: Dictionary) -> String:
+	match str(step.get("do", "")):
+		"release":
+			var c := realm.population.by_name(str(step.get("who", "")))
+			if c == null:
+				return "There is nobody here called %s." % str(step.get("who", "")).capitalize()
+			if c.workplace_id < 0:
+				worker.speak("%s was not working anywhere." % c.name)
+				return "done"
 			var was := workplace_of(c)
 			release(c)
 			worker.speak("%s is off the %s." % [c.name, str(was.get("archetype", "work")).replace("_", " ")])
-			return true
-		if c != null:
-			worker.speak("%s was not working anywhere." % c.name)
-			return true
-	if rec.is_empty():
-		return false
-	var chain := chain_for(rec)
-	# "assign Ada to the bakery", "send Bram to work at the tavern", "put two people in the workshop"
-	if Realm.has_word(t, ["assign", "put", "send", "move", "set", "station"]) \
-			or Realm.has_phrase(t, ["to work", "work at", "work in"]):
-		if chain.is_empty():
-			worker.speak("Nobody works a %s — it is a place to live, not a trade." % str(rec["archetype"]).replace("_", " "))
-			return true
-		var c := _person_in(t)
-		var arch := str(rec["archetype"]).replace("_", " ")
-		if c != null:
-			if staff_of(int(rec["id"])).size() >= STAFF_MAX:
-				worker.speak("The %s is full — two is all it can use." % arch)
-				return true
-			assign(c, rec)
-			worker.speak("%s will work the %s from tomorrow." % [c.name, arch])
-			realm.note("industry", "%s was set to work at the %s." % [c.name, arch])
-			return true
-		var n := Realm.count_in(t, 1)
-		var placed: Array[String] = []
-		for other: Population.Citizen in realm.population.alive():
-			if placed.size() >= n or staff_of(int(rec["id"])).size() >= STAFF_MAX:
-				break
-			if other.workplace_id < 0:
-				assign(other, rec)
-				placed.append(other.name)
-		if placed.is_empty():
-			worker.speak("Nobody is free to work the %s." % arch)
-		else:
+			return "done"
+		"assign":
+			var rec := realm.building_named(str(step.get("place", "")))
+			if rec.is_empty():
+				return "We have no %s." % str(step.get("place", "")).replace("_", " ")
+			var arch := str(rec["archetype"]).replace("_", " ")
+			if chain_for(rec).is_empty():
+				return "Nobody works a %s — it is a place to live, not a trade." % arch
+			var who := str(step.get("who", "")).strip_edges()
+			if who != "":
+				var c2 := realm.population.by_name(who)
+				if c2 == null:
+					return "There is nobody here called %s." % who.capitalize()
+				if staff_of(int(rec["id"])).size() >= STAFF_MAX:
+					return "The %s is full — two is all it can use." % arch
+				assign(c2, rec)
+				worker.speak("%s will work the %s from tomorrow." % [c2.name, arch])
+				realm.note("industry", "%s was set to work at the %s." % [c2.name, arch])
+				return "done"
+			var n := int(step.get("count", 1))
+			var placed: Array[String] = []
+			for other: Population.Citizen in realm.population.alive():
+				if placed.size() >= n or staff_of(int(rec["id"])).size() >= STAFF_MAX:
+					break
+				if other.workplace_id < 0:
+					assign(other, rec)
+					placed.append(other.name)
+			if placed.is_empty():
+				return "Nobody is free to work the %s." % arch
 			worker.speak("%s will work the %s." % [" and ".join(placed), arch])
 			realm.note("industry", "%s went to work at the %s." % [" and ".join(placed), arch])
-		return true
-	return false
+			return "done"
+	return "failed"
 
 
 func try_answer(_worker: Worker, text: String) -> String:

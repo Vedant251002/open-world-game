@@ -16,3 +16,8 @@ Thumbs.db
 proxy/.dev.vars
 proxy/node_modules/
 proxy/.wrangler/
+
+# Local capture/scratch output from the graphics work
+_after/
+_before/
+_props/

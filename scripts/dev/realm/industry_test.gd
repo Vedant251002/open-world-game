@@ -41,7 +41,7 @@ func _run() -> void:
 	var bram: Population.Citizen = people[1]
 
 	# --- staffing by hand ---
-	_check(realm.handle(w, "assign %s to the bakery" % ada.name), "assign order taken")
+	_check(realm.run(w, {"do": "assign", "who": ada.name, "place": "bakery"}), "assign order taken")
 	_check(ada.workplace_id == realm.building("bakery")["id"], "%s works the bakery" % ada.name)
 	var a := realm.answer(w, "who works at the bakery?")
 	_check(a.find(ada.name) >= 0, "who works: %s" % a)
@@ -49,12 +49,12 @@ func _run() -> void:
 	_check(a.find("bakery") >= 0, "where works: %s" % a)
 	a = realm.answer(w, "what does the bakery make?")
 	_check(a.find("bread") >= 0, "what it makes: %s" % a)
-	_check(realm.handle(w, "put two people in the workshop"), "put two people taken")
+	_check(realm.run(w, {"do": "assign", "place": "workshop", "count": 2}), "put two people taken")
 	_check(ind.staff_of(realm.building("workshop")["id"]).size() == 2, "workshop has two")
-	_check(realm.handle(w, "take %s off the bakery" % ada.name), "take off taken")
+	_check(realm.run(w, {"do": "release", "who": ada.name}), "take off taken")
 	_check(ada.workplace_id < 0, "%s released" % ada.name)
-	_check(not realm.handle(w, "build a bakery on the corner"), "build order left alone")
-	_check(not realm.handle(w, "put up a hut by the well"), "put up order left alone")
+	_check(not realm.run(w, {"do": "build"}), "build is not the realm's")
+	_check(not realm.run(w, {"do": "enclose"}), "enclose is not the realm's")
 
 	# --- a day of work ---
 	town.stock["food"] = 40
@@ -75,33 +75,33 @@ func _run() -> void:
 	_check(a.find("fetches") >= 0, "price: %s" % a)
 	var brick0 := town.units_of("brick")
 	var c0 := town.coins
-	_check(realm.handle(w, "sell 50 bricks"), "sell order taken")
+	_check(realm.dispatch.run_step_for_test(w, {"do": "trade", "action": "sell", "kind": "brick", "count": 50}), "sell order taken")
 	clock.advance(1.0)
 	_check(town.units_of("brick") == brick0 - 50 and town.coins > c0, "sold 50 brick for %d" % (town.coins - c0))
 	c0 = town.coins
 	var plank0 := town.units_of("plank")
-	_check(realm.handle(w, "buy 30 planks"), "buy order taken")
+	_check(realm.dispatch.run_step_for_test(w, {"do": "trade", "action": "buy", "kind": "plank", "count": 30}), "buy order taken")
 	clock.advance(3.0)
 	_check(town.units_of("plank") == plank0 + 30 and town.coins < c0, "bought 30 plank for %d" % (c0 - town.coins))
 	a = realm.answer(w, "what sells well?")
 	_check(a != "", "sells well: %s" % a)
 
 	# --- tax ---
-	_check(realm.handle(w, "set the tax to 20 percent"), "tax order taken")
+	_check(realm.run(w, {"do": "tax", "change": "set", "rate": 20}), "tax order taken")
 	_check(is_equal_approx(mk.rate, 0.2), "rate is 0.2")
 	c0 = town.coins
 	clock.advance(24.0)
 	_check(mk.tax_yesterday > 0, "collected %d tax" % mk.tax_yesterday)
 	a = realm.answer(w, "how much tax do we collect?")
 	_check(a.find("20 percent") >= 0, "tax answer: %s" % a)
-	_check(realm.handle(w, "no more tax"), "abolish taken")
+	_check(realm.run(w, {"do": "tax", "change": "abolish"}), "abolish taken")
 	_check(mk.rate == 0.0, "rate is 0")
 	a = realm.answer(w, "when is market day?")
 	_check(a != "", "market day: %s" % a)
 
 	# --- homes ---
 	bram.home_id = -1
-	_check(realm.handle(w, "give %s a home in the hut" % bram.name), "home order taken")
+	_check(realm.run(w, {"do": "house", "who": bram.name, "place": "hut"}), "home order taken")
 	a = realm.answer(w, "who lives in the hut?")
 	_check(a.find("hut") >= 0, "who lives: %s" % a)
 

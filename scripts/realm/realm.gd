@@ -106,6 +106,7 @@ func setup(refs: Dictionary) -> void:
 	population.name = "Population"
 	add_child(population)
 	population.setup(self)
+	Steps.register(population, population.verbs())
 
 	for path: String in SYSTEM_PATHS:
 		_load_system(path)
@@ -135,6 +136,10 @@ func _load_system(path: String) -> void:
 	if (node as Node).has_method("setup"):
 		(node as Node).call("setup", self)
 	systems.append(node)
+	# What this system can be asked for goes into the one catalogue the
+	# router reads. A system that exists is a system the model can reach.
+	if (node as Node).has_method("verbs"):
+		Steps.register(node, (node as Node).call("verbs"))
 
 
 func _process(delta: float) -> void:
@@ -145,19 +150,44 @@ func _process(delta: float) -> void:
 
 # ------------------------------------------------------------------ routing
 
-## An instruction the dispatcher did not recognise as a build, an errand or
-## a question. First system to take it wins.
-func handle(worker: Worker, text: String) -> bool:
-	# A worker ambling about the well is not busy; stop the amble so the
-	# systems' own "are you free?" checks see them as they are.
+## Carry out one of the realm's verbs directly — for the tests, and for
+## anything that has a step in hand rather than a sentence. True if the
+## system took it; a refusal is said out loud and returns false.
+func run(worker: Worker, step: Dictionary) -> bool:
+	var owner := Steps.owner_of(str(step.get("do", "")))
+	if owner == null or not owner.has_method("run"):
+		return false
 	if worker != null:
 		worker.stop_wandering()
-	if population.has_method("try_order") and population.try_order(worker, text):
+	var r := str(owner.call("run", worker, step))
+	if r == "done" or r == "started" or r == "held":
 		return true
+	if r != "failed" and r != "" and worker != null:
+		worker.speak(r, "refuse")
+	return r != "failed"
+
+
+## Whether somebody can take an order at all — in bed with a fever, say.
+## The line to refuse with, or "".
+func cannot_work(worker: Worker) -> String:
 	for s: Node in systems:
-		if s.has_method("try_order") and bool(s.call("try_order", worker, text)):
-			return true
-	return false
+		if s.has_method("blocks"):
+			var line := str(s.call("blocks", worker))
+			if line != "":
+				return line
+	return ""
+
+
+## What is going on that an order might be about, for the router: a
+## merchant waiting with his choices, a siege. One paragraph, or "".
+func situation() -> String:
+	var lines: Array[String] = []
+	for s: Node in systems:
+		if s.has_method("situation"):
+			var line := str(s.call("situation"))
+			if line != "":
+				lines.append(line)
+	return " ".join(lines)
 
 
 ## A question the town's own records could not answer.
@@ -245,6 +275,27 @@ func system(name: String) -> Node:
 
 # ----------------------------------------------------------------- helpers
 # Things several systems need and none should have to write twice.
+
+## A building by whatever the player called it: its archetype ("bakery"),
+## its sign or street, or a word the library knows for one ("shop" for a
+## store). Or {}.
+func building_named(name: String) -> Dictionary:
+	var n := name.strip_edges().to_lower().trim_prefix("the ").replace(" ", "_")
+	if n == "":
+		return {}
+	var rec := building(n)
+	if not rec.is_empty():
+		return rec
+	for r: Dictionary in town.buildings:
+		if str(r.get("name", "")).to_lower() == n or str(r.get("street", "")).to_lower() == n:
+			return r
+	var spaced := n.replace("_", " ")
+	if ArchetypeLibrary.KEYWORDS.has(spaced):
+		return building(str(ArchetypeLibrary.KEYWORDS[spaced]))
+	if ArchetypeLibrary.KEYWORDS.has(n):
+		return building(str(ArchetypeLibrary.KEYWORDS[n]))
+	return {}
+
 
 ## A standing building of this archetype, or {}.
 func building(archetype: String) -> Dictionary:

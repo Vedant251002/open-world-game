@@ -348,45 +348,58 @@ func _check_enclosure(ctx: Dictionary) -> void:
 			% [patch.build_order.size(), patch.touched])
 
 
-## The JSON Schema handed to the gateway.
+## The two JSON Schemas handed to the gateway.
 ##
 ## Generated from the same tables the prompt and the validator read, so the
-## thing worth testing is not its contents but that it stays in step: a verb
-## that exists in Steps and not in the schema is a verb the model will be
-## prevented from using, which looks exactly like the model being stupid.
+## thing worth testing is not their contents but that they stay in step: a
+## verb that exists in Steps and not in the router's schema is a verb the
+## model will be prevented from using, which looks exactly like the model
+## being stupid.
+##
+## Their size is the other half. Both are sent as input on every call they
+## belong to, and the free tier allows eight thousand tokens a minute — so a
+## schema that doubles is two orders a minute becoming one.
 func _check_schema() -> void:
 	for tier in [1, 4]:
-		var wrapper := PlanSchema.for_tier(tier)
-		var schema: Dictionary = wrapper["schema"]
+		var wrapper := PlanSchema.router_schema(tier)
 		var text := JSON.stringify(wrapper)
 		if JSON.new().parse(text) != OK:
-			_fails.append("the tier %d schema is not valid JSON" % tier)
+			_fails.append("the tier %d router schema is not valid JSON" % tier)
 			continue
-
-		var steps: Dictionary = schema["properties"]["steps"]
-		var variants: Array = steps["items"]["anyOf"]
-		var covered: Array[String] = []
-		for v: Variant in variants:
-			var props: Dictionary = (v as Dictionary)["properties"]
-			covered.append(str((props["do"] as Dictionary)["enum"][0]))
-		for verb: String in Steps.VERBS:
+		var schema: Dictionary = wrapper["schema"]
+		var covered: Array = schema["properties"]["steps"]["items"]["properties"]["do"]["enum"]
+		for verb: String in Steps.all():
 			if Steps.verb_tier(verb) <= tier and verb not in covered:
-				_fails.append("tier %d schema is missing the %s step" % [tier, verb])
-
-		print("[plan] tier %d schema: %d verbs, %d bytes of JSON" % [
+				_fails.append("tier %d router schema is missing the %s step" % [tier, verb])
+		print("[plan] tier %d router schema: %d verbs, %d bytes of JSON" % [
 			tier, covered.size(), text.length()])
 
-	# A schema the size of the prompt is a schema that eats the token budget it
-	# was added to protect. Groq's free tier allows 8K tokens a minute, and the
-	# schema is sent on every single call. The builder's is the biggest, with
-	# every verb in it; a role's is only its own verbs, and has to be small.
-	var t1 := JSON.stringify(PlanSchema.for_tier(1))
-	if t1.length() > 14000:
-		_fails.append("the builder's tier 1 schema is %d bytes — too much of the budget"
+	# The router's, with every verb in it. One object with the union of their
+	# fields, rather than one shape per verb — see PlanSchema.router_schema.
+	var t1 := JSON.stringify(PlanSchema.router_schema(1))
+	if t1.length() > 7000:
+		_fails.append("the router's tier 1 schema is %d bytes — too much of the budget"
 			% t1.length())
-	var shepherd := JSON.stringify(PlanSchema.for_tier(1,
+	var shepherd := JSON.stringify(PlanSchema.router_schema(1,
 		["go", "wait", "speak", "stock", "enclose", "collect", "tend"]))
-	print("[plan] a shepherd's schema: %d bytes" % shepherd.length())
+	print("[plan] a shepherd's router schema: %d bytes" % shepherd.length())
 	if shepherd.length() > 4000:
 		_fails.append("a shepherd's schema is %d bytes — the role filter is not narrowing it"
 			% shepherd.length())
+
+	# And the designer's, which is one verb: build, with the whole spec under
+	# it. Nothing else belongs there — the router has already decided.
+	var design := PlanSchema.for_tier(1, [], "design")
+	var variants: Array = design["schema"]["properties"]["steps"]["items"]["anyOf"]
+	if variants.size() != 1:
+		_fails.append("the designer's schema offers %d verbs; it should offer only build"
+			% variants.size())
+	elif str((variants[0] as Dictionary)["properties"]["do"]["enum"][0]) != "build":
+		_fails.append("the designer's one verb is not build")
+	elif not ((variants[0] as Dictionary)["properties"] as Dictionary).has("spec"):
+		_fails.append("the designer's build step has no spec")
+	var dtext := JSON.stringify(design)
+	print("[plan] the designer's schema: %d bytes" % dtext.length())
+	if dtext.length() > 6000:
+		_fails.append("the designer's schema is %d bytes — too much of the budget"
+			% dtext.length())

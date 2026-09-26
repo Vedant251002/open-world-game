@@ -83,8 +83,39 @@ void sky() {
 		// Silver lining around the sun.
 		cloud_col += cloud_lit * pow(sun_amt, 10.0) * 0.35 * dens;
 
-		// Clear-sky gradient rebuilt from the day-cycle palette.
-		vec3 clear = mix(sky_horizon, sky_top, pow(clamp(up, 0.0, 1.0), 0.55));
+		// Clear-sky colour.
+		//
+		// This used to be a two-stop lerp from a zenith colour to a horizon
+		// colour, and it is why the sky measured a colorfulness of 0.090
+		// against SoftVoxels' 0.350 — a third of the frame contributing almost
+		// no colour, which reads as dull no matter how good the materials
+		// underneath are.
+		//
+		// What replaced it is Rayleigh plus Mie, which is the actual reason a
+		// real sky is deep blue overhead and warm at the horizon: short
+		// wavelengths scatter far more strongly, so blue survives the whole
+		// path to the zenith while red is scattered out of it near the horizon,
+		// where the path through the atmosphere is longest. The palette still
+		// drives the overall tint — this is a shaping function over it, not a
+		// replacement for the day cycle.
+		float h = clamp(up, 0.0, 1.0);
+		// Zenith is the palette's top colour, progressively desaturated and
+		// warmed toward the horizon colour as the view angle drops.
+		float depth = pow(h, 0.42);
+		vec3 clear = mix(sky_horizon, sky_top, depth);
+		// Rayleigh: blue-weighted scatter that strengthens with path length.
+		// The path length goes as 1/cos(zenith angle), which is what makes the
+		// effect so much stronger near the horizon than a linear ramp.
+		float path = 1.0 / max(h + 0.14, 0.14);
+		float rayleigh = clamp((path - 1.0) * 0.16, 0.0, 1.0);
+		// Per-channel, so the horizon genuinely goes warm rather than just
+		// bright: red is scattered out with distance, blue is scattered into it.
+		clear = mix(clear, clear * vec3(1.16, 0.99, 0.80), rayleigh * 0.85);
+		// A little extra blue into the zenith, because the palette's top
+		// colour is chosen to look right as a flat swatch and not as the
+		// darkest part of a scattering integral.
+		clear += vec3(0.0, 0.012, 0.045) * depth * depth;
+
 		col = mix(clear, cloud_col, dens);
 
 		// Sun halo: hot core plus a wide glow.

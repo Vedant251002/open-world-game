@@ -8,6 +8,8 @@ render_mode depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 // wrote it put all four hundred chunk meshes into the transparent pass, losing
 // the depth prepass, early-Z and correct sorting in one go.
 
+#define USE_PBR_TEXTURES
+
 #include "res://scripts/core/voxel_common.gdshaderinc"
 
 void vertex() {

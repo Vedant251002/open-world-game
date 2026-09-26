@@ -327,32 +327,34 @@ func _town_in(t: String) -> Dictionary:
 	return {}
 
 
-func try_order(worker: Worker, text: String) -> bool:
-	var t := text.to_lower()
-	var town := _town_in(t)
-	if Realm.has_phrase(t, ["build", "put up", "construct", "erect", "lay a road", "road"]):
-		return false
+func verbs() -> Dictionary:
+	return {
+		"envoy": {
+			"says": "go to a neighbouring town, by name, on an errand: to talk, sue for peace, ask for an alliance, declare war, take a gift of coins, demand tribute, or trade",
+			"required": ["town", "errand"],
+			"optional": ["coins"],
+			"types": {"errand": ["envoy", "peace", "alliance", "war", "gift", "demand", "trade"],
+				"coins": "int"},
+		},
+	}
+
+
+func run(worker: Worker, step: Dictionary) -> String:
+	if str(step.get("do", "")) != "envoy":
+		return "failed"
+	var town := by_name(str(step.get("town", "")))
 	if town.is_empty():
-		if Realm.has_phrase(t, ["send an envoy", "send envoy", "make peace", "declare war",
-				"demand tribute", "ask for an alliance"]):
-			worker.speak("To whom? Our neighbours are %s." % _names())
-			return true
-		return false
-	if Realm.has_phrase(t, ["declare war", "go to war", "war on", "war with"]):
-		return _send(worker, town, "war")
-	if Realm.has_phrase(t, ["make peace", "sue for peace", "peace with", "offer peace", "end the war"]):
-		return _send(worker, town, "peace")
-	if Realm.has_word(t, ["alliance", "ally", "allies", "allied"]):
-		return _send(worker, town, "alliance")
-	if Realm.has_word(t, ["gift", "present", "tribute"]) and Realm.has_word(t, ["send", "give", "offer"]):
-		return _send(worker, town, "gift", Realm.count_in(t, 100))
-	if Realm.has_word(t, ["demand", "exact"]) or Realm.has_phrase(t, ["tribute from"]):
-		return _send(worker, town, "demand")
-	if Realm.has_word(t, ["trade", "caravan", "sell", "buy"]):
-		return _send(worker, town, "trade")
-	if Realm.has_word(t, ["envoy", "emissary", "messenger", "embassy", "talk", "visit", "greet"]):
-		return _send(worker, town, "envoy")
-	return false
+		town = _town_in(str(step.get("town", "")).to_lower())
+	if town.is_empty():
+		return "To whom? Our neighbours are %s." % _names()
+	if worker.busy():
+		return "I am in the middle of something; send me when I am done."
+	var kind := str(step.get("errand", "envoy"))
+	var coins := int(step.get("coins", 100 if kind == "gift" else 0))
+	if kind == "gift" and realm.town.coins < coins:
+		return "We have not got %d coins to send." % coins
+	_send(worker, town, kind, coins if kind == "gift" else 0)
+	return "started"
 
 
 func try_answer(_worker: Worker, text: String) -> String:

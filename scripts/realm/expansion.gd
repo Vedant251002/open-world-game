@@ -286,49 +286,70 @@ func _side_in(t: String) -> String:
 	return ""
 
 
-func try_order(worker: Worker, text: String) -> bool:
-	var t := text.to_lower()
-	# Roads first: "build a road to the north edge", "lay a road towards Harrow".
-	if Realm.has_word(t, ["road", "path", "track", "street"]) \
-			and Realm.has_word(t, ["build", "lay", "make", "pave", "put"]) \
-			and Realm.has_phrase(t, [" to ", " toward", " out "]):
-		var nb: Node = realm.system("Neighbours")
-		if nb != null and nb.has_method("by_name"):
-			for town: Dictionary in nb.call("list"):
-				if t.find(str(town["name"]).to_lower()) >= 0:
-					var edge: Vector3 = nb.call("edge_point", town)
-					return start_road(worker, edge, "towards %s" % town["name"])
-		var side := _side_in(t)
-		if side != "":
+func verbs() -> Dictionary:
+	return {
+		"road_out": {
+			"says": "lay a road from the well out to the town's edge on one side, or towards a neighbouring town by name",
+			"optional": ["side", "town"],
+			"types": {"side": ["north", "south", "east", "west"]},
+		},
+		"claim": {
+			"says": "extend the town's ground on one side by some metres",
+			"required": ["side"],
+			"optional": ["metres"],
+			"types": {"side": ["north", "south", "east", "west"], "metres": "int"},
+			"instant": true,
+		},
+		"name_district": {
+			"says": "give a name to one side of the town, or to where your employer stands",
+			"required": ["name"],
+			"optional": ["side"],
+			"types": {"side": ["north", "south", "east", "west", "here"]},
+			"instant": true,
+		},
+	}
+
+
+func run(worker: Worker, step: Dictionary) -> String:
+	match str(step.get("do", "")):
+		"road_out":
+			if not _road.is_empty():
+				return "There is a road being laid already; let it finish."
+			var town_name := str(step.get("town", "")).strip_edges()
+			if town_name != "":
+				var nb: Node = realm.system("Neighbours")
+				if nb != null and nb.has_method("by_name"):
+					var town: Dictionary = nb.call("by_name", town_name)
+					if town.is_empty():
+						return "I do not know a town called %s." % town_name
+					start_road(worker, nb.call("edge_point", town), "towards %s" % town["name"])
+					return "started"
+			var side := str(step.get("side", ""))
+			if not DIRS.has(side):
+				return "A road to where? North, south, east, west, or a town by name."
 			var d: Vector2i = DIRS[side]
 			var r := bounds_m()
 			var to := realm.village.well_pos + Vector3(d.x, 0.0, d.y) * (maxf(r.size.x, r.size.y) * 0.5 + 6.0)
-			return start_road(worker, to, "to the %s edge" % side)
-		return false
-	# Claims: "claim the land to the north", "extend the town west by 40 metres".
-	if Realm.has_word(t, ["claim", "extend", "expand", "enlarge", "annex"]) \
-			and Realm.has_word(t, ["land", "town", "ground", "territory", "border", "borders", "field", "fields"]):
-		var side := _side_in(t)
-		if side == "":
-			worker.speak("Which way? North, south, east or west.")
-			return true
-		var m := Realm.count_in(t, int(CLAIM_STEP_M))
-		if not Realm.has_word(t, ["metres", "meters", "m"]):
-			m = int(CLAIM_STEP_M)
-		return claim(side, float(m), worker)
-	# Districts: "name the north side Mill Quarter", "call this area the Old Town".
-	if Realm.has_word(t, ["name", "call", "rename"]) \
-			and Realm.has_word(t, ["side", "area", "district", "quarter", "part", "end", "here", "this"]) \
-			and not Realm.has_word(t, ["kingdom", "town", "realm", "me", "him", "her"]):
-		var side := _side_in(t)
-		var name := _name_after(text, ["quarter", "district", "area", "side", "here", "this", "end", "part"])
-		if name == "":
-			return false
-		_name_district(name, side, worker.global_position if side == "" else Vector3.ZERO)
-		worker.speak("The %s it is." % name)
-		realm.note("land", "The %s was named the %s." % [side + " side" if side != "" else "area here", name])
-		return true
-	return false
+			start_road(worker, to, "to the %s edge" % side)
+			return "started"
+		"claim":
+			var side2 := str(step.get("side", ""))
+			if not DIRS.has(side2):
+				return "Which way? North, south, east or west."
+			claim(side2, float(step.get("metres", int(CLAIM_STEP_M))), worker)
+			return "done"
+		"name_district":
+			var name := str(step.get("name", "")).strip_edges().capitalize()
+			if name == "" or name.length() > 30:
+				return "Call it what?"
+			var side3 := str(step.get("side", "here"))
+			if not DIRS.has(side3):
+				side3 = ""
+			_name_district(name, side3, worker.global_position if side3 == "" else Vector3.ZERO)
+			worker.speak("The %s it is." % name)
+			realm.note("land", "The %s was named the %s." % [side3 + " side" if side3 != "" else "area here", name])
+			return "done"
+	return "failed"
 
 
 ## The words after the last of the anchors, title-cased: "name the north side

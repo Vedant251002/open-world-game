@@ -38,21 +38,21 @@ const MAX_STEPS := 4
 const VERBS := {
 	"build": {
 		"tier": 1,
-		"says": "put up a building on the plot you were given",
-		"required": ["spec"],
-		"optional": ["id"],
+		"says": "put up, redesign or extend a building; brief is what it is for and how it should look, in words",
+		"required": [],
+		"optional": ["brief", "spec", "id"],
 		"produces": "site",
 	},
 	"enclose": {
 		"tier": 1,
-		"says": "fence a rectangle of open ground, with one gate in it",
+		"says": "fence a rectangle of open ground, one gate in it",
 		"required": ["size"],
 		"optional": ["id", "material", "gate", "near"],
 		"produces": "site",
 	},
 	"stock": {
 		"tier": 1,
-		"says": "walk out, bring animals back and turn them out",
+		"says": "fetch live animals and turn them out",
 		"required": ["species"],
 		"optional": ["count", "into"],
 		"produces": "",
@@ -66,7 +66,7 @@ const VERBS := {
 	},
 	"gather": {
 		"tier": 1,
-		"says": "go out to the ground beyond the town and fetch a material",
+		"says": "dig, fell or quarry a material from the ground beyond the town",
 		"required": ["material"],
 		"optional": ["units"],
 		"produces": "",
@@ -80,70 +80,70 @@ const VERBS := {
 	# machine of their own.
 	"go": {
 		"tier": 1,
-		"says": "walk to a place: a building by name, 'the well', 'the field', 'home', or 'you'",
+		"says": "walk to a place",
 		"required": ["place"],
 		"optional": ["id"],
 		"produces": "site",
 	},
 	"follow": {
 		"tier": 1,
-		"says": "fall in behind your employer and keep with them",
+		"says": "fall in behind your employer",
 		"required": [],
 		"optional": [],
 		"produces": "",
 	},
 	"wait": {
 		"tier": 1,
-		"says": "stay where you are, or at a place, for some hours",
+		"says": "stay put, here or at a place",
 		"required": [],
 		"optional": ["place", "hours"],
 		"produces": "",
 	},
 	"station": {
 		"tier": 1,
-		"says": "work a shift at a building — some hours at the oven, the counter, the gate",
+		"says": "work a shift at a building",
 		"required": ["place"],
 		"optional": ["hours", "doing"],
 		"produces": "site",
 	},
 	"patrol": {
 		"tier": 1,
-		"says": "walk a round between two or more places, over and over, for some hours",
+		"says": "walk a round between places, over and over",
 		"required": ["places"],
 		"optional": ["hours"],
 		"produces": "",
 	},
 	"harvest": {
 		"tier": 1,
-		"says": "walk the field and bring in what is ripe",
+		"says": "bring in what is ripe in the field",
 		"required": [],
 		"optional": ["in"],
 		"produces": "",
 	},
 	"collect": {
 		"tier": 1,
-		"says": "go round the animals and pick up the eggs, wool and milk",
+		"says": "go round the animals for eggs, wool and milk",
 		"required": [],
 		"optional": ["in"],
 		"produces": "",
 	},
 	"rest": {
 		"tier": 1,
-		"says": "go home and rest for some hours",
+		"says": "go home and rest",
 		"required": [],
 		"optional": ["hours"],
 		"produces": "",
 	},
 	"speak": {
 		"tier": 1,
-		"says": "say a line out loud — to greet, announce, or report",
+		"says": "say a line out loud",
 		"required": ["line"],
 		"optional": [],
 		"produces": "",
 	},
 	"scout": {
 		"tier": 1,
-		"says": "walk out some distance in a compass direction and report the ground",
+		"says": "walk out in a direction and report the ground",
 		"required": ["direction"],
 		"optional": ["distance"],
 		"produces": "",
@@ -152,42 +152,42 @@ const VERBS := {
 	# --- trades and land works -------------------------------------------
 	"trade": {
 		"tier": 1,
-		"says": "go to the store and sell some of the stock, or buy some in",
+		"says": "sell stock at the store, or buy some in",
 		"required": ["action", "kind"],
 		"optional": ["count"],
 		"produces": "",
 	},
 	"cook": {
 		"tier": 1,
-		"says": "a shift at an oven turning food into meals",
+		"says": "a shift at an oven: food into meals",
 		"required": [],
 		"optional": ["hours", "place"],
 		"produces": "",
 	},
 	"craft": {
 		"tier": 1,
-		"says": "a shift at a bench turning timber and iron into tools",
+		"says": "a shift at a bench: timber and iron into tools",
 		"required": [],
 		"optional": ["hours", "place"],
 		"produces": "",
 	},
 	"fish": {
 		"tier": 1,
-		"says": "some hours at the water's edge, for food",
+		"says": "hours at the water for food",
 		"required": [],
 		"optional": ["hours"],
 		"produces": "",
 	},
 	"hunt": {
 		"tier": 1,
-		"says": "some hours in the woods, for food",
+		"says": "hours in the woods for meat",
 		"required": [],
 		"optional": ["hours"],
 		"produces": "",
 	},
 	"plant_tree": {
 		"tier": 1,
-		"says": "plant one or more trees at a place",
+		"says": "plant trees at a place",
 		"required": [],
 		"optional": ["place", "count"],
 		"produces": "site",
@@ -201,7 +201,7 @@ const VERBS := {
 	},
 	"level": {
 		"tier": 1,
-		"says": "flatten a piece of ground at a place",
+		"says": "flatten ground at a place",
 		"required": [],
 		"optional": ["place", "size", "id"],
 		"produces": "site",
@@ -222,7 +222,7 @@ const VERBS := {
 	},
 	"teach": {
 		"tier": 1,
-		"says": "spend some hours teaching another hired person a skill",
+		"says": "teach another hired person a skill",
 		"required": ["who", "skill"],
 		"optional": ["hours"],
 		"produces": "",
@@ -236,7 +236,7 @@ const VERBS := {
 	},
 	"decorate": {
 		"tier": 1,
-		"says": "dress the front of a building with lanterns, planters and the like",
+		"says": "dress the front of a building",
 		"required": ["place"],
 		"optional": ["count"],
 		"produces": "",
@@ -245,7 +245,7 @@ const VERBS := {
 	# --- running the place -------------------------------------------------
 	"delegate": {
 		"tier": 1,
-		"says": "give another hired person an order, in plain words",
+		"says": "give another hired person an order in plain words",
 		"required": ["who", "order"],
 		"optional": [],
 		"produces": "",
@@ -264,7 +264,219 @@ const VERBS := {
 		"optional": [],
 		"produces": "",
 	},
+
+	# --- who works for you ------------------------------------------------
+	#
+	# These used to be regular expressions at the top of Dispatcher.instruct:
+	# one for "hire X as a Y", one for "you are my Y", one for "define a job
+	# called Y"... and each heard one phrasing. They are verbs now, so "take
+	# Ada on as a guard and send her to the gate" is one plan with two steps.
+	"hire": {
+		"tier": 1,
+		"instant": true,
+		"says": "take somebody on as a job; who is their name, or left out for whoever you are talking to",
+		"required": ["role"],
+		"optional": ["who", "description"],
+		"produces": "",
+		"anyone": true,
+	},
+	"dismiss": {
+		"tier": 1,
+		"instant": true,
+		"says": "let a hired person go",
+		"required": [],
+		"optional": ["who"],
+		"produces": "",
+		"anyone": true,
+	},
+	"define_role": {
+		"tier": 1,
+		"instant": true,
+		"says": "write a new job up without hiring anyone",
+		"required": ["role"],
+		"optional": ["description"],
+		"produces": "",
+		"anyone": true,
+	},
+	"learn": {
+		"tier": 1,
+		"instant": true,
+		"says": "remember a taste or a correction: about is what it is about (walls, roof, size...), value what they want",
+		"required": ["about", "value"],
+		"optional": [],
+		"produces": "",
+		"anyone": true,
+	},
+	"standing": {
+		"tier": 1,
+		"instant": true,
+		"says": "make an order your every-morning task; empty order clears it",
+		"required": ["order"],
+		"optional": [],
+		"produces": "",
+		"anyone": true,
+	},
+	"goal": {
+		"tier": 1,
+		"instant": true,
+		"says": "take on a goal to organise the crew towards over days; empty goal drops it",
+		"required": ["goal"],
+		"optional": [],
+		"produces": "",
+		# Anybody may be handed one; whether they can hold it is the step's
+		# to say, and it says so in character — "that wants somebody who can
+		# give orders". A job nobody was given is not the same refusal.
+		"anyone": true,
+	},
+
+	# --- the game itself ----------------------------------------------------
+	"save": {
+		"tier": 1,
+		"says": "save the game",
+		"required": [],
+		"optional": [],
+		"produces": "",
+		"anyone": true,
+		"instant": true,
+	},
+	"restart": {
+		"tier": 1,
+		"says": "start the game over",
+		"required": [],
+		"optional": [],
+		"produces": "",
+		"anyone": true,
+		"instant": true,
+	},
+
+	# --- the army -------------------------------------------------------------
+	"enlist": {
+		"tier": 1,
+		"says": "take townsfolk on as soldiers",
+		"required": [],
+		"optional": ["count"],
+		"produces": "",
+		"anyone": true,
+		"instant": true,
+	},
+	"arm": {
+		"tier": 1,
+		"says": "hand a weapon out from the armoury; who: me arms your employer",
+		"required": ["item"],
+		"optional": ["who"],
+		"produces": "",
+		"anyone": true,
+		"instant": true,
+	},
+	"attack": {
+		"tier": 1,
+		"says": "send the soldiers at the raiders",
+		"required": [],
+		"optional": [],
+		"produces": "",
+		"anyone": true,
+		"instant": true,
+	},
+	"defend": {
+		"tier": 1,
+		"says": "post the soldiers to hold a place; place: me is where your employer stands",
+		"required": ["place"],
+		"optional": [],
+		"produces": "",
+		"anyone": true,
+		"instant": true,
+	},
+	"forge": {
+		"tier": 1,
+		"says": "a shift at the armoury making weapons or ammunition",
+		"required": ["item"],
+		"optional": ["count"],
+		"produces": "",
+		"anyone": true,
+	},
+	"drill": {
+		"tier": 1,
+		"says": "a practice raid, to test the defences",
+		"required": [],
+		"optional": [],
+		"produces": "",
+		"anyone": true,
+		"instant": true,
+	},
 }
+
+## Verbs other parts of the game add at startup — the realm systems' taxes,
+## decrees and marriages, the war's musters — keyed by verb, with the node
+## that carries them out beside. One catalogue, composed rather than written,
+## so a system that exists is a system the model can be asked for.
+static var _extra: Dictionary = {}
+static var _owners: Dictionary = {}
+
+
+## `owner` must have run(worker: Worker, step: Dictionary) -> String, returning
+## "done", "started" or a refusal line. Each entry of `verbs` is shaped like
+## the ones above; `types` may name a field's type where "string" is wrong:
+## "int", or a list of allowed values.
+static func register(owner: Object, verbs: Dictionary) -> void:
+	for v: String in verbs:
+		var entry: Dictionary = (verbs[v] as Dictionary).duplicate()
+		if not entry.has("tier"):
+			entry["tier"] = 1
+		if not entry.has("required"):
+			entry["required"] = []
+		if not entry.has("optional"):
+			entry["optional"] = []
+		if not entry.has("produces"):
+			entry["produces"] = ""
+		# The kingdom's own orders are the player's to give through whoever
+		# they are talking to; a role is not asked.
+		if not entry.has("anyone"):
+			entry["anyone"] = true
+		_extra[v] = entry
+		_owners[v] = owner
+
+
+static func unregister_all() -> void:
+	_extra.clear()
+	_owners.clear()
+
+
+static func owner_of(verb: String) -> Object:
+	return _owners.get(verb, null)
+
+
+## The whole catalogue: built-in first, then everything registered.
+static func all() -> Dictionary:
+	if _extra.is_empty():
+		return VERBS
+	var out := VERBS.duplicate()
+	out.merge(_extra)
+	return out
+
+
+static func entry(verb: String) -> Dictionary:
+	if VERBS.has(verb):
+		return VERBS[verb]
+	return _extra.get(verb, {})
+
+
+## A verb anybody hired may use whatever their role — and, for the handful
+## marked so, anybody at all.
+static func for_anyone(verb: String) -> bool:
+	return bool(entry(verb).get("anyone", false))
+
+
+## A verb that is over the moment it is said — no walk, no shift — so a busy
+## worker can still be given it, and a plan of nothing else is a reply
+## rather than a job.
+static func instant(verb: String) -> bool:
+	return bool(entry(verb).get("instant", false))
+
+
+## The declared type of a field on a registered verb, or "" for the default.
+static func field_type(verb: String, field: String) -> Variant:
+	var types: Dictionary = entry(verb).get("types", {})
+	return types.get(field, "")
 
 const SKILLS := ["carpentry", "masonry", "machining", "piloting"]
 const TRADE_ACTIONS := ["sell", "buy"]
@@ -326,15 +538,62 @@ static func normalise(plan: Dictionary) -> Array:
 		var out: Array = []
 		for s: Variant in raw as Array:
 			if s is Dictionary:
-				out.append(s)
+				out.append(tidy(s as Dictionary))
 		return out
 	if plan.get("spec", null) is Dictionary:
 		return [{"do": "build", "spec": plan["spec"]}]
 	return []
 
 
+## Fields a verb does not take, holding the value of one it does.
+##
+## The router's schema is one object for every verb — sixty separate shapes
+## cost more in tokens than the whole rest of the prompt — so the model sees
+## `to` and `place` side by side and now and then puts the destination of a
+## `go` in `to`. It is not wrong about what it meant, only about where to put
+## it, and a refusal would spend a round trip saying so. Each entry below is
+## one such near miss: the value moves to the field the verb actually has,
+## and only when that field is empty.
+const ALIASES := {
+	"place": ["to", "at", "where", "destination", "target", "building"],
+	"who": ["whom", "name", "person"],
+	"order": ["task", "instruction"],
+	"count": ["number", "amount", "quantity", "n"],
+	"units": ["amount", "quantity"],
+	"material": ["mat", "stuff"],
+	"hours": ["duration", "time"],
+	"line": ["say", "text", "words"],
+	"role": ["job", "title"],
+	"brief": ["description", "what", "text"],
+}
+
+
+## One step, with its fields put where this verb keeps them.
+static func tidy(step: Dictionary) -> Dictionary:
+	var verb := str(step.get("do", ""))
+	if not known(verb):
+		return step
+	var e := entry(verb)
+	var takes: Array = (e["required"] as Array) + (e["optional"] as Array)
+	for want: String in ALIASES:
+		if want not in takes or str(step.get(want, "")).strip_edges() != "":
+			continue
+		for other: String in ALIASES[want]:
+			# Only a field this verb has no use for. "description" is a real
+			# field of hire, and moving it into brief would be the same
+			# mistake in the other direction.
+			if other in takes or not step.has(other):
+				continue
+			if str(step[other]).strip_edges() == "":
+				continue
+			step[want] = step[other]
+			step.erase(other)
+			break
+	return step
+
+
 static func known(verb: String) -> bool:
-	return VERBS.has(verb)
+	return VERBS.has(verb) or _extra.has(verb)
 
 
 ## Which tier first allows this verb, or 0 if nobody has heard of it. Mirrors
@@ -342,34 +601,43 @@ static func known(verb: String) -> bool:
 ## yet" and "I have never heard of that" are different sentences, and the player
 ## is owed the right one.
 static func verb_tier(verb: String) -> int:
-	if not VERBS.has(verb):
+	if not known(verb):
 		return 0
-	return int(VERBS[verb]["tier"])
+	return int(entry(verb)["tier"])
 
 
 static func produces_site(verb: String) -> bool:
-	return VERBS.has(verb) and str(VERBS[verb]["produces"]) == "site"
+	return known(verb) and str(entry(verb)["produces"]) == "site"
 
 
-## The verb list as the model is shown it, one line each. Kept here rather than
-## in Prompt so that adding a verb cannot leave the prompt describing four of
-## them and the validator accepting five.
+## The verb list as the model is shown it, one line each:
+##
+##   verb(field, optional?) — what it does
+##
+## Kept here rather than in Prompt so that adding a verb cannot leave the
+## prompt describing four of them and the validator accepting five. The
+## format is terse on purpose: this list is the largest thing in the router's
+## prompt and the router's prompt is charged against a per-minute token
+## budget, so every word here costs an order somewhere.
+##
 ## `allowed` narrows the list to one role's capabilities. Empty means all of
 ## them, which is what the builder role amounts to.
 static func describe_for_tier(tier: int, allowed: Array = []) -> String:
 	var lines: Array[String] = []
-	for v: String in VERBS:
-		if int(VERBS[v]["tier"]) > tier:
+	var table := all()
+	for v: String in table:
+		var e: Dictionary = table[v]
+		if int(e["tier"]) > tier:
 			continue
-		if not allowed.is_empty() and capability_of(v) not in allowed:
+		if not allowed.is_empty() and capability_of(v) not in allowed \
+				and not bool(e.get("anyone", false)):
 			continue
 		var fields: Array[String] = []
-		for f: String in VERBS[v]["required"]:
+		for f: String in e["required"]:
 			fields.append(f)
-		for f: String in VERBS[v]["optional"]:
-			fields.append("%s?" % f)
-		lines.append("- %s — %s   fields: %s" % [v, str(VERBS[v]["says"]),
-			", ".join(fields)])
+		for f2: String in e["optional"]:
+			fields.append("%s?" % f2)
+		lines.append("%s(%s) %s" % [v, ", ".join(fields), str(e["says"])])
 	return "\n".join(lines)
 
 
@@ -380,6 +648,8 @@ static func describe(step: Dictionary) -> String:
 	match verb:
 		"build":
 			var spec: Dictionary = step.get("spec", {})
+			if spec.is_empty():
+				return "build: %s" % str(step.get("brief", "a building"))
 			return "put up %s" % Validator.an(str(spec.get("archetype", "building")))
 		"enclose":
 			var s: Array = step.get("size", [6, 6])
@@ -457,6 +727,35 @@ static func describe(step: Dictionary) -> String:
 			return "take somebody on as %s" % Validator.an(str(step.get("role", "")))
 		"report":
 			return "give an account of the town"
+		"hire":
+			var who := str(step.get("who", "")).strip_edges()
+			return "take %s on as %s" % [who.capitalize() if who != "" else "them",
+				Validator.an(str(step.get("role", "")))]
+		"dismiss":
+			var who2 := str(step.get("who", "")).strip_edges()
+			return "let %s go" % (who2.capitalize() if who2 != "" else "them")
+		"define_role":
+			return "write up the job of %s" % str(step.get("role", ""))
+		"learn":
+			return "remember: %s — %s" % [str(step.get("about", "")), str(step.get("value", ""))]
+		"standing":
+			var o := str(step.get("order", "")).strip_edges()
+			return ("every morning, %s" % o) if o != "" else "drop the morning task"
+		"goal":
+			var g := str(step.get("goal", "")).strip_edges()
+			return ("see to it that %s" % g) if g != "" else "drop the goal"
+		"save":
+			return "write the town down"
+		"restart":
+			return "start over"
+	# A registered verb: its own line, with whatever it was given.
+	var e := entry(verb)
+	if not e.is_empty():
+		var bits: Array[String] = []
+		for f: String in (e["required"] as Array) + (e["optional"] as Array):
+			if step.has(f):
+				bits.append("%s %s" % [f, str(step[f])])
+		return str(e["says"]).split(" — ")[0] + ((" (" + ", ".join(bits) + ")") if not bits.is_empty() else "")
 	return verb
 
 

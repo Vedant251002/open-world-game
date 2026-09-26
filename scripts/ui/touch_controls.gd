@@ -97,6 +97,10 @@ func _buttons() -> Dictionary:
 		"centre": Vector2(56.0 * u, 56.0 * u), "radius": 28.0 * u,
 		"action": &"menu", "label": "ESC",
 	}
+	out["chat"] = {
+		"centre": Vector2(56.0 * u, 122.0 * u), "radius": 28.0 * u,
+		"action": &"chat", "label": "CHAT",
+	}
 	out["talk"] = {
 		"centre": Vector2(s.x - 100.0 * u, s.y - 108.0 * u), "radius": 54.0 * u,
 		"action": &"talk", "label": "TALK",

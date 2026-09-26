@@ -55,7 +55,7 @@ func _run() -> void:
 
 	# An envoy goes and comes back.
 	var d0 := float(first["disposition"])
-	_check(realm.handle(w, "send an envoy to %s" % name), "envoy order taken")
+	_check(realm.run(w, {"do": "envoy", "town": name, "errand": "envoy"}), "envoy order taken")
 	_check(not w.job_errand.is_empty(), "envoy is on the road")
 	a = realm.answer(w2, "when will the envoy be back?")
 	_check(a.find("back on day") >= 0, "envoy eta: %s" % a)
@@ -69,10 +69,10 @@ func _run() -> void:
 	var c0 := town.coins
 	print("[neighbours] w2=%s busy=%s state=%s pondering=%s holding=%s errand=%s hired=%s" % [
 		w2.display_name(), w2.busy(), w2.state, w2.pondering, w2._holding, w2.job_errand.get("kind", ""), w2.hired])
-	_check(realm.handle(w2, "send %s a gift of 200 coins" % name), "gift taken")
+	_check(realm.run(w2, {"do": "envoy", "town": name, "errand": "gift", "coins": 200}), "gift taken")
 	_check(town.coins == c0 - 200, "200 coins left the purse")
 	clock.advance(24.0 * days + 1.0)
-	_check(realm.handle(w2, "declare war on %s" % name), "war taken")
+	_check(realm.run(w2, {"do": "envoy", "town": name, "errand": "war"}), "war taken")
 	clock.advance(24.0 * days + 1.0)
 	_check(str(first["treaty"]) == "war", "treaty is war")
 	a = realm.answer(w, "are we at war?")
@@ -80,31 +80,33 @@ func _run() -> void:
 	_check(nb.hostile().size() >= 1, "hostile list has them")
 	nb.set_treaty(name, "peace")
 	_check(str(first["treaty"]) == "peace", "set_treaty works")
-	_check(realm.handle(w2, "trade with %s" % name), "caravan taken")
+	_check(realm.run(w2, {"do": "envoy", "town": name, "errand": "trade"}), "caravan taken")
 	clock.advance(24.0 * days + 1.0)
 	_check(str(first["treaty"]) in ["trade", "peace"], "caravan came back (treaty %s)" % first["treaty"])
 
 	# Land.
 	var plots0 := village.plots.size()
 	c0 = town.coins
-	_check(realm.handle(w, "claim the land to the north"), "claim taken")
+	_check(realm.run(w, {"do": "claim", "side": "north"}), "claim taken")
 	_check(village.plots.size() > plots0, "plots grew %d -> %d" % [plots0, village.plots.size()])
 	_check(town.coins < c0, "claim cost %d" % (c0 - town.coins))
 	a = realm.answer(w, "how big is our land?")
 	_check(a.find("north") >= 0, "land: %s" % a)
-	_check(realm.handle(w, "name the north side Mill Quarter"), "district named")
+	_check(realm.run(w, {"do": "name_district", "name": "Mill Quarter", "side": "north"}), "district named")
 	a = realm.answer(w, "where is the Mill Quarter?")
 	_check(a.find("Mill Quarter") >= 0, "district where: %s" % a)
 
 	# A road, laid over hours.
 	var cob0 := town.units_of("cobble")
-	_check(realm.handle(w2, "build a road to the east edge"), "road order taken")
+	_check(realm.run(w2, {"do": "road_out", "side": "east"}), "road order taken")
 	clock.advance(2.0)
 	_check(town.units_of("cobble") < cob0, "cobble spent on the road: %d" % (cob0 - town.units_of("cobble")))
 	_check(realm.hud_lines().any(func(l: String) -> bool: return l.find("road") >= 0), "hud shows the road")
-	clock.advance(60.0)
+	# hour_passed fires once per advance() call, so hours go one at a time.
+	for i in 40:
+		clock.advance(1.0)
 	_check(ex._road.is_empty(), "road finished")
-	_check(not realm.handle(w, "build a hut on the corner"), "build order left alone")
+	_check(not realm.run(w, {"do": "build"}), "build is not the realm's")
 
 	var snap := realm.snapshot()
 	nb.restore(snap["Neighbours"])

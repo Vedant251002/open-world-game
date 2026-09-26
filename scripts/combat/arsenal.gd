@@ -53,6 +53,13 @@ const WEAPONS := {
 		"spread": 1.0, "range": 140.0, "projectile": "rocket", "hands": 2,
 		"blast": 5.5, "power": 150.0, "label": "launcher",
 	},
+	# The besieger's engine: a stone lobbed slow and high, landing hard.
+	# Nobody in the town crafts one; it arrives with an army.
+	"trebuchet": {
+		"ammo": "stone", "speed": 34.0, "damage": 0.0, "reload": 20.0,
+		"spread": 2.5, "range": 90.0, "projectile": "shell", "hands": 2,
+		"blast": 5.0, "power": 140.0, "label": "trebuchet",
+	},
 }
 
 ## key -> what the armoury makes in one batch, from what, in how many hours.

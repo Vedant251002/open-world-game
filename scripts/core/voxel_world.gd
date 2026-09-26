@@ -280,12 +280,26 @@ func mark_dirty(cpos: Vector3i) -> void:
 ## being walked away from and come back to.
 func install_column(cx: int, cz: int, column_chunks: Dictionary,
 		tile: PackedInt32Array) -> void:
+	var merged := false
 	for cpos: Vector3i in column_chunks:
 		var c: VoxelChunk = column_chunks[cpos]
 		var stashed: PackedByteArray = _stash.get(cpos, PackedByteArray())
 		if not stashed.is_empty():
 			c.deserialize(stashed)
 			c.modified = true
+		# A chunk the game wrote into before the generator got here — the
+		# founding buildings go down while the town is still streaming in —
+		# holds nothing but those writes. Lay them over the generated ground,
+		# or the strip of a building that sat in this chunk is simply gone.
+		var early: VoxelChunk = chunks.get(cpos)
+		if early != null and early.modified and early != c:
+			var ev := early.voxels
+			for i in ev.size():
+				if ev[i] != VoxelTypes.AIR:
+					c.voxels[i] = ev[i]
+			c.modified = true
+			_blob_cache.erase(cpos)
+			merged = true
 		chunks[cpos] = c
 
 	# A building can occupy chunks the generator never makes, because they sit
@@ -305,7 +319,7 @@ func install_column(cx: int, cz: int, column_chunks: Dictionary,
 
 	set_height_tile(cx, cz, tile)
 	# Restore height for any modified chunk that changed the surface.
-	if not _stash.is_empty():
+	if merged or not _stash.is_empty():
 		_rebuild_column_heights(cx, cz)
 
 	# Queue this column and any neighbour the new arrival has just unblocked.

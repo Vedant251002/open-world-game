@@ -225,7 +225,7 @@ static func check_step(step: Dictionary, seen: Dictionary, plot: Plot,
 	# given a capability the town cannot carry out yet says that too, rather
 	# than the plan quietly failing somewhere the player cannot see.
 	var role: Role = ctx.get("role", null)
-	if role != null:
+	if role != null and not Steps.for_anyone(verb):
 		var cap := Steps.capability_of(verb)
 		if not role.can(cap):
 			return error("outside_role",
@@ -235,7 +235,7 @@ static func check_step(step: Dictionary, seen: Dictionary, plot: Plot,
 				"I was taken on for that, but the town has no %s yet." % Capabilities.lacks(cap),
 				cap)
 
-	var schema: Dictionary = Steps.VERBS[verb]
+	var schema: Dictionary = Steps.entry(verb)
 	for field: String in schema["required"]:
 		if not step.has(field):
 			return error("step_missing_field",
@@ -329,10 +329,35 @@ static func check_step(step: Dictionary, seen: Dictionary, plot: Plot,
 			if str(step.get("order", "")).strip_edges() == "":
 				return error("nothing_to_say", "Tell them what?")
 			return {}
-		"recruit":
+		"recruit", "hire", "define_role":
 			if str(step.get("role", "")).strip_edges() == "":
 				return error("role_needs_name", "Take them on as what?")
 			return {}
+		"learn":
+			if str(step.get("about", "")).strip_edges() == "" \
+					or str(step.get("value", "")).strip_edges() == "":
+				return error("nothing_learned", "What would you have had instead?")
+			return {}
+	return _check_registered(step, verb)
+
+
+## A verb some system registered at startup is checked against the types it
+## declared and nothing else; the system's own run() has the last word.
+static func _check_registered(step: Dictionary, verb: String) -> Dictionary:
+	var entry := Steps.entry(verb)
+	var types: Dictionary = entry.get("types", {})
+	for field: String in types:
+		if not step.has(field):
+			continue
+		var t: Variant = types[field]
+		if t is Array:
+			if str(step[field]) not in (t as Array):
+				return error("bad_%s" % field, "I can do %s." % ", ".join(
+					PackedStringArray(t as Array)), str(step[field]))
+		elif str(t) == "int":
+			if not (step[field] is float or step[field] is int) \
+					or int(step[field]) < 0:
+				return error("bad_%s" % field, "How many?")
 	return {}
 
 

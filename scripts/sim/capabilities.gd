@@ -83,6 +83,12 @@ const LIST := {
 		"ready": true,
 		"tags": ["harvest", "reap", "pick", "farmer", "gather crops", "farmhand", "gardener"],
 	},
+	"forage": {
+		"says": "go out to where berries, herbs and mushrooms grow and bring some back",
+		"ready": true,
+		"tags": ["forage", "berries", "herbs", "mushrooms", "pick", "gather",
+			"woods", "herbalist", "apothecary", "gatherer"],
+	},
 	"gather": {
 		"says": "go out past the town and dig, fell or quarry a material",
 		"ready": true,

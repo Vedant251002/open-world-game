@@ -91,14 +91,14 @@ func _run() -> void:
 	_check(embers > 0, "%d voxels turned to ember" % embers)
 	a = realm.answer(w, "is anything on fire?")
 	_check(a.find("bakery") >= 0, "says the bakery burns: %s" % a)
-	_check(realm.handle(w, "put out the fire"), "bucket line order taken")
+	_check(realm.run(w, {"do": "fight_fire"}), "bucket line order taken")
 	_check(not w.job_errand.is_empty(), "worker is on the fire errand")
 	var hours := 0
 	while not wx.burning().is_empty() and hours < 12:
 		clock.advance(1.0)
 		hours += 1
 	_check(wx.burning().is_empty(), "fire out after %d hours" % hours)
-	_check(realm.handle(w, "ring the bell"), "ring the bell with no fire is still taken")
+	_check(realm.run(w, {"do": "fight_fire"}), "ring the bell with no fire is still taken")
 
 	# Snapshot round trip keeps the calendar.
 	var season_before: String = wx.season()
@@ -107,7 +107,7 @@ func _run() -> void:
 	_check(wx.season() == season_before, "restore keeps the season")
 
 	# Not ours.
-	_check(not realm.handle(w, "build a big bakery"), "build orders are left alone")
+	_check(not realm.run(w, {"do": "build"}), "build is not the realm's")
 	_check(realm.answer(w, "what is your favourite colour?") == "", "unknown question falls through")
 	_finish()
 

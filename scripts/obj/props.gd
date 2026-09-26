@@ -503,23 +503,126 @@ static func radius(type_name: String) -> float:
 	return float(RADIUS.get(resolve(type_name), RADIUS_DEFAULT))
 
 
-## Object-voxel props use their own materials rather than the world shader: the
-## world shader is world-space triplanar with a grain sized for 0.25 m voxels,
-## which reads as mud at a twentieth of that scale.
-static func material_for(mat_id: int) -> StandardMaterial3D:
+## Object-voxel props, textured.
+##
+## These used to get a bare StandardMaterial3D with albedo_color set and
+## nothing else, which is the whole reason a bed looked like a flat plastic box
+## while the wall behind it showed brick: the props were never given the PBR
+## maps the world got. They are now a ShaderMaterial sharing the world's three
+## texture arrays, so a blanket gets thatch and a chest gets oak grain the same
+## way the walls do.
+##
+## The one thing that genuinely differs from the world is scale. A prop voxel
+## is 0.05 m against the world's 0.25 m — five times finer — so the same repeat
+## count that reads as brickwork on a wall reads as a photographic blow-up on a
+## blanket. The scale below is the world table's divided by roughly that factor
+## and then re-tuned, which is why it is written out rather than derived.
+const PROP_SHADER := preload("res://scripts/core/voxel.gdshader")
+
+## Repeat count per prop face (one prop face is 0.05 m).
+const PROP_TEX_SCALE := {
+	VoxelTypes.TIMBER: 0.55, VoxelTypes.PLANK: 0.60, VoxelTypes.DARK_OAK: 0.55,
+	VoxelTypes.BARK: 0.85,
+	VoxelTypes.BRICK: 0.50, VoxelTypes.SANDSTONE: 0.40, VoxelTypes.GRANITE: 0.35,
+	VoxelTypes.COBBLE: 0.60, VoxelTypes.STONE: 0.45, VoxelTypes.ROCK: 0.40,
+	VoxelTypes.CONCRETE: 0.30, VoxelTypes.REBAR_CONCRETE: 0.30,
+	VoxelTypes.CONCRETE_SLAB: 0.45,
+	VoxelTypes.STEEL_FRAME: 0.30, VoxelTypes.CORRUGATED_STEEL: 0.50,
+	VoxelTypes.SHEET_METAL: 0.30, VoxelTypes.PLASTIC_PANEL: 0.30,
+	VoxelTypes.CARBON_COMPOSITE: 1.0, VoxelTypes.SOLAR_PANEL: 0.25,
+	VoxelTypes.THATCH: 0.75, VoxelTypes.CLAY_TILE: 0.65,
+	VoxelTypes.ASPHALT_SHINGLE: 0.60,
+	VoxelTypes.GRAVEL: 1.0, VoxelTypes.GRASS: 0.85, VoxelTypes.SAND: 0.70,
+	VoxelTypes.DIRT: 0.65, VoxelTypes.CLAY: 0.60, VoxelTypes.LEAF: 0.80,
+	VoxelTypes.FARMLAND: 0.65, VoxelTypes.WET_FARMLAND: 0.65,
+	VoxelTypes.IRON_ORE: 0.60, VoxelTypes.ASPHALT: 0.40, VoxelTypes.EMBER: 0.75,
+	VoxelTypes.PAINTED_WHITE: 0.30, VoxelTypes.PAINTED_RED: 0.30,
+	VoxelTypes.CHROME: 0.30, VoxelTypes.MATTE_BLACK: 0.30,
+	VoxelTypes.NEON_STRIP: 0.50,
+}
+
+## How hard the normal map pushes. Props are looked at from closer than walls —
+## a bed two paces away rather than a house across the square — so their relief
+## is worth more, not less.
+const PROP_NORMAL_STRENGTH := {
+	VoxelTypes.THATCH: 1.0, VoxelTypes.PLANK: 0.8, VoxelTypes.TIMBER: 0.8,
+	VoxelTypes.DARK_OAK: 0.8, VoxelTypes.BARK: 1.1,
+	VoxelTypes.BRICK: 1.0, VoxelTypes.COBBLE: 1.0, VoxelTypes.STONE: 0.8,
+	VoxelTypes.ROCK: 1.0, VoxelTypes.GRANITE: 0.8, VoxelTypes.SANDSTONE: 0.85,
+	VoxelTypes.CORRUGATED_STEEL: 1.0, VoxelTypes.SHEET_METAL: 0.6,
+	VoxelTypes.STEEL_FRAME: 0.6, VoxelTypes.IRON_ORE: 1.0,
+	VoxelTypes.GRAVEL: 1.1, VoxelTypes.SAND: 0.7, VoxelTypes.DIRT: 0.9,
+	VoxelTypes.CLAY: 0.8, VoxelTypes.LEAF: 1.1,
+	VoxelTypes.CARBON_COMPOSITE: 0.7, VoxelTypes.PAINTED_WHITE: 0.5,
+	VoxelTypes.PAINTED_RED: 0.5, VoxelTypes.MATTE_BLACK: 0.5,
+	VoxelTypes.CHROME: 0.5, VoxelTypes.PLASTIC_PANEL: 0.5,
+	VoxelTypes.CONCRETE: 0.6, VoxelTypes.CONCRETE_SLAB: 0.6,
+	VoxelTypes.REBAR_CONCRETE: 0.8, VoxelTypes.SOLAR_PANEL: 0.5,
+	VoxelTypes.CLAY_TILE: 1.0, VoxelTypes.ASPHALT_SHINGLE: 1.0,
+	VoxelTypes.FARMLAND: 0.9,
+	VoxelTypes.WET_FARMLAND: 0.7, VoxelTypes.ASPHALT: 0.5,
+	VoxelTypes.GRASS: 1.0, VoxelTypes.EMBER: 0.8, VoxelTypes.NEON_STRIP: 0.3,
+}
+
+## Cavity darkening. Lower than the world's for most of these: a blanket or a
+## table top is a single mostly-flat surface and the texture's own AO lands in
+## the wrong places, whereas on a wall it lands in the mortar and is right.
+const PROP_AO_STRENGTH := {
+	VoxelTypes.BRICK: 0.7, VoxelTypes.COBBLE: 0.7, VoxelTypes.STONE: 0.7,
+	VoxelTypes.ROCK: 0.7, VoxelTypes.GRANITE: 0.65, VoxelTypes.SANDSTONE: 0.65,
+	VoxelTypes.THATCH: 0.6, VoxelTypes.BARK: 0.7, VoxelTypes.LEAF: 0.6,
+	VoxelTypes.IRON_ORE: 0.7, VoxelTypes.GRAVEL: 0.7,
+	VoxelTypes.PAINTED_WHITE: 0.3, VoxelTypes.PAINTED_RED: 0.3,
+	VoxelTypes.CHROME: 0.2, VoxelTypes.MATTE_BLACK: 0.25,
+	VoxelTypes.CARBON_COMPOSITE: 0.35, VoxelTypes.SOLAR_PANEL: 0.3,
+	VoxelTypes.SHEET_METAL: 0.35, VoxelTypes.STEEL_FRAME: 0.45,
+	VoxelTypes.PLASTIC_PANEL: 0.4, VoxelTypes.GLASS: 0.1,
+	VoxelTypes.REINFORCED_GLASS: 0.1, VoxelTypes.NEON_STRIP: 0.1,
+	VoxelTypes.WATER: 0.1, VoxelTypes.EMBER: 0.5,
+}
+
+static func material_for(mat_id: int) -> Material:
 	if _mat_cache.has(mat_id):
 		return _mat_cache[mat_id]
 	var props: Array = VoxelTypes.PROPS[mat_id]
-	var m := StandardMaterial3D.new()
-	m.albedo_color = props[0]
-	m.roughness = float(props[1])
-	m.metallic = float(props[2])
+
+	# The textured path, which is what almost every material gets.
+	if VoxelTextures.ready():
+		var layer := VoxelTextures.layer_of(VoxelTypes.name_of(mat_id))
+		if layer >= 0:
+			var m := ShaderMaterial.new()
+			m.shader = PROP_SHADER
+			# A prop is 0.05 m, and the shader reads world-space position, so
+			# the texture is anchored to the world exactly as it is on a wall.
+			# That means a prop's grain lines up with the grain of the same
+			# material in the wall next to it, which is the thing that makes
+			# two objects in one room look like they came from the same world.
+			m.set_shader_parameter("tex_layer", layer)
+			m.set_shader_parameter("tex_scale", PROP_TEX_SCALE.get(mat_id, 0.5))
+			m.set_shader_parameter("normal_strength",
+				PROP_NORMAL_STRENGTH.get(mat_id, 0.8))
+			m.set_shader_parameter("ao_strength", PROP_AO_STRENGTH.get(mat_id, 0.5))
+			m.set_shader_parameter("albedo_array", VoxelTextures.albedo_array())
+			m.set_shader_parameter("normal_array", VoxelTextures.normal_array())
+			m.set_shader_parameter("orm_array", VoxelTextures.orm_array())
+			# The mesher's corner AO is meaningless here: a prop mesh carries no
+			# vertex colour, so the shader must be told not to multiply by one.
+			m.set_shader_parameter("hue_jitter", 0.06)
+			_mat_cache[mat_id] = m
+			return m
+
+	# Fallback for a material with no baked texture, or when the arrays failed
+	# to load. Flat colour, as before — worse, but it renders.
+	var flat := StandardMaterial3D.new()
+	flat.albedo_color = props[0]
+	flat.roughness = float(props[1])
+	flat.metallic = float(props[2])
 	if float(props[3]) > 0.0:
-		m.emission_enabled = true
-		m.emission = props[0]
-		m.emission_energy_multiplier = float(props[3])
-	_mat_cache[mat_id] = m
-	return m
+		flat.emission_enabled = true
+		flat.emission = props[0]
+		flat.emission_energy_multiplier = float(props[3])
+	_mat_cache[mat_id] = flat
+	return flat
 
 
 static func mesh_for(type_name: String) -> ArrayMesh:

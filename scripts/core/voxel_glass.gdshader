@@ -4,6 +4,8 @@ render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specula
 // DELEGATE - the only two see-through world materials, glass and water.
 // Everything else uses voxel.gdshader and stays in the opaque pass.
 
+#define USE_PBR_TEXTURES
+
 #include "res://scripts/core/voxel_common.gdshaderinc"
 
 void vertex() {

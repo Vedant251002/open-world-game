@@ -158,6 +158,47 @@ static func _topic(t: String) -> Dictionary:
 
 
 ## The sentence the model reads, in the worker's own second-hand voice.
+## What a preference can be about. The learn step's "about" is one of these
+## and nothing else — the sentence it becomes, the plan it shapes and the
+## cache key it invalidates are all switched on this word, so a synonym is a
+## preference that is remembered and never used.
+const TOPICS := ["walls", "roof_material", "roof", "orientation", "stories",
+	"module", "size"]
+
+## The nearest topic to what the model said, or "". "roofs" and "roof colour"
+## are both about the roof; which of the two roof topics depends on whether
+## the value is a material.
+static func topic_of(about: String, value: String) -> String:
+	var a := about.strip_edges().to_lower().replace(" ", "_")
+	if a in TOPICS:
+		return a
+	var v := value.strip_edges().to_lower().replace(" ", "_").trim_prefix("not:")
+	if a.begins_with("roof"):
+		return "roof_material" if VoxelTypes.id_of(v) >= 0 else "roof"
+	if a.begins_with("wall") or a.begins_with("material"):
+		return "walls"
+	if a.begins_with("orient") or a.begins_with("facing") or a.begins_with("door"):
+		return "orientation"
+	if a.begins_with("stor") or a.begins_with("floor"):
+		return "stories"
+	if a.begins_with("size") or a.begins_with("footprint") or a.begins_with("scale"):
+		return "size"
+	if a.begins_with("module") or a.begins_with("room"):
+		return "module"
+	# Not a topic, but the words still mean something: a material is about
+	# what it is made of.
+	if VoxelTypes.id_of(v) >= 0:
+		return "walls"
+	return ""
+
+
+## The preference as a sentence for the prompt and the log: "they want
+## thatch roofs". Public because the learn step composes one from what the
+## router heard rather than from a parse of the words.
+static func sentence(about: String, value: String) -> String:
+	return _sentence(about, value)
+
+
 static func _sentence(about: String, value: String) -> String:
 	var neg := value.begins_with("not:")
 	var v := value.trim_prefix("not:").replace("_", " ")

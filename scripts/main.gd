@@ -281,6 +281,20 @@ func _on_world_ready(t0: int) -> void:
 				say = a.substr(6)
 		at.begin(say)
 		return
+	if "--routetest" in args:
+		var rt := RouteTest.new()
+		rt.dispatch = dispatch
+		rt.crew = crew
+		rt.clock = clock
+		rt.town = town
+		rt.world = world
+		add_child(rt)
+		var say2 := ""
+		for a in args:
+			if a.begins_with("--say="):
+				say2 = a.substr(6)
+		rt.begin(say2)
+		return
 	if "--gestures" in args:
 		var gt := GestureTest.new()
 		gt.world = world
@@ -597,19 +611,8 @@ func _raise_crew() -> void:
 
 	# The kingdom: everything that makes the town a place rather than a
 	# building site. One hub; every system of it plugs into that.
-	realm = Realm.new()
-	realm.name = "Realm"
-	add_child(realm)
-	realm.setup({
-		"world": world, "village": village, "town": town, "clock": clock,
-		"player": player, "crew": crew, "livestock": livestock,
-		"wildlife": wildlife, "warfare": warfare, "nav": nav,
-		"props_root": props_root, "farm": farm, "dispatch": dispatch, "hud": hud,
-		"sky": sky, "map": map, "inventory": inventory,
-	})
-	realm.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
-	dispatch.realm = realm
-	hud.realm = realm
+	if "--norealm" not in OS.get_cmdline_user_args():
+		_raise_realm()
 	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
 	# assumption panel rather than a toast that scrolls away.
@@ -678,6 +681,22 @@ func build_context() -> Dictionary:
 
 # ------------------------------------------------------------------ saving
 
+func _raise_realm() -> void:
+	realm = Realm.new()
+	realm.name = "Realm"
+	add_child(realm)
+	realm.setup({
+		"world": world, "village": village, "town": town, "clock": clock,
+		"player": player, "crew": crew, "livestock": livestock,
+		"wildlife": wildlife, "warfare": warfare, "nav": nav,
+		"props_root": props_root, "farm": farm, "dispatch": dispatch, "hud": hud,
+		"sky": sky, "map": map, "inventory": inventory,
+	})
+	realm.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
+	dispatch.realm = realm
+	hud.realm = realm
+
+
 func _run_realm_test(which: String) -> void:
 	var path := "res://scripts/dev/realm/%s_test.gd" % which
 	if not ResourceLoader.exists(path):
@@ -685,6 +704,10 @@ func _run_realm_test(which: String) -> void:
 		get_tree().quit(2)
 		return
 	var script: GDScript = load(path)
+	if script == null or not script.can_instantiate():
+		printerr("[delegate] realm test %s does not compile" % path)
+		get_tree().quit(2)
+		return
 	var t: Node = script.new()
 	for key in ["world", "village", "town", "clock", "player", "crew", "livestock",
 			"wildlife", "warfare", "nav", "farm", "dispatch", "hud", "realm", "map",
@@ -715,6 +738,8 @@ func _snapshot() -> Dictionary:
 		state["livestock"] = livestock.snapshot()
 	if realm != null:
 		state["realm"] = realm.snapshot()
+	if hud != null and hud.chat != null:
+		state["chat"] = hud.chat.snapshot()
 	return state
 
 
@@ -759,6 +784,8 @@ func _restore_people() -> void:
 		livestock.restore(_save.get("livestock", []))
 	if realm != null:
 		realm.restore(_save.get("realm", {}))
+	if hud != null and hud.chat != null:
+		hud.chat.restore(_save.get("chat", {}))
 	var pl: Dictionary = _save.get("player", {})
 	if pl.has("pos"):
 		var at: Vector3 = pl["pos"]

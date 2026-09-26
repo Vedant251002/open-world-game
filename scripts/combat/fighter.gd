@@ -32,6 +32,9 @@ var warfare: Node
 var body: Humanoid
 var post := Vector3.ZERO            ## where this one stands when idle
 var ammo := 0                       ## raiders only: what they brought
+## Fights survived, as a 0..1 that tightens the aim a little and hardens
+## the body a little. Set by the campaign; read by warfare.fire.
+var veteran := 0.0
 var display_name := "soldier"
 
 var _mode := Mode.GUARD

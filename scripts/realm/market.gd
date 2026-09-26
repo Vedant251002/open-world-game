@@ -196,34 +196,32 @@ func _abs_hour() -> float:
 
 # ------------------------------------------------------------------ talking
 
-func try_order(worker: Worker, text: String) -> bool:
-	var t := text.to_lower()
-	if Realm.has_phrase(t, ["build", "put up", "construct", "erect", "make a", "plant",
-			"recruit", "craft"]):
-		return false
-	# Tax.
-	if Realm.has_word(t, ["tax", "taxes", "taxation", "levy"]):
-		return _order_tax(worker, t)
-	# Trade.
-	var selling := Realm.has_word(t, ["sell", "trade off", "flog"]) \
-		or Realm.has_phrase(t, ["sell off", "get rid of"])
-	var buying := Realm.has_word(t, ["buy", "purchase", "order"]) \
-		or Realm.has_phrase(t, ["buy in", "stock up on"])
-	if not selling and not buying:
-		return false
-	var kind := _kind_in(t)
-	if kind == "":
-		worker.speak("%s what? Name a thing the yard holds." % ("Sell" if selling else "Buy"))
-		return true
-	var n := Realm.count_in(t, -1)
+## What the market can be asked for. Buying and selling are the dispatcher's
+## "trade" verb already; the tax is the market's own.
+func verbs() -> Dictionary:
+	return {
+		"tax": {
+			"says": "set the tax: to a rate in percent, or raise, lower or abolish it",
+			"required": ["change"],
+			"optional": ["rate"],
+			"types": {"change": ["set", "raise", "lower", "abolish"], "rate": "int"},
+			"instant": true,
+		},
+	}
+
+
+## The dispatcher's "trade" step comes here when there is a market, so a
+## sale is at today's price and settles when the walk is done. `n` of 0
+## means a sensible amount; -1 means the lot.
+func trade(worker: Worker, kind: String, n: int, selling: bool) -> String:
+	if not realm.town.PRICE.has(kind) and not realm.town.stock.has(kind):
+		return "Nobody at the market deals in %s." % kind.replace("_", " ")
 	if n < 0:
-		if Realm.has_word(t, ["all", "everything", "the lot"]):
-			n = int(realm.town.stock.get(kind, 0)) if selling else 50
-		else:
-			n = 20 if selling else 20
+		n = int(realm.town.stock.get(kind, 0)) if selling else 50
+	elif n == 0:
+		n = 20
 	if selling and int(realm.town.stock.get(kind, 0)) <= 0:
-		worker.speak("We have no %s to sell." % kind)
-		return true
+		return "We have no %s to sell." % kind
 	var store := realm.building("store")
 	var where := realm.door_of(store) if not store.is_empty() else realm.village.well_pos
 	var job := {"worker": worker, "kind": kind, "n": n, "sell": selling,
@@ -232,31 +230,32 @@ func try_order(worker: Worker, text: String) -> bool:
 		worker.speak("I will %s the %s when I am done here." % ["sell" if selling else "buy", kind])
 		job["at"] = _abs_hour() + 2.0
 		_jobs.append(job)
-		return true
+		return "done"
 	var line := "%s %d %s at %d a unit." % ["Selling" if selling else "Buying", n, kind,
 		price(kind) if selling else buy_price(kind)]
 	if not worker.take_errand_job("trade", where, TRADE_HOURS, line,
 			{"where": "the store" if not store.is_empty() else "the well", "doing": "lift"}):
 		_settle(job)
-		return true
+		return "done"
 	_jobs.append(job)
-	return true
+	return "started"
 
 
-func _order_tax(worker: Worker, t: String) -> bool:
+func run(worker: Worker, step: Dictionary) -> String:
+	if str(step.get("do", "")) != "tax":
+		return "failed"
 	var old := rate
-	if Realm.has_word(t, ["no", "abolish", "remove", "scrap", "end", "zero"]) \
-			or Realm.has_phrase(t, ["no tax", "without tax"]):
-		rate = 0.0
-	elif Realm.has_word(t, ["raise", "increase", "higher", "more", "up", "double"]):
-		rate = minf(rate + (rate if Realm.has_word(t, ["double"]) else 0.05), TAX_MAX)
-	elif Realm.has_word(t, ["lower", "cut", "reduce", "less", "down", "ease", "halve"]):
-		rate = maxf(rate - (rate * 0.5 if Realm.has_word(t, ["halve"]) else 0.05), 0.0)
-	else:
-		var n := Realm.count_in(t, -1)
-		if n < 0:
-			return false
-		rate = clampf(float(n) / 100.0, 0.0, TAX_MAX)
+	match str(step.get("change", "set")):
+		"abolish":
+			rate = 0.0
+		"raise":
+			rate = minf(rate + (float(step["rate"]) / 100.0 if step.has("rate") else 0.05), TAX_MAX)
+		"lower":
+			rate = maxf(rate - (float(step["rate"]) / 100.0 if step.has("rate") else 0.05), 0.0)
+		_:
+			if not step.has("rate"):
+				return "Set the tax to what? Say a number in percent."
+			rate = clampf(float(step["rate"]) / 100.0, 0.0, TAX_MAX)
 	var pct := int(round(rate * 100.0))
 	if rate == old:
 		worker.speak("The tax stays at %d percent." % pct)
@@ -266,7 +265,7 @@ func _order_tax(worker: Worker, t: String) -> bool:
 	else:
 		worker.speak("The tax is %d percent from tomorrow." % pct)
 		realm.note("tax", "The tax was set to %d percent." % pct)
-	return true
+	return "done"
 
 
 func try_answer(_worker: Worker, text: String) -> String:
