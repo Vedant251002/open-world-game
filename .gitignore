@@ -21,3 +21,10 @@ proxy/.wrangler/
 _after/
 _before/
 _props/
+
+# Python bytecode from the texture generator
+__pycache__/
+*.pyc
+
+# Tool scratch
+.hermes-tmp.*/
