@@ -92,7 +92,10 @@ static func get_material(id: int) -> ShaderMaterial:
 		var layer := VoxelTextures.layer_of(VoxelTypes.name_of(id))
 		if layer >= 0:
 			m.set_shader_parameter("tex_layer", layer)
-			m.set_shader_parameter("tex_scale", TEX_SCALE.get(id, 1.0))
+			# Scaled by the source resolution so a 512px web build draws the
+			# same number of bricks on the same wall as the 1024px desktop one.
+			m.set_shader_parameter("tex_scale",
+				TEX_SCALE.get(id, 1.0) * VoxelTextures.res_scale())
 			m.set_shader_parameter("normal_strength", NORMAL_STRENGTH.get(id, 1.0))
 			m.set_shader_parameter("ao_strength", AO_STRENGTH.get(id, 1.0))
 		m.set_shader_parameter("albedo_array", VoxelTextures.albedo_array())

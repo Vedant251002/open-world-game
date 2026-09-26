@@ -21,7 +21,28 @@ class_name VoxelTextures
 ## one call — each is built in its own array, which is exactly why there are
 ## three of them and not one atlas.
 
-const TEX_DIR := "res://assets/tex/"
+## Two texture sets, same generator, different resolution.
+##
+## assets/tex/      1024px — desktop, and the reference the tuning tables
+##                             in voxel_materials.gd were measured against
+## assets/tex_web/   512px  — what the web export ships
+##
+## Why two: the 1024px set is 100 MB, and a Godot .pck must be fully downloaded
+## and parsed before the first frame. Measured on the deployed site, that took
+## the web pack from 20.6 MB to 88.6 MB and the cold load from about 25 s to
+## about 53 s, and on a phone it is minutes — the tab wedges entirely, wedging
+## on document.readyState, because the main thread is inside the pack parser.
+##
+## 512px is the compromise: a quarter of the pixels, a quarter of the bytes, and
+## at the distance a browser player actually views a village the mip chain was
+## throwing most of the 1024px away anyway. The desktop build keeps the full
+## set because it loads from disk, where the size costs nothing.
+##
+## The directory is resolved at runtime rather than compiled in, so the same
+## binary works with either set present. If both are missing the world falls
+## back to flat colour and still runs.
+const TEX_DIR_DESKTOP := "res://assets/tex/"
+const TEX_DIR_WEB := "res://assets/tex_web/"
 
 ## The order here IS the layer order. Changing it silently repaints the world,
 ## because the shader only ever receives an index.
@@ -46,6 +67,33 @@ static var _normal: Texture2DArray = null
 static var _orm: Texture2DArray = null
 static var _loaded := false
 static var _ok := false
+## Which directory the arrays were built from, and how many texels it has per
+## side. The shader's UVs are in metres, so a smaller source needs a
+## proportionally smaller repeat count to cover the same wall — without this a
+## 512px brick texture is stretched over twice the area it was authored for and
+## every pattern looks twice as large.
+static var _dir := ""
+static var _res := 1024
+
+
+## Picks the texture directory.
+##
+## The 512px set is only correct for a build that has to download them, and the
+## engine knows that: OS.has_feature("web") is true for the web export and false
+## everywhere else. Choosing on that rather than on "which directory exists" is
+## what lets a single checkout ship 1024px on the desktop and 512px on the web
+## without either build needing its own assets — and it fixes a real mistake,
+## which was preferring the smaller set merely because it was on disk, so a
+## desktop run that had both directories quietly used the 512px one.
+static func _pick_dir() -> String:
+	var web := OS.has_feature("web")
+	if web and ResourceLoader.exists(TEX_DIR_WEB + "brick_a.png"):
+		return TEX_DIR_WEB
+	if ResourceLoader.exists(TEX_DIR_DESKTOP + "brick_a.png"):
+		return TEX_DIR_DESKTOP
+	if ResourceLoader.exists(TEX_DIR_WEB + "brick_a.png"):
+		return TEX_DIR_WEB
+	return TEX_DIR_DESKTOP
 
 
 ## Builds the arrays. Must run before any material is created: VoxelMaterials
@@ -56,6 +104,12 @@ static func load_all() -> bool:
 		return _ok
 	_loaded = true
 
+	_dir = _pick_dir()
+	if not ResourceLoader.exists(_dir + "brick_a.png"):
+		print("[tex] no baked maps in %s — using flat colour" % _dir)
+		_ok = false
+		return false
+
 	var albedo_layers: Array[Image] = []
 	var normal_layers: Array[Image] = []
 	var orm_layers: Array[Image] = []
@@ -65,7 +119,7 @@ static func load_all() -> bool:
 		var n := _read(name + "_n.png")
 		var o := _read(name + "_o.png")
 		if a == null or n == null or o == null:
-			print("[tex] missing maps for %s — using flat colour" % name)
+			print("[tex] missing maps for %s in %s — using flat colour" % [name, _dir])
 			_ok = false
 			return false
 		albedo_layers.append(a)
@@ -79,17 +133,28 @@ static func load_all() -> bool:
 	if not _ok:
 		return false
 
+	_res = _albedo.get_width()
 	for i in ORDER.size():
 		_layer_of[ORDER[i]] = i
-	print("[tex] %d materials -> 3 texture arrays @ %dx%d" % [
-		ORDER.size(), _albedo.get_width(), _albedo.get_height()])
+	print("[tex] %d materials -> 3 texture arrays @ %dx%d (%s)" % [
+		ORDER.size(), _albedo.get_width(), _albedo.get_height(),
+		"web 512" if _res <= 512 else "desktop 1024"])
 	return true
+
+
+## The multiplier that keeps a material's pattern the same physical size across
+## both texture sets. A 512px source is half the linear resolution of 1024px, so
+## at an unchanged repeat count a brick would be drawn twice as large on the
+## web as on the desktop. Scaling the repeat by 0.5 puts the same number of
+## bricks on the same wall.
+static func res_scale() -> float:
+	return float(_res) / 1024.0
 
 
 ## Reads one baked map, normalising it to the exact format and mipmap setting
 ## that create_from_images() requires every layer of an array to share.
 static func _read(fname: String) -> Image:
-	var path := TEX_DIR + fname
+	var path := _dir + fname
 	if not ResourceLoader.exists(path):
 		return null
 	var tex: Texture2D = load(path)

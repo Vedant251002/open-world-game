@@ -598,7 +598,8 @@ static func material_for(mat_id: int) -> Material:
 			# material in the wall next to it, which is the thing that makes
 			# two objects in one room look like they came from the same world.
 			m.set_shader_parameter("tex_layer", layer)
-			m.set_shader_parameter("tex_scale", PROP_TEX_SCALE.get(mat_id, 0.5))
+			m.set_shader_parameter("tex_scale",
+				PROP_TEX_SCALE.get(mat_id, 0.5) * VoxelTextures.res_scale())
 			m.set_shader_parameter("normal_strength",
 				PROP_NORMAL_STRENGTH.get(mat_id, 0.8))
 			m.set_shader_parameter("ao_strength", PROP_AO_STRENGTH.get(mat_id, 0.5))

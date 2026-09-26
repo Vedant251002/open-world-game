@@ -28,3 +28,6 @@ __pycache__/
 
 # Tool scratch
 .hermes-tmp.*/
+
+# Scratch capture from the web/desktop texture comparison
+_web512/
