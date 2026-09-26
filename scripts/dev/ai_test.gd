@@ -224,6 +224,17 @@ func _finish() -> void:
 			+ "(last error: %s)" % ("none reported" if _error == "" else _error))
 	print("[ai] ---")
 	print("[ai] calls that reached the model: %d" % _reached_model)
+	# The measured latency, which is the whole reason the timing exists: without
+	# it there is no baseline to improve and no way to tell a slow gateway from
+	# a hung one. Printed by kind so a slow planner is distinguishable from a
+	# slow chat reply.
+	if dispatch != null and dispatch.llm != null:
+		print("[ai] latency: %s" % dispatch.llm.stats_text())
+		for k: String in dispatch.llm.latency_by_kind():
+			var row: Dictionary = dispatch.llm.latency_by_kind()[k]
+			print("[ai]   %-8s n=%d  median %.1fs  p90 %.1fs" % [
+				k, int(row.get("n", 0)), float(row.get("median", 0.0)),
+				float(row.get("p90", 0.0))])
 	for f: String in _fails:
 		print("[ai] FAIL: %s" % f)
 	print("[ai] %s" % ("=== PASS ===" if _fails.is_empty() else "=== FAIL ==="))

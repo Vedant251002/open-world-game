@@ -81,6 +81,10 @@ const TIMEOUT := 90.0
 ## token bucket to have refilled a little, short enough that it is over before
 ## the worker has reached the plot.
 const RATE_LIMIT_WAIT := 6.0
+## Ceiling on a gateway-supplied retry hint. A body saying "try again in
+## 86400s" must not leave a worker thinking for a day, and a player who is
+## already waiting 90s for a reply is not going to be saved by 120s.
+const MAX_RATE_LIMIT_WAIT := 45.0
 const LOG_DIR := "user://ai_log"
 
 var api_key := ""
@@ -92,6 +96,145 @@ var offline := false          ## forced by --offline, or by having no key
 var calls_made := 0
 var cache_hits := 0
 var retries := 0
+
+## How long an order actually takes, measured.
+##
+## The game used to log the request and the response and never the gap between
+## them, which is why two separate bugs could take the whole AI feature
+## offline and nothing in the project could see it: there was no number. It
+## also meant the rate-limit wait was a guess (a flat RATE_LIMIT_WAIT) when the
+## gateway was stating the exact retry time in the body of the 429.
+##
+## These are wall-clock milliseconds for the HTTP round trip only, not the
+## walk to the plot or the build — those are the player's, and they are
+## reported separately by the dispatcher. Percentiles rather than an average,
+## because a tail is what a player actually feels: a median of 2 s with a 90th
+## percentile of 70 s is a different product from a median of 20 s, and an
+## average of 9 s describes neither.
+var _latencies_ms: Array[float] = []
+var _inflight_at := 0
+## Which kind of call is in flight, so the latency can be attributed.
+var _inflight_kind := ""
+## How many times a 429 sent us back to wait, and how long in total. A player
+## who is rate-limited on every order is the loudest possible signal that the
+## token budget is the real constraint, and it was invisible before.
+var rate_limit_waits := 0
+var rate_limit_wait_total := 0.0
+## Per-stage latency, so a slow order can be attributed rather than guessed at.
+var _lat_by_kind: Dictionary = {}
+
+
+## Starts timing one call. Cheap enough to call on every request.
+func _begin_call(kind: String) -> void:
+	_inflight_at = Time.get_ticks_msec()
+	_inflight_kind = kind
+
+
+## Ends timing and folds the result into the stats. `failed` is kept separate
+## from the successes so a gateway that is refusing everything does not look
+## like a gateway that is slow.
+func _end_call(failed: bool) -> void:
+	if _inflight_at == 0:
+		return
+	var ms := float(Time.get_ticks_msec() - _inflight_at)
+	_inflight_at = 0
+	if not failed:
+		_latencies_ms.append(ms)
+		var k := _inflight_kind
+		if not _lat_by_kind.has(k):
+			_lat_by_kind[k] = []
+		(_lat_by_kind[k] as Array).append(ms)
+	_inflight_kind = ""
+
+
+static func _percentile(sorted_vals: Array[float], p: float) -> float:
+	if sorted_vals.is_empty():
+		return 0.0
+	var i := int(round((sorted_vals.size() - 1) * clampf(p, 0.0, 1.0)))
+	return sorted_vals[clampi(i, 0, sorted_vals.size() - 1)]
+
+
+## Median / p90 / max, in seconds, over every call that succeeded.
+func latency_report() -> Dictionary:
+	if _latencies_ms.is_empty():
+		return {"n": 0}
+	var s := _latencies_ms.duplicate()
+	s.sort()
+	return {
+		"n": s.size(),
+		"median": _percentile(s, 0.5) / 1000.0,
+		"p90": _percentile(s, 0.9) / 1000.0,
+		"max": s[s.size() - 1] / 1000.0,
+		"mean": (s.reduce(func(a, b): return a + b, 0.0) / s.size()) / 1000.0,
+	}
+
+
+## The same, per kind of call, so a slow planner is distinguishable from a slow
+## chat reply. Kinds: plan, talk, role, round, answer.
+func latency_by_kind() -> Dictionary:
+	var out := {}
+	for k: String in _lat_by_kind:
+		var a: Array = _lat_by_kind[k]
+		if a.is_empty():
+			continue
+		var s: Array[float] = []
+		for v in a:
+			s.append(v)
+		s.sort()
+		out[k] = {
+			"n": s.size(),
+			"median": _percentile(s, 0.5) / 1000.0,
+			"p90": _percentile(s, 0.9) / 1000.0,
+		}
+	return out
+
+
+## The wait the gateway asked for, in seconds, or 0 when it did not say.
+##
+## Groq's 429 body names the exact delay — "Please try again in 34.9275s" — and
+## the game was ignoring it and waiting a flat RATE_LIMIT_WAIT instead. On a
+## 35 s hint that is a guaranteed second failure, and on a 7 s hint it is four
+## wasted seconds of the player's time. The number is already in the response;
+## this is the only reason it is not used.
+##
+## Written to cope with the formats in the wild rather than one exact string:
+##   "...try again in 34.9275s"
+##   "retry after 12s"
+##   {"retry_after": 12.5}
+static func retry_hint_seconds(raw: String) -> float:
+	# The structured form first, when the gateway offers it.
+	var j := JSON.new()
+	if j.parse(raw) == OK and j.data is Dictionary:
+		var d: Dictionary = j.data
+		var e: Variant = d.get("error", {})
+		if e is Dictionary:
+			var ed: Dictionary = e
+			for key in ["retry_after", "retry_after_seconds", "retry_delay"]:
+				if ed.has(key):
+					var v := float(ed[key])
+					if v > 0.0:
+						return v
+			# Some gateways put a nested object here.
+			var meta: Variant = ed.get("metadata", {})
+			if meta is Dictionary:
+				for key in ["retry_after", "retry_after_seconds"]:
+					var md: Dictionary = meta
+					if md.has(key):
+						var v2 := float(md[key])
+						if v2 > 0.0:
+							return v2
+	# Then the prose form, which is what Groq actually sends.
+	var re := RegEx.new()
+	re.compile("try again in\\s*([0-9]+(?:\\.[0-9]+)?)\\s*s?i")
+	var m := re.search(raw)
+	if m != null:
+		return maxf(0.0, float(m.get_string(1)))
+	var re2 := RegEx.new()
+	re2.compile("retry[- ]after\\s*([0-9]+(?:\\.[0-9]+)?)\\s*s?i")
+	var m2 := re2.search(raw)
+	if m2 != null:
+		return maxf(0.0, float(m2.get_string(1)))
+	return 0.0
 var fallbacks := 0
 
 var _busy := {}               ## worker_id -> true
@@ -305,6 +448,7 @@ func ask(question: String, mem: WorkerMemory, ctx: Dictionary, clock: GameClock,
 	}
 	_finish_body(body, ANSWER_TOKENS)
 	calls_made += 1
+	_begin_call("answer")
 	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
 			JSON.stringify(body)) != OK:
 		http.queue_free()
@@ -358,6 +502,7 @@ func talk(worker_id: String, system: String, messages: Array, tag: String,
 	var body := {"model": model, "temperature": 0.9, "messages": msgs}
 	_finish_body(body, TALK_TOKENS)
 	calls_made += 1
+	_begin_call("talk")
 	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
 			JSON.stringify(body)) != OK:
 		http.queue_free()
@@ -419,13 +564,10 @@ func compose_role(key: String, name: String, description: String,
 		body["response_format"] = {
 			"type": "json_schema", "json_schema": PlanSchema.role_schema(),
 		}
-	_log("role_request", key, name, Prompt.role_system() + "
-
----
-
-"
+	_log("role_request", key, name, Prompt.role_system() + "\n\n---\n\n"
 		+ Prompt.role_user(name, description, ctx))
 	calls_made += 1
+	_begin_call("role")
 	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
 			JSON.stringify(body)) != OK:
 		http.queue_free()
@@ -483,6 +625,7 @@ func plan_round(worker: Worker, goal: Goal, crew: Crew, town: Town,
 	_log("round_request", wid, goal.text, Prompt.round_system(worker.memory, worker.role)
 		+ "\n\n---\n\n" + Prompt.round_user(goal, crew, town, clock, farm, livestock))
 	calls_made += 1
+	_begin_call("round")
 	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
 			JSON.stringify(body)) != OK:
 		http.queue_free()
@@ -577,6 +720,7 @@ func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionar
 	var payload := JSON.stringify(body)
 	_log("request", mem.worker_id, instruction, sys + "\n\n---\n\n" + usr)
 	calls_made += 1
+	_begin_call("plan")
 
 	if http.request(str(route["url"]), headers, HTTPClient.METHOD_POST, payload) != OK:
 		http.queue_free()
@@ -589,6 +733,7 @@ func _on_reply(result: int, code: int, body: PackedByteArray, instruction: Strin
 		key: String, attempt: int) -> void:
 	var raw := body.get_string_from_utf8()
 	_log("response", mem.worker_id, instruction, "http=%d result=%d\n%s" % [code, result, raw])
+	_end_call(result != HTTPRequest.RESULT_SUCCESS or code != 200)
 
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		# Say what the gateway actually said. "No reply" sends whoever is
@@ -615,8 +760,32 @@ func _on_reply(result: int, code: int, body: PackedByteArray, instruction: Strin
 			# immediate second try is refused for the same reason as the first,
 			# burns the one retry, and drops the player to the offline library.
 			# The wait is free: the worker is walking to the plot regardless.
+			#
+			# The gateway says how long to wait, in the body of the 429, to two
+			# decimal places: "Please try again in 34.9275s". Waiting a flat
+			# RATE_LIMIT_WAIT was therefore wrong in both directions — a 35s hint
+			# got 6s and failed again, and a 7s hint cost four wasted seconds of
+			# the player's time. Now the hint is used when there is one.
 			if code == 429:
-				await get_tree().create_timer(RATE_LIMIT_WAIT).timeout
+				var hint := retry_hint_seconds(raw)
+				var wait_s := hint if hint > 0.0 else RATE_LIMIT_WAIT
+				# Capped, because a hostile or mistaken body could otherwise say
+				# "try again in 86400s" and leave a worker thinking for a day.
+				wait_s = minf(wait_s, MAX_RATE_LIMIT_WAIT)
+				# Never shorter than the flat wait: a hint of 0.2s is a gateway
+				# counting down its own window, and retrying into it burns the
+				# one retry the player has.
+				wait_s = maxf(wait_s, minf(RATE_LIMIT_WAIT, 2.0))
+				rate_limit_waits += 1
+				rate_limit_wait_total += wait_s
+				# A short wait is worth saying out loud, because the worker is
+				# visibly idle and the player is watching them. A long one is
+				# not: at 30s+ the player has decided the game is broken and a
+				# number only makes it worse.
+				if wait_s >= 10.0:
+					status.emit("%s is waiting %d s — the gateway is busy." % [
+						mem.display_name, int(round(wait_s))])
+				await get_tree().create_timer(wait_s).timeout
 			_request(instruction, mem, plot, ctx, clock, town, key, 1, "")
 			return
 
@@ -881,5 +1050,17 @@ func describe() -> String:
 
 
 func stats_text() -> String:
-	return "calls %d  cache %d  retry %d  fallback %d  specs %d" % [
+	var s := "calls %d  cache %d  retry %d  fallback %d  specs %d" % [
 		calls_made, cache_hits, retries, fallbacks, ArchetypeLibrary.cache_size()]
+	# Latency only once there is something to report: an average over one call
+	# is noise, and printing "median 0.0s" next to a real wait is worse than
+	# printing nothing.
+	var lat := latency_report()
+	if int(lat.get("n", 0)) > 0:
+		s += "  |  %d calls  median %.1fs  p90 %.1fs  max %.1fs" % [
+			int(lat["n"]), float(lat["median"]), float(lat["p90"]),
+			float(lat["max"])]
+	if rate_limit_waits > 0:
+		s += "  |  rate limited %dx, waited %.0fs total" % [
+			rate_limit_waits, rate_limit_wait_total]
+	return s
