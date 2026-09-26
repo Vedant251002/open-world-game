@@ -191,6 +191,38 @@ func situation() -> String:
 	return " ".join(lines)
 
 
+## Whether one of the kingdom's own systems claims this sentence as an order.
+##
+## Dispatcher.instruct() calls this for every instruction that is not a plot
+## order — taxes, decrees, marriages, hunts and the rest — and returns early
+## when it returns true.
+##
+## This method went missing during the merge of upstream's tools-based planner:
+## upstream's dispatcher kept the call site, but the realm.gd that came with it
+## had no handle(), and a silent conflict resolution took theirs over ours. Every
+## order therefore died on "Nonexistent function 'handle'" and the core loop —
+## speak, order, watch it get built — did not work at all.
+##
+## It is restored from 4d13de7 with the system lookup made defensive. The old
+## body called s.call("try_order", ...) on anything in `systems`; a system that
+## does not implement try_order would take the whole call down with a runtime
+## error on a player's sentence, so the guard is a has_method check and a
+## silent skip. A system without try_order is not a system that takes orders.
+func handle(worker: Worker, text: String) -> bool:
+	# A worker ambling about the well is not busy; stop the amble so the
+	# systems' own "are you free?" checks see them as they are.
+	if worker != null and worker.has_method("stop_wandering"):
+		worker.stop_wandering()
+	if population != null and population.has_method("try_order") \
+			and bool(population.try_order(worker, text)):
+		return true
+	for s: Node in systems:
+		if s != null and s.has_method("try_order") \
+				and bool(s.call("try_order", worker, text)):
+			return true
+	return false
+
+
 ## A question the town's own records could not answer.
 func answer(worker: Worker, text: String) -> String:
 	var a := chronicle.try_answer(worker, text)

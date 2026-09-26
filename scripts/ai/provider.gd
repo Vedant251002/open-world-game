@@ -44,7 +44,17 @@ const PROVIDERS := {
 		"default_model": "openai/gpt-oss-120b",
 		"schema": "strict",
 		"max_tokens_field": "max_completion_tokens",
-		"reasoning": true,
+		# gpt-oss IS a reasoning model and the reply carries a "reasoning"
+		# block, but Groq's current API rejects the request outright if you
+		# send a "reasoning" field back: it answers
+		#   {"error":{"message":"property 'reasoning' is unsupported"}}
+		# Verified against the live endpoint, both with and without. This was
+		# true here and every order fell through to the offline library, so
+		# the whole AI half of the game silently did nothing.
+		#
+		# It is a per-gateway capability, not a per-model one, which is why it
+		# lives in this table and is checked by AIProvider.wants_reasoning().
+		"reasoning": false,
 		"label": "Groq",
 	},
 	# The original. Kept because it works, costs nothing, and is what the
