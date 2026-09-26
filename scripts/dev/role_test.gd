@@ -48,6 +48,9 @@ var _trader: Worker = null
 
 
 func begin() -> void:
+	# Mira keeps the store in the game. These runs are about Mira's pace and
+	# literalism on a building site, so Mira is put back to building for them.
+	crew.get_worker("mira").role = crew.roles.get_role("builder")
 	dispatch.llm.offline = true
 	dispatch.refused.connect(func(_w: Worker, e: Dictionary) -> void:
 		_refusals.append(str(e.get("code", "?"))))

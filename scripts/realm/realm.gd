@@ -32,6 +32,7 @@ const SYSTEM_PATHS := [
 	# Tier 1: the town is alive
 	"res://scripts/realm/industry.gd",
 	"res://scripts/realm/market.gd",
+	"res://scripts/realm/homes.gd",
 	# Tier 2: the world outside
 	"res://scripts/realm/neighbours.gd",
 	"res://scripts/realm/expansion.gd",

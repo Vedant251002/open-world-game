@@ -39,6 +39,9 @@ const ANSWER := "a workshop, timber walls, and keep it small"
 
 
 func begin(instruction: String) -> void:
+	# Mira keeps the store in the game. These runs are about Mira's pace and
+	# literalism on a building site, so Mira is put back to building for them.
+	crew.get_worker("mira").role = crew.roles.get_role("builder")
 	if instruction != "":
 		_instruction = instruction
 	dispatch.llm.plan_ready.connect(func(_id: String, plan: Dictionary) -> void:

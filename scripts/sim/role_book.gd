@@ -2,9 +2,9 @@ extends RefCounted
 class_name RoleBook
 ## Every role the town knows, built-in and player-defined.
 ##
-## Two come with the town. `builder` is what Mira, Tobias and Ren always were,
-## written down: everything the engine can do today, which is why they can be
-## asked for anything. `citizen` is what somebody is before you hire them —
+## Two come with the town. `builder` is what Mira, Tobias and Ren all used to
+## be, written down: everything the engine can do today, which is why Tobias,
+## the one of them who still holds it, can be asked for anything. `citizen` is what somebody is before you hire them —
 ## they walk about, they talk, they go home; they do not take orders.
 ##
 ## Everything else is composed on demand, once, from a name and a description,

@@ -16,6 +16,19 @@ class_name AIProvider
 ## followed by the offline library.
 
 const PROVIDERS := {
+	# OpenAI-compatible chat completions. The base is fixed; the model id and
+	# the key come from .env (CHAT_MODEL, CHAT_API_KEY) because they change
+	# and they must not live in the source.
+	"chat": {
+		"endpoint": "https://chat-api.hetsaraiya.com/v1/chat/completions",
+		"key_env": "CHAT_API_KEY",
+		"model_env": "CHAT_MODEL",
+		"default_model": "",
+		"schema": "none",
+		"max_tokens_field": "max_tokens",
+		"reasoning": false,
+		"label": "Chat API",
+	},
 	# Free, no card, and fast enough that the worker does not have to be sent
 	# walking to hide the wait. gpt-oss-120b is on the free plan at 30 requests
 	# a minute and supports strict structured outputs.
@@ -29,55 +42,29 @@ const PROVIDERS := {
 		"key_env": "GROQ_API_KEY",
 		"model_env": "GROQ_MODEL",
 		"default_model": "openai/gpt-oss-120b",
-		# The router's model: the one that hears every sentence and decides
-		# which verb it is. Small and quick — a seven-hundred-token prompt
-		# and a one-line answer — and on the free plan it has its own rate
-		# limit, so the designer's budget is not spent on "go to the well".
-		"fast_model_env": "GROQ_FAST_MODEL",
-		"default_fast_model": "openai/gpt-oss-20b",
-		"reasoning_effort": "low",
 		"schema": "strict",
 		"max_tokens_field": "max_completion_tokens",
-		# How this gateway is told not to think out loud. Groq's own switch
-		# is a pair of plain fields; OrcaRouter's is a nested object, and
-		# sending the wrong one is a 400 rather than something ignored —
-		# which is why this is a table entry and not a constant in the body.
-		"quiet": {"reasoning_format": "hidden"},
-		"effort_field": "reasoning_effort",
+		"reasoning": true,
 		"label": "Groq",
 	},
-	# Free behind a linked GitHub account, no card. Replaces OpenCode Zen, whose
-	# free tier stopped answering anything but its own editor in September 2026.
-	#
-	# Measured on the game's own bakery prompt (2,700 tokens in): every reply
-	# under response_format json_schema finished with stop and parsed, in twenty
-	# to thirty seconds; a chat answer takes five. The prompt is under the free
-	# tier's per-request cap, and the gateway caches the system prompt between
-	# calls.
-	#
-	# The catch is that GLM thinks before it answers and cannot be told not to:
-	# every known switch is ignored, and Z.ai's own one is refused upstream. The
-	# thinking runs to fifteen hundred tokens and comes out of the same budget
-	# as the plan, so without the headroom below a plain 3,200-token request is
-	# cut off mid-string — the exact failure the old gateway had.
-	"orcarouter": {
-		"endpoint": "https://api.orcarouter.ai/v1/chat/completions",
-		"key_env": "ORCAROUTER_API_KEY",
-		"model_env": "ORCAROUTER_MODEL",
-		"default_model": "z-ai/glm-5.3-flash-free",
-		"fast_model_env": "ORCAROUTER_FAST_MODEL",
-		"default_fast_model": "z-ai/glm-5.3-flash-free",
-		"schema": "strict",
-		"max_tokens_field": "max_completion_tokens",
-		"quiet": {"reasoning": {"exclude": true}},
-		"token_headroom": 2.0,
-		"label": "OrcaRouter",
+	# The original. Kept because it works, costs nothing, and is what the
+	# deployed proxy already holds a key for — but it is slow (the better part
+	# of a minute), it has no structured output, and its free models truncate.
+	"opencode": {
+		"endpoint": "https://opencode.ai/zen/v1/chat/completions",
+		"key_env": "OPENCODE_API_KEY",
+		"model_env": "OPENCODE_MODEL",
+		"default_model": "nemotron-3-ultra-free",
+		"schema": "none",
+		"max_tokens_field": "max_tokens",
+		"reasoning": true,
+		"label": "OpenCode Zen",
 	},
 }
 
-## Tried in this order when nothing has been named. Groq first: it is the one
-## that can promise the JSON parses without spending half its budget thinking.
-const PREFERENCE := ["groq", "orcarouter"]
+## Tried in this order when nothing has been named. The chat API first, once
+## its key is actually in .env; otherwise the same order as before.
+const PREFERENCE := ["chat", "groq", "opencode"]
 
 
 static func known(name: String) -> bool:
@@ -85,25 +72,11 @@ static func known(name: String) -> bool:
 
 
 static func of(name: String) -> Dictionary:
-	return PROVIDERS.get(name, PROVIDERS["orcarouter"])
+	return PROVIDERS.get(name, PROVIDERS["opencode"])
 
 
 static func endpoint(name: String) -> String:
 	return str(of(name)["endpoint"])
-
-
-## Everything this gateway needs told about thinking out loud, merged into
-## the request body. `effort` is "low", "medium" or "" — the router asks for
-## low, because its question is which of forty verbs a sentence is, and
-## thinking about that for a thousand tokens makes the answer slower rather
-## than better. A gateway with no such switch gets nothing, rather than a
-## field it will refuse the whole request over.
-static func quiet_body(name: String, effort: String = "") -> Dictionary:
-	var out: Dictionary = (of(name).get("quiet", {}) as Dictionary).duplicate(true)
-	var field := str(of(name).get("effort_field", ""))
-	if field != "" and effort != "":
-		out[field] = effort
-	return out
 
 
 static func label(name: String) -> String:
@@ -124,11 +97,7 @@ static func token_field(name: String) -> String:
 	return str(of(name)["max_tokens_field"])
 
 
-## The token budget to actually send, given what the caller wants back.
-##
-## A model that reasons out loud pays for the reasoning from the same budget
-## as the answer, and on a gateway where that cannot be switched off the
-## honest fix is to ask for more. Nothing is spent by asking: the reply stops
-## when the answer does, and the extra is only the room for it to get there.
-static func budget(name: String, asked: int) -> int:
-	return int(ceil(asked * float(of(name).get("token_headroom", 1.0))))
+## Whether this gateway understands the non-standard "reasoning" field.
+## OpenAI-compatible servers reject a body that contains it.
+static func wants_reasoning(name: String) -> bool:
+	return bool(of(name).get("reasoning", false))

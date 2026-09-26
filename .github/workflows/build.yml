@@ -96,6 +96,15 @@ jobs:
           name: windows-build
           path: ${{ env.EXPORT_NAME }}-windows.zip
 
+      # The bare .exe as well, because that is what somebody on Windows
+      # actually wants to double-click. binary_format/embed_pck is true for
+      # this preset, so the one file is the whole game — no .pck beside it.
+      - name: Upload the bare exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: build/windows/${{ env.EXPORT_NAME }}.exe
+
   export-linux:
     name: Export Linux
     runs-on: ubuntu-24.04
@@ -152,6 +161,108 @@ jobs:
           name: macos-build
           path: build/mac/${{ env.EXPORT_NAME }}.zip
 
+  export-android:
+    name: Export Android (apk)
+    # Tags only. A phone build is what a release is for, and nobody is
+    # installing an apk from a mid-week push. workflow_dispatch is here so the
+    # job can be tried without cutting a tag.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The editor settings matter here and nowhere else. The image writes the
+      # Android SDK, the JDK and the debug keystore into Godot's editor
+      # settings at build time, and Actions moves HOME out from under them, so
+      # without this move Godot looks for an SDK it was already told about and
+      # reports it missing.
+      - name: Move export templates and editor settings into place
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mkdir -v -p ~/.config/
+          mv /root/.config/godot ~/.config/godot
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+
+      # A release export needs a release keystore named in the preset; the
+      # editor settings only carry the debug one. With ANDROID_KEYSTORE_BASE64
+      # set the apk is signed for real and can go to a store. Without it the
+      # image's debug keystore signs it, which installs on a phone and is
+      # enough to play — but is not a key you would publish under.
+      - name: Point the preset at a signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_USER: ${{ secrets.ANDROID_KEYSTORE_USER }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > /root/release.keystore
+            KS=/root/release.keystore
+            KS_USER="$KEYSTORE_USER"
+            KS_PASS="$KEYSTORE_PASSWORD"
+            echo "signing with the release keystore from secrets"
+          else
+            KS=/root/debug.keystore
+            KS_USER=androiddebugkey
+            KS_PASS=android
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret, so this apk is debug-signed. It installs, but do not publish it."
+          fi
+          sed -i "s@keystore/release=\".*\"@keystore/release=\"$KS\"@" export_presets.cfg
+          sed -i "s@keystore/release_user=\".*\"@keystore/release_user=\"$KS_USER\"@" export_presets.cfg
+          sed -i "s@keystore/release_password=\".*\"@keystore/release_password=\"$KS_PASS\"@" export_presets.cfg
+
+      - name: Build Android export
+        run: |
+          mkdir -v -p build/android
+          godot --headless --verbose --export-release "Android" "$(pwd)/build/android/${EXPORT_NAME}.apk"
+
+      # The keystore path and password were written into this file a moment
+      # ago. It is never committed from here, but leaving it edited would put
+      # them in any artifact that happened to include the checkout.
+      - name: Put the preset back
+        if: always()
+        run: git checkout -- export_presets.cfg || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: build/android/${{ env.EXPORT_NAME }}.apk
+
+  package-dmg:
+    name: Package macOS dmg
+    # Tags only, and for one more reason than the apk: this is the only job
+    # that needs a macOS runner, which is the expensive kind.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: export-macos
+    runs-on: macos-latest
+    steps:
+      # Godot can only write a dmg on macOS — it shells out to hdiutil — so
+      # the Linux job exports the .app inside a zip and this one turns that
+      # into the disk image people expect to mount.
+      - name: Download the macOS build
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build
+          path: macos-build
+
+      - name: Build the dmg
+        run: |
+          mkdir -p stage
+          unzip -q "macos-build/${EXPORT_NAME}.zip" -d stage
+          ls -la stage
+          hdiutil create -volname "${EXPORT_NAME}" -srcfolder stage \
+            -ov -format UDZO "${EXPORT_NAME}.dmg"
+          hdiutil imageinfo "${EXPORT_NAME}.dmg" > /dev/null && echo "dmg is readable"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: ${{ env.EXPORT_NAME }}.dmg
+
   deploy-pages:
     name: Deploy web build to GitHub Pages
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -171,7 +282,8 @@ jobs:
   release:
     name: Attach builds to GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [export-web, export-windows, export-linux, export-macos]
+    needs: [export-web, export-windows, export-linux, export-macos,
+            export-android, package-dmg]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -190,6 +302,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            artifacts/windows-exe/*.exe
+            artifacts/macos-dmg/*.dmg
+            artifacts/android-build/*.apk
             artifacts/windows-build/*.zip
             artifacts/linux-build/*.zip
             artifacts/macos-build/*.zip

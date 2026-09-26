@@ -37,8 +37,15 @@ Desktop builds for Windows, Linux and macOS are attached to every tagged
 | Look       | mouse             | drag on the right of the screen |
 | Talk       | E                 | TALK                           |
 | Map        | M                 | MAP                            |
-| Menu       | Esc               | ESC                            |
+| Pause / quit | Esc             | ESC                            |
+| Fullscreen | F11               | —                              |
+| Quit       | Cmd+Q (saves)     | —                              |
 | Frame stats| F3                | —                              |
+
+The game starts fullscreen. Esc pauses it and frees the mouse, with buttons
+to resume, switch between fullscreen and a window, or save and quit. Clicking
+away to another app pauses it too, so the cursor is never held while you are
+somewhere else.
 
 ## Run from source
 
@@ -51,12 +58,12 @@ less well.
 
 Two gateways are supported, chosen by whichever key is present:
 
-| | Groq (default) | OrcaRouter |
+| | Groq (default) | OpenCode Zen |
 | --- | --- | --- |
-| key | `GROQ_API_KEY` | `ORCAROUTER_API_KEY` |
-| free | yes, no card | yes, with a GitHub account |
-| speed | a second or two | ~25 s |
-| JSON | held to a schema, always parses | held to a schema |
+| key | `GROQ_API_KEY` | `OPENCODE_API_KEY` |
+| free | yes, no card | yes |
+| speed | a second or two | ~45 s |
+| JSON | held to a schema, always parses | best effort, truncates |
 
 Groq is worth the two minutes it takes to get a key: it accepts a
 `response_format` of `json_schema`, so the model physically cannot return a
@@ -65,52 +72,54 @@ old setup — a reply cut off mid-string costs the whole wait and yields nothing
 The schema is generated from the same tables as the prompt and the validator,
 in `scripts/ai/plan_schema.gd`, so the three cannot drift apart.
 
-### Two models, not one
-
-Every sentence you say goes to a **router** first — a small, fast model
-(`openai/gpt-oss-20b` by default) that is shown the whole catalogue of things
-the town can do, one line each, and answers with which of them you meant and
-what to fill in. It takes about a second, and it is the only thing in the game
-that reads your words: nothing in the engine matches on them.
-
-Only one of its answers costs more than that. When the router says you asked
-for a building, the brief it wrote — your words, plus whatever you obviously
-wanted — goes to a **designer**, the large model (`openai/gpt-oss-120b`),
-which is the one that can hold a floor plan in its head and returns the full
-spec the generator builds from. So "bring some fish" is a second and a walk to
-the water, and "a bakery with a big window facing the street" is the thirty
-seconds it deserves. Set `GROQ_FAST_MODEL` and `GROQ_MODEL` to change either.
-
-Questions, greetings and small talk are a third answer — the router says
-`chat`, and the reply comes from the town's own records, which are exact and
-cost nothing.
-
-The free tier caps tokens per minute rather than just requests, and a routed
-order is about three and a half thousand of them, so sustained play is
-roughly two orders a minute. Past that the gateway asks for a wait, which the
-game takes — the worker is walking to the plot regardless — before trying once
-more. Repeated buildings are served from the archetype cache and never leave
-the machine.
-
-### Adding something the town can do
-
-One table, one function, and the AI can be asked for it. A verb is an entry in
-`Steps.VERBS` — a name, what it does in a sentence, its fields — and an arm of
-`Dispatcher._run_step` that carries it out. Anything in the kingdom layer adds
-its own: a system exposes `verbs()` and a `run(worker, step)`, and
-`Realm._load_system` registers them into the same catalogue at startup.
-
-What you do **not** write is any way of recognising the order. There is no
-keyword list, no phrasing to support, no `if text.find("fish")`. The verb's
-one-line description is what the router reads, and that is the whole of the
-integration. The validator then checks the step against the same table before
-anything happens, so a verb that is wrong about what the town can do is
-refused out loud, in character, rather than half-run.
+The free tier caps tokens per minute rather than just requests, so sustained
+play is roughly an order a minute; repeated orders are served from the
+archetype cache and never leave the machine.
 
 Browser builds have no environment to read, so the deployed version goes
 through `proxy/worker.js`, which holds the key on Cloudflare. It speaks to
 either gateway — `wrangler secret put GROQ_API_KEY` is all that is needed to
 move it across.
+
+## The crew
+
+The three who work for you each have a trade. **Mira** keeps the store off
+the square: behind the counter from the first day, opening up each morning
+and selling what the town has spare. **Tobias** is the builder, and waits at the
+workshop between jobs. **Ren** farms, waits out at the field (or by the well
+until there is one), and brings in whatever is ripe each morning. Ask one of them for something outside their
+trade and they will tell you it is not their job. Ask Tobias instead, hire
+somebody from the street, or give them a new job with **hire you as a
+builder**. None of them follows you about; walk over to talk, or say **follow me** to
+bring one along. Anybody you hire from the street still falls in behind you.
+
+## Talking to people
+
+Everybody in town is played by the model, not just your crew. Say hello to a
+stranger, ask the shopkeeper how business is, tease Ren, or walk into
+someone's house, and they answer in their own words. What they say comes from
+their temperament, their job (or lack of one), where they live, how they feel
+about you, what they remember you doing, and the last few things the two of
+you said. They follow a conversation and do not repeat themselves.
+
+Facts still come from the town's records, and the model only says them in the
+person's voice, so the numbers stay right. Orders still go through the
+planner. Talking to someone never builds or hires anything on its own. With no
+API key, everyone falls back to their stock lines.
+
+## The map and people's homes
+
+Open the map (M) for a list of everything in town. Every building is
+numbered, with its street, who works there and who lives there, and the same
+numbers are marked on the map. Below the list is where each of your people is
+right now. Your people are drawn on the map by name, and everybody else as a
+small dot.
+
+The people in the streets each have a bed somewhere, and a house somebody
+lives in is marked in red. Those are private. Walk into one and whoever lives
+there stops what they are doing, comes over and tells you off. Stay more than
+a few seconds and you are put out of the door, and they remember it. Taverns
+and inns have beds too, but they are open to everyone.
 
 ## Goals
 
@@ -163,12 +172,8 @@ Pass these after `--`, e.g. `godot4 --path . -- --seed=7 --nofar`:
 | Flag           | Effect                                              |
 | -------------- | --------------------------------------------------- |
 | `--seed=N`     | fix the world seed                                   |
-| `--provider=X` | force `groq` or `orcarouter` for one run              |
-| `--model=X`    | the designer's model for one run                     |
-| `--fast-model=X` | the router's model for one run                     |
-| `--routetest`  | route a list of sentences live and print each verb   |
-| `--say="..."`  | with `--routetest` or `--aitest`, one sentence of your own |
-| `--realmtest=X`| run one kingdom system's assertions and exit         |
+| `--windowed`   | start in a window instead of fullscreen              |
+| `--provider=X` | force `groq` or `opencode` for one run               |
 | `--fresh`      | ignore the save and start a new town                 |
 | `--nosave`     | never write the save                                 |
 | `--savetest`   | save, reload the scene, check it all came back       |

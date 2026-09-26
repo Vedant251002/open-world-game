@@ -28,6 +28,10 @@ var span := 300.0                  ## metres across the viewport
 
 var buildings: Array[Dictionary] = []   ## {rect_m, name, front}
 var workers: Array = []                 ## Worker nodes, drawn live
+## The kingdom, for the directory: what every building is and whose it is.
+var realm: Node = null
+var _dir: Array = []                    ## Homes.directory(), refreshed with the hud
+var _dir_t := 0.0
 
 var _root: Control
 var _land: TextureRect
@@ -54,6 +58,9 @@ const C_INK := Color("#2b2118")
 const C_ROAD := Color("#e8dcbf")
 const C_PLOT := Color("#7c6a4e")
 const C_BUILDING := Color("#7a4a2e")
+const C_HOME := Color("#a8432f")           ## somebody lives here: keep out
+const C_WORK := Color("#3f5f7a")
+const DIR_W := 330.0
 
 
 func setup(w: VoxelWorld, g: WorldGen, v: Village, p: Player) -> void:
@@ -216,10 +223,15 @@ func _after_move() -> void:
 
 # ------------------------------------------------------------------ terrain
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	_collect_texture()
 	if open:
 		_overlay.queue_redraw()
+		# The list moves slower than the dots: once a second is plenty.
+		_dir_t -= delta
+		if _dir_t <= 0.0:
+			_dir_t = 1.0
+			_hud.queue_redraw()
 
 
 ## Regenerates only when the view has drifted past the texture's margin, so
@@ -344,7 +356,9 @@ func _draw_overlay() -> void:
 	_draw_plots(s)
 	_draw_buildings(s)
 	_draw_well(s)
+	_draw_badges()
 	_draw_workers()
+	_draw_people()
 	_draw_player()
 
 
@@ -423,6 +437,44 @@ func _draw_workers() -> void:
 		_overlay.draw_circle(p, 3.5, Color("#c46a3a"))
 
 
+## A number on each building, matching the list down the side. Red for a
+## house somebody lives in.
+func _draw_badges() -> void:
+	for i in _dir.size():
+		var e: Dictionary = _dir[i]
+		var rm: Rect2 = e["rect_m"]
+		var p := _world_to_screen(rm.get_center())
+		var col := C_HOME if bool(e["private"]) else C_WORK
+		_overlay.draw_circle(p, 10.0, C_PAPER)
+		_overlay.draw_circle(p, 8.5, col)
+		var label := str(i + 1)
+		var w := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+		_overlay.draw_string(_font, p + Vector2(-w * 0.5, 4), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, C_PAPER)
+
+
+## Everybody in town, where they are right now: your people named, the rest
+## as small dots.
+func _draw_people() -> void:
+	if realm == null or realm.get("crew") == null:
+		return
+	var crew: Crew = realm.get("crew")
+	for w: Worker in crew.workers:
+		if not is_instance_valid(w):
+			continue
+		var p := _world_to_screen(Vector2(w.global_position.x, w.global_position.z))
+		if not w.hired:
+			_overlay.draw_circle(p, 3.0, Color(C_INK, 0.55))
+			continue
+		_overlay.draw_circle(p, 5.5, C_PAPER)
+		_overlay.draw_circle(p, 4.0, Color("#c46a3a"))
+		var at := p + Vector2(8, 4)
+		_overlay.draw_string_outline(_font, at, w.display_name(), HORIZONTAL_ALIGNMENT_LEFT,
+			-1, 12, 3, C_PAPER)
+		_overlay.draw_string(_font, at, w.display_name(), HORIZONTAL_ALIGNMENT_LEFT,
+			-1, 12, C_INK)
+
+
 func _draw_player() -> void:
 	if player == null:
 		return
@@ -453,11 +505,62 @@ func _draw_hud() -> void:
 
 	_draw_scale_bar(Vector2(18, size.y - 22))
 	_draw_compass(Vector2(size.x - 44, 46))
+	_draw_directory(size)
 
 	var help := "drag to pan    wheel to zoom    SPACE you    HOME the well    M close"
 	var w := _font.get_string_size(help, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
 	_hud.draw_string(_font, Vector2(size.x - w - 18, size.y - 22), help,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(C_INK, 0.75))
+
+
+## The list down the right: every building by number, what it is for, who
+## works there and who lives there; then where each of your people is.
+func _draw_directory(size: Vector2) -> void:
+	var homes: Node = realm.call("system", "Homes") if realm != null else null
+	if homes == null:
+		_dir = []
+		return
+	_dir = homes.call("directory")
+	var people: Array = homes.call("crew_lines")
+
+	var x := size.x - DIR_W - 18.0
+	var top := 80.0
+	var bottom := size.y - 44.0
+	_hud.draw_rect(Rect2(x - 12, top - 20, DIR_W + 12, bottom - top + 20),
+		Color(C_PAPER, 0.93), true)
+	_hud.draw_rect(Rect2(x - 12, top - 20, DIR_W + 12, bottom - top + 20),
+		Color(C_INK, 0.5), false, 1.0)
+
+	var y := top
+	var rows: Array = []                  ## [text, size, colour, indent]
+	rows.append(["PLACES", 13, C_INK, 0.0])
+	for i in _dir.size():
+		var e: Dictionary = _dir[i]
+		var head := "%d. %s" % [i + 1, e["name"]]
+		if str(e["street"]) != "":
+			head += " — " + str(e["street"])
+		rows.append([head, 12, C_HOME if bool(e["private"]) else C_INK, 0.0])
+		for line: String in e["lines"]:
+			rows.append([line, 11, Color(C_INK, 0.75), 16.0])
+	if _dir.is_empty():
+		rows.append(["Nothing built yet but the well.", 11, Color(C_INK, 0.75), 0.0])
+	rows.append(["", 6, C_INK, 0.0])
+	rows.append(["YOUR PEOPLE", 13, C_INK, 0.0])
+	for line: String in people:
+		rows.append([line, 11, Color(C_INK, 0.8), 0.0])
+	rows.append(["", 6, C_INK, 0.0])
+	rows.append(["red = somebody's home. Keep out.", 11, C_HOME, 0.0])
+
+	for i in rows.size():
+		var r: Array = rows[i]
+		var fs := int(r[1])
+		if y + fs + 4 > bottom:
+			_hud.draw_string(_font, Vector2(x, bottom - 4), "… and more",
+				HORIZONTAL_ALIGNMENT_LEFT, DIR_W - 8, 11, Color(C_INK, 0.6))
+			break
+		y += fs + 5
+		_hud.draw_string(_font, Vector2(x + float(r[3]), y), str(r[0]),
+			HORIZONTAL_ALIGNMENT_LEFT, DIR_W - 8 - float(r[3]), fs, r[2])
 
 
 func _free_plots() -> int:
