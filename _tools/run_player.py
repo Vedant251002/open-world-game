@@ -117,17 +117,35 @@ def run_one(case, timeout_s=220):
         "i am not well",
     )
     low = line.lower()
-    if ok and any(s in low for s in IDLE):
+    chatter = any(s in low for s in IDLE)
+    if chatter:
+        # A chatter line must never leave ok=True, or the cause is never
+        # looked up below and the case is reported answered. This is the
+        # ordering bug that let nine coughs pass as replies.
         ok = False
-        cause = "background chatter, not a reply to the order"
+        cause_hint = "background chatter, not a reply to the order"
+    else:
+        cause_hint = ""
 
-    cause = ""
+    cause = cause_hint
     if not ok:
+        # Capacity refusals are the router's, not the model's and not the town's.
+        # Measured on 2026-09-27: "build a space elevator" appeared to be a genuine
+        # fifty-second silence in the game, and it was not. The log underneath said
+        #
+        #   http=429  Free model capacity is limited right now. Retry shortly, or
+        #             add credits for higher, more stable limits
+        #
+        # which is the free tier being full, and it reads differently from a token
+        # budget: there is no number in it and no time to wait it out. Any 429 that
+        # is not a token budget is a capacity refusal, and both are the gateway.
         for pat, tag in [
             (r"tokens per day", "daily token budget spent"),
             (r"tokens per minute", "per-minute token budget spent"),
+            (r"capacity is limited", "free tier at capacity (gateway)"),
+            (r"rate limit", "rate limited"),
             (r"http=(429)", "rate limited"),
-            (r"http=(400)", "schema rejected"),
+            (r"http=(400)[^\n]*(expected string|not in request\.tools)", "schema rejected"),
             (r"http=(\d{3})", "gateway error"),
         ]:
             if re.search(pat, blob, re.I):

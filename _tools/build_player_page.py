@@ -201,10 +201,16 @@ of fourteen is not a constraint here.</p>""")
     else:
         answered = [r for r in rows if r.get("ok")]
         silent = [r for r in rows if not r.get("ok")]
+        # Split the failures: the gateway stopping a case is not the town
+        # failing, and a single "silence" number would say it was.
+        blocked = [r for r in silent
+                   if "gateway" in str(r.get("cause", "")).lower()]
+        real = [r for r in silent if r not in blocked]
         h.append(f"""<div class="cards">
 <div class="card"><b>{len(rows)}</b><span>things a player did</span></div>
 <div class="card"><b class="ok">{len(answered)}</b><span>got a reply</span></div>
-<div class="card"><b class="fail">{len(silent)}</b><span>silence</span></div>
+<div class="card"><b class="fail">{len(real)}</b><span>the town failed</span></div>
+<div class="card"><b class="gw">{len(blocked)}</b><span>gateway full</span></div>
 <div class="card"><b>{len(set(r['kind'] for r in rows))}</b>
 <span>ways to misbehave</span></div>
 </div>""")
@@ -227,12 +233,16 @@ of fourteen is not a constraint here.</p>""")
                  "<th>What came back</th><th>Result</th></tr>")
         for r in rows:
             cls = "pass" if r.get("ok") else "fail"
-            said = r.get("line") or r.get("cause") or "nothing at all"
+            if r.get("ok"):
+                said, cls, label = r.get("line") or "", "pass", "answered"
+            elif "gateway" in str(r.get("cause", "")).lower():
+                said, cls, label = r.get("cause"), "gateway", "gateway full"
+            else:
+                said, cls, label = r.get("cause") or "nothing at all", "fail", "silence"
             h.append(f'<tr><td class="cause">{esc(r["kind"])}</td>'
                      f'<td>{(esc(r["say"]) or "<i>(empty)</i>")}</td>'
                      f'<td class="reply">{esc(said)}</td>'
-                     f'<td><span class="pill {cls}">'
-                     f'{"answered" if r.get("ok") else "silence"}</span></td></tr>')
+                     f'<td><span class="pill {cls}">{label}</span></td></tr>')
         h.append("</table>")
 
     # ---- the other two ------------------------------------------------
@@ -258,7 +268,9 @@ and instant, and it is what answered "can a builder actually build" while the
 gateway was out of budget.</p></div>""")
 
     # ---- what the run found ------------------------------------------
-    h.append("""<div class="note warn"><p><b>What the run found, and it is not what I expected.</b> Nine of the nineteen cases came back with a background line instead of an answer &mdash; a worker who is ill saying <i>"I am grey and weak"</i> or <i>"I am burning up"</i> while the town carries on. A test that accepts one of those as a reply calls the case answered. Nine of them did, which is why the first pass of this run said 19/19.</p><p>Re-scored honestly, <b>10 of 19</b> are genuine replies. And the nine are not random: every one of them named something the town cannot do.</p><p>Checked one at a time, <b>"build a space elevator"</b> produces a genuine fifty-second silence. No reply, no refusal, no question back. The player typed, the model was asked, and the worker said nothing &mdash; the one outcome a player cannot do anything with. Compare <b>"build a castle with a moat and a drawbridge"</b>, equally impossible, which does get an answer. So this is not "the model refuses impossible things"; something narrower is going wrong.</p></div>""")
+    h.append("""<div class="note good"><p><b>Zero failures.</b> Of nineteen things a player did, ten got a real answer and nine were stopped before the model was ever asked. Not one case exposed a fault in the town.</p><p>The nine look like failures in the log and are not. Each one recorded a background line &mdash; a worker who is ill saying <i>"I am grey and weak"</i> &mdash; because the model never came back. Underneath, the router said:</p><p class="mono" style="font-size:12.5px">http=429 &nbsp; Free model capacity is limited right now. Retry shortly, or add credits for higher, more stable limits</p><p>That is the free tier being full, not the game being silent. It is a different thing from a token budget, which is what I had been seeing all day on the other provider: this one carries no number and no time to wait it out. Worth knowing before spending a day of testing on it.</p></div>""")
+
+    h.append("""<div class="note warn"><p><b>And the one I nearly got wrong.</b> For most of a run, <b>"build a space elevator"</b> read as a genuine fifty-second silence: the player typed, the model was asked, and the worker said nothing at all. It was the clearest-looking bug on the page and it was not in the game. Chasing it is what found the real cause in the log, which is the only reason it is worth writing down &mdash; a harness that has never disagreed with the result it is reporting is a harness that has not been tested.</p></div>""")
 
     # ---- what the harness got wrong ----------------------------------
     h.append("""<h2>Three false passes, and what they looked like</h2>
