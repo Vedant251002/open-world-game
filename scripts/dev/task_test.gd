@@ -115,11 +115,37 @@ func begin(say: String = "") -> void:
 		# One sentence of your own. This replaces the list rather than
 		# prepending to it: the first version prepended, so --say ran all
 		# fourteen cases and the run lasted longer than its own timeout.
+		#
+		# The capability is left empty, which is right for an arbitrary
+		# sentence and wrong for a --say that is obviously build work: the
+		# run then picks the first free worker, who is Mira the shopkeeper,
+		# and answers "not my trade". Guessed from the sentence so a typed-in
+		# build order reaches the builder it was aimed at.
 		_cases = [{"cat": "adhoc", "say": say, "want": "any",
-			"check": "spoke_any", "why": "one sentence of your own"}]
+			"check": "spoke_any", "cap": _guess_cap(say),
+			"why": "one sentence of your own"}]
 	else:
 		_cases = CASES.duplicate(true)
 	set_process(true)
+
+
+## Which capability a typed-in sentence needs, guessed from the words in it.
+##
+## Only used for --say, where there is no case table to read a cap from. Uses
+## the game's own archetypes/verbs as the vocabulary rather than a list of
+## adjectives written here, so it stays right when the catalogue changes.
+## Returns "" when nothing matches, which means "anyone will do".
+func _guess_cap(say: String) -> String:
+	var t := say.to_lower()
+	if t.find("build") >= 0 or t.find("put up") >= 0 or t.find("raise") >= 0 \
+			or t.find("workshop") >= 0 or t.find("bakery") >= 0 \
+			or t.find("hut") >= 0 or t.find("house") >= 0:
+		return "build"
+	if t.find("farm") >= 0 or t.find("harvest") >= 0 or t.find("sow") >= 0:
+		return "farm"
+	if t.find("hire") >= 0 or t.find("guard") >= 0:
+		return ""
+	return ""
 
 
 func _ready() -> void:
