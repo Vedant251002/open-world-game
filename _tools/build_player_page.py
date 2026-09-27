@@ -94,16 +94,29 @@ padding:16px 18px;margin:16px 0}
 
 
 def load(which):
-    name, base = SOURCES[which]
-    for d in (base, REFS, GODOT_USER):
+    """Read a suite's results, preferring the most complete copy.
+
+    The Godot user dir holds a single-case file left by an --say run, and
+    kc_refs holds the full matrix. Checking the user dir first -- which the
+    first version did -- loaded the one-case file and reported zero cases
+    while the full run sat complete next to it. Prefer whichever copy has more
+    records, so a stray single-case run can never hide a matrix.
+    """
+    name, _base = SOURCES[which]
+    best, best_n = None, 0
+    for d in (REFS, GODOT_USER):
         p = os.path.join(d, name)
-        if os.path.exists(p):
-            try:
-                with open(p, encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return None
-    return None
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        n = len(data) if isinstance(data, list) else len(data.get("results", data))
+        if n > best_n:
+            best, best_n = data, n
+    return best
 
 
 def esc(s):
@@ -243,6 +256,9 @@ now unblocked: see the model table above.</p></div>""")
 planned correctly with real rooms, materials and footprints. This one is free
 and instant, and it is what answered "can a builder actually build" while the
 gateway was out of budget.</p></div>""")
+
+    # ---- what the run found ------------------------------------------
+    h.append("""<div class="note warn"><p><b>What the run found, and it is not what I expected.</b> Nine of the nineteen cases came back with a background line instead of an answer &mdash; a worker who is ill saying <i>"I am grey and weak"</i> or <i>"I am burning up"</i> while the town carries on. A test that accepts one of those as a reply calls the case answered. Nine of them did, which is why the first pass of this run said 19/19.</p><p>Re-scored honestly, <b>10 of 19</b> are genuine replies. And the nine are not random: every one of them named something the town cannot do.</p><p>Checked one at a time, <b>"build a space elevator"</b> produces a genuine fifty-second silence. No reply, no refusal, no question back. The player typed, the model was asked, and the worker said nothing &mdash; the one outcome a player cannot do anything with. Compare <b>"build a castle with a moat and a drawbridge"</b>, equally impossible, which does get an answer. So this is not "the model refuses impossible things"; something narrower is going wrong.</p></div>""")
 
     # ---- what the harness got wrong ----------------------------------
     h.append("""<h2>Three false passes, and what they looked like</h2>

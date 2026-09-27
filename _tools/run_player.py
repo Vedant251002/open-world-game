@@ -104,6 +104,23 @@ def run_one(case, timeout_s=220):
         line = m.group(4).strip()
         break
 
+    # Background chatter is not an answer. A worker who is ill says "I am grey
+    # and weak" on their own recognizance while a test is running, and if that
+    # is recorded as the reply then "build a space elevator" looks answered by
+    # a cough. These are the town's idle lines, listed rather than pattern-
+    # matched, because a real reply could in principle contain one of them and
+    # a false positive here would hide a genuine silence.
+    IDLE = (
+        "i am grey and weak",
+        "i am burning up",
+        "i am coughing fit to split",
+        "i am not well",
+    )
+    low = line.lower()
+    if ok and any(s in low for s in IDLE):
+        ok = False
+        cause = "background chatter, not a reply to the order"
+
     cause = ""
     if not ok:
         for pat, tag in [
