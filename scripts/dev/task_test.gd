@@ -36,13 +36,13 @@ var village: Village
 const CASES := [
 	# --- planning: a worker must design and then build ---------------
 	{"cat": "build", "say": "build a small hut with a thatch roof",
-		"want": "plan", "check": "plan_accepted",
+		"want": "plan", "check": "plan_accepted", "cap": "build",
 		"why": "the core loop: a brief in, a spec out, a building in the world"},
 	{"cat": "build", "say": "put up a workshop, timber framed, with a big door",
-		"want": "plan", "check": "plan_accepted",
+		"want": "plan", "check": "plan_accepted", "cap": "build",
 		"why": "a second archetype, so one working building is not luck"},
 	{"cat": "build", "say": "build me a bakery facing the square",
-		"want": "plan", "check": "plan_accepted",
+		"want": "plan", "check": "plan_accepted", "cap": "build",
 		"why": "the most complex archetype: multiple modules, most voxels"},
 
 	# --- answers: the town's own records, no build -------------------
@@ -187,7 +187,7 @@ func _start_case() -> void:
 	_saw = {}
 	_crew_before = crew.hired().size() if crew != null else 0
 	_t0 = Time.get_ticks_msec()
-	var w: Worker = _pick_worker()
+	var w: Worker = _pick_worker(str(c.get("cap", "")))
 	if w == null:
 		_saw["no_worker"] = true
 		_settle = 0.1
@@ -197,21 +197,38 @@ func _start_case() -> void:
 		dispatch.instruct(w, str(c["say"]))
 
 
-## A worker who is free. A busy one is skipped: an order given to somebody
-## mid-build is queued behind the build, and the harness would be measuring the
-## build rather than the order.
-func _pick_worker() -> Worker:
+## A worker who is free AND can actually do what was asked.
+##
+## The role check is real and correct: crew.gd says asking Mira to put up a
+## wall gets "not my trade" and Validator returns outside_role. So picking
+## whoever happens to be nearest made every build case a refusal -- a true
+## statement about a shopkeeper, and a useless test of building. The first
+## version of this harness picked the first free worker, which is usually Mira,
+## and reported 0/3 builds for a reason that had nothing to do with building.
+##
+## So: a case names the capability it needs, and a worker who cannot do it is
+## not eligible. If nobody can, the case says so rather than quietly testing
+## the wrong person.
+func _pick_worker(cap: String) -> Worker:
 	var free: Array[Worker] = []
+	var eligible: Array[Worker] = []
 	for w: Worker in crew.hired():
-		if not w.busy():
-			free.append(w)
-	if free.is_empty():
+		if w.busy():
+			continue
+		free.append(w)
+		if cap == "" or w.role == null or w.role.can(cap):
+			eligible.append(w)
+	if not eligible.is_empty():
+		return eligible[0]
+	# Nobody hired can do it. Fall back to a builder if the town has one, since
+	# a refusal from a shopkeeper is a different test from a refusal from the
+	# person who would have done the work.
+	if cap != "":
 		for w: Worker in crew.hired():
-			free.append(w)
-			break
-	if free.is_empty():
-		return null
-	return free[0]
+			if w.role != null and w.role.can(cap):
+				return w
+	_saw["no_capable_worker"] = true
+	return free[0] if not free.is_empty() else null
 
 
 func _on_spoke(worker: Worker, line: String, kind: String) -> void:

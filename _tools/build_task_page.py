@@ -37,9 +37,10 @@ CAT_BLURB = {
 # A gateway-shaped failure is not a game failure, and conflating the two is
 # what made the first two runs of this matrix report nonsense.
 GATEWAY = re.compile(
-    r"http=(429|500|502|503|504|401|403)|rate limit|ratelimit|tokens per minute|"
-    r"tokens per day|badfield|property '\w+' is unsupported|connection|"
-    r"timed out",
+    r"http=(429|500|502|503|504|401|403)|rate limit|ratelimit|"
+    r"tokens per minute|tokens per day|daily token budget|"
+    r"per-minute token budget|badfield|property '\w+' is unsupported|"
+    r"connection|timed out",
     re.I,
 )
 ENGINE = re.compile(r"missingfn|Nonexistent function|Parse Error|SCRIPT ERROR", re.I)
@@ -196,6 +197,22 @@ building &mdash; not a rendering failure, a role check doing its job on a worker
 that was not a builder.</p></div>""")
 
     # ---- the table ---------------------------------------------------
+    # A build case that "worked" by being refused is worth calling out, because
+    # it means the case tested the wrong person rather than the thing it was
+    # written for.
+    def refused_by_trade(line):
+        return "not my trade" in (line or "")
+
+    traded = [r for r in results if refused_by_trade(r.get("line"))]
+    if traded:
+        h.append(f"""<div class="note"><p><b>A build that passed by refusing.</b>
+{len(traded)} of the build cases were answered <i>"That is not my trade &mdash;
+I was taken on as a shopkeeper."</i> That is the game working exactly as
+designed &mdash; <code>crew.gd</code> says asking Mira to build gets that reply
+&mdash; but it means those cases tested a shopkeeper's role check, not
+building. The harness has been fixed to pick a worker who <i>can</i> do the
+work, and those cases are re-run when there is budget for them.</p></div>""")
+
     h.append("<h2>Every case</h2><table><tr><th>Category</th><th>What was said"
              "</th><th>Worker</th><th>What came back</th><th>Result</th></tr>")
     for r in results:
