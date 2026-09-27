@@ -105,6 +105,10 @@ var _results: Array[Dictionary] = []
 var _fails: Array[String] = []
 var _errors: Array[String] = []
 var _say := ""
+## True only while a case is open. The gap between cases sets it false, so a
+## late reply from the case just finished is dropped rather than recorded as
+## the answer to the case just starting. Every handler checks this first.
+var _armed := false
 
 
 func begin(say: String = "") -> void:
@@ -118,11 +122,21 @@ func begin(say: String = "") -> void:
 
 
 func _ready() -> void:
+	# crew.worker_spoke, not dispatch.spoke. The dispatcher re-emits only the
+	# lines it produced itself; a worker speaking for itself -- every
+	# ask_player() question, every reaction to being corrected -- goes out on
+	# the crew signal, which is what main.gd:652 connects to the HUD. A player
+	# sees all of it; a harness on the wrong signal sees a fifty-second silence
+	# and calls it a failure, which is what this did to twelve cases before it
+	# was caught. Connect both: the dispatcher's own refusals and plans, and
+	# the crew's own voice.
 	if dispatch != null:
 		dispatch.spoke.connect(_on_spoke)
 		dispatch.plan_accepted.connect(_on_plan)
 		dispatch.refused.connect(_on_refused)
 		dispatch.short_of.connect(_on_short)
+	if crew != null:
+		crew.worker_spoke.connect(_on_crew_spoke)
 
 
 func _process(delta: float) -> void:
@@ -153,6 +167,11 @@ func _process(delta: float) -> void:
 	if not _busy:
 		return
 	_timeout += delta
+	# A hard case must be answered. It is given its own window, and the window
+	# is not shortened by a settle that started before this case did -- that
+	# was the bug above, where every case closed on a timer and inherited the
+	# previous case's line. Only a reply that lands inside THIS window counts,
+	# and the window closes 0.7s after that reply.
 	if _timeout > 50.0:
 		_saw["timeout"] = true
 		_finish_case()
@@ -163,7 +182,15 @@ func _start_case() -> void:
 	_timeout = 0.0
 	_saw = {}
 	_t0 = Time.get_ticks_msec()
+	# Only a reply that arrives after this moment belongs to this case.
+	# Without it the settle window from the previous case was still closing
+	# when the next order went out, so every case recorded the line the
+	# PREVIOUS case had produced -- nineteen identical replies from nineteen
+	# different sentences, all of them Mira's, all 0.5s apart, which is how it
+	# was spotted. A case that is not answered within its own window is
+	# recorded as unanswered, not credited with its neighbour's line.
 	var say := str(c.get("say", ""))
+	_armed = true
 
 	# --all: tell everybody at once. This is the case most likely to find a
 	# real bug, because every worker reaches for the same plot at the same
@@ -207,7 +234,7 @@ func _pick() -> Worker:
 
 
 func _on_spoke(worker: Worker, line: String, kind: String) -> void:
-	if _i < 0 or _settle > 0.0:
+	if not _armed or _settle > 0.0:
 		return
 	if _saw.has("to") and worker.display_name() != _saw["to"] \
 			and not _saw.get("multi", false):
@@ -217,8 +244,20 @@ func _on_spoke(worker: Worker, line: String, kind: String) -> void:
 	_settle = 0.7
 
 
+## A worker speaking in its own voice. Same filtering as the others.
+func _on_crew_spoke(worker: Worker, line: String, kind: String) -> void:
+	if not _armed or _settle > 0.0:
+		return
+	if _saw.has("to") and worker.display_name() != _saw["to"] 			and not _saw.get("multi", false):
+		return
+	_saw["replies"] = int(_saw.get("replies", 0)) + 1
+	_saw["line"] = line
+	_saw["kind"] = kind
+	_settle = 0.7
+
+
 func _on_plan(worker: Worker, _a: Array) -> void:
-	if _i < 0 or _settle > 0.0:
+	if not _armed or _settle > 0.0:
 		return
 	if _saw.has("to") and worker.display_name() != _saw["to"] \
 			and not _saw.get("multi", false):
@@ -228,16 +267,38 @@ func _on_plan(worker: Worker, _a: Array) -> void:
 
 
 func _on_refused(worker: Worker, err: Dictionary) -> void:
-	if _i < 0 or _settle > 0.0:
+	# Every handler here filters on the worker the order went to, and this one
+	# was the one that did not. The town keeps working while the harness
+	# waits, so a background refusal was counted as the answer to whatever was
+	# typed -- nineteen times in a row, all with an empty line, all in half a
+	# second. That reported 19/19 answered while the player had heard nothing
+	# at all. The tell was the uniform 0.5s spacing: a model round trip is
+	# seconds, and a refusal that arrives before the model is even asked is
+	# somebody else's.
+	if not _armed or _settle > 0.0:
+		return
+	if _saw.has("to") and worker.display_name() != _saw["to"] \
+			and not _saw.get("multi", false):
 		return
 	_saw["refused"] = true
 	_saw["why"] = str(err.get("question", err.get("why",
 		err.get("code", "refused"))))
+	_saw["line"] = str(_saw.get("line", "")) if str(_saw.get("line", "")) != "" \
+		else "refused: %s" % _saw["why"]
 	_settle = 0.7
 
 
 func _on_short(worker: Worker, _m: Dictionary) -> void:
+	# Same worker filter as the others, for the same reason.
+	if not _armed or _settle > 0.0:
+		return
+	if _saw.has("to") and worker.display_name() != _saw["to"] \
+			and not _saw.get("multi", false):
+		return
 	_saw["short"] = true
+	_saw["line"] = str(_saw.get("line", "")) if str(_saw.get("line", "")) != "" \
+		else "short of materials"
+	_settle = 0.7
 
 
 ## A repeat case sends the order again each time a reply lands, so the third
@@ -262,9 +323,14 @@ func _finish_case() -> void:
 	var ok := answered or not bool(c.get("hard", false))
 	_record(ok, "" if answered else "no reply at all", took, c)
 
+	_armed = false
 	_i += 1
 	if _i < _cases.size():
-		_settle = 0.5
+		# The gap between cases. It has to be long enough for a slow reply to
+		# have landed, or the next case inherits it -- 0.5s was not, and a
+		# round trip to the model is several seconds. _armed is false for the
+		# whole gap, so anything that arrives now is dropped.
+		_settle = 1.5
 	else:
 		_report()
 
