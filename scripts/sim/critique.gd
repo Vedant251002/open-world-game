@@ -241,9 +241,31 @@ static func _word(t: String, w: String) -> bool:
 	return t.find(" %s " % w) >= 0
 
 
+## A word in the list, matched on word boundaries.
+##
+## This used to be a plain substring search, and "less" -- a size word, as in
+## "smaller" -- matched inside the middle of *useless*. So this:
+##
+##   "you are useless and I hate you"
+##
+## was read as a correction about size, and the worker answered "I will
+## remember that -- they want things bigger than I make them." A player
+## insulting a builder got a design preference saved against their name, and
+## the next building came out wrong because of it.
+##
+## Boundaries matter for every entry in these lists, not just this one: "big"
+## is in BIGGER and would match "bigot"; "small" matches "smallpox"; "fire"
+## matches "fireworks". Whole words only.
+##
+## NOTE: read() already pads t with a space at each end before calling this,
+## so this must not pad it again. The first version of this fix added its own
+## padding and silently stopped matching every real correction -- "make it
+## smaller" and "bigger" both came back empty, which the probe caught
+## immediately and a player would not have noticed until a building came out
+## the wrong size.
 static func _has(t: String, words: Array) -> bool:
 	for w: String in words:
-		if t.find(w) >= 0:
+		if t.find(" " + w.strip_edges() + " ") >= 0:
 			return true
 	return false
 

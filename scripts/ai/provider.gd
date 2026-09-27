@@ -60,6 +60,19 @@ const PROVIDERS := {
 	# The original. Kept because it works, costs nothing, and is what the
 	# deployed proxy already holds a key for — but it is slow (the better part
 	# of a minute), it has no structured output, and its free models truncate.
+	"orcarouter": {
+		"endpoint": "https://api.orcarouter.ai/v1/chat/completions",
+		"key_env": "ORCAROUTER_API_KEY",
+		"model_env": "ORCAROUTER_MODEL",
+		"default_model": "z-ai/glm-5.3-flash-free",
+		"schema": "strict",
+		"max_tokens_field": "max_tokens",
+		# No "reasoning" field: tested live and the gateway is OpenAI-shaped,
+		# so a reasoning key is the same refusal Groq gives. Whether the model
+		# reasons is a different question and does not belong in the request.
+		"reasoning": false,
+		"label": "Orca Router",
+	},
 	"opencode": {
 		"endpoint": "https://opencode.ai/zen/v1/chat/completions",
 		"key_env": "OPENCODE_API_KEY",

@@ -295,6 +295,24 @@ func _on_world_ready(t0: int) -> void:
 				say2 = a.substr(6)
 		rt.begin(say2)
 		return
+	if "--playertest" in args:
+		# PlayerTest is the adversarial one: nonsense, insults, empty input,
+		# impossible orders, the same order three times, and every worker told
+		# to build at the same moment. See the file for the three rules.
+		var pt := PlayerTest.new()
+		pt.dispatch = dispatch
+		pt.crew = crew
+		pt.clock = clock
+		pt.town = town
+		pt.world = world
+		pt.village = village
+		add_child(pt)
+		var say4 := ""
+		for a in args:
+			if a.begins_with("--say="):
+				say4 = a.substr(6)
+		pt.begin(say4)
+		return
 	if "--tasktest" in args:
 		# TaskTest is the one that checks outcomes rather than routing: a
 		# sentence goes to a real worker and the harness watches for the
