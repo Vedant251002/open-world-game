@@ -636,6 +636,34 @@ func plan_round(worker: Worker, goal: Goal, crew: Crew, town: Town,
 ## The reply's text, with any fence or stray quoting stripped. Kept to a
 ## couple of sentences: a speech bubble is not a place for an essay, and the
 ## prompt asked for two anyway.
+## Whether a reply is a value rather than a sentence.
+##
+## Short, and made only of the words a machine would use to answer a
+## yes/no question. A villager can say "No." or "Yes." -- those are allowed
+## through on purpose, because they are words people say. What is not allowed
+## is "true", "false", "null", "none", "ok", or a bare number: nobody in a
+## village has ever answered a question about their day with a truth value,
+## and a speech bubble that says one looks like the game is broken.
+const _NOT_SENTENCES := ["true", "false", "null", "none", "nil", "undefined",
+	"nan", "[]", "{}", '""', "''"]
+
+
+static func _is_degenerate(text: String) -> bool:
+	var t := text.strip_edges().to_lower()
+	if t.is_empty():
+		return true
+	if _NOT_SENTENCES.has(t):
+		return true
+	# A bare number, and only a bare number: "12" is not a sentence, but "I
+	# have 12 sheep" is, and neither is "42." -- a number with a full stop,
+	# which is_valid_float() happily calls a float. Sentence punctuation a
+	# person actually uses is stripped before the check, not after.
+	var bare := t.trim_suffix(".").trim_suffix("!").trim_suffix("?").strip_edges()
+	if bare.is_valid_int() or bare.is_valid_float():
+		return true
+	return false
+
+
 func _plain_text(raw: String) -> String:
 	var json := JSON.new()
 	if json.parse(raw) != OK or not (json.data is Dictionary):
@@ -655,6 +683,17 @@ func _plain_text(raw: String) -> String:
 		text = text.substr(nl + 1) if nl >= 0 else text
 		text = text.trim_suffix("```").strip_edges()
 	text = text.trim_prefix("\"").trim_suffix("\"").strip_edges()
+	# A degenerate reply is worse than silence, because a worker saying "true"
+	# at you is a thing no villager has ever done. Models do it: a tool-shaped
+	# prompt occasionally gets answered with a bare boolean, and _plain_text
+	# hands it straight to the speech bubble. Measured on 2026-09-27 --
+	# "go away" and "stand at the well" both came back as the word "true" on
+	# the very first run through the free router.
+	#
+	# Returning "" makes the caller fall back to the line it already had, so
+	# the player hears a sentence instead of a truth value.
+	if text.length() <= 5 and _is_degenerate(text):
+		return ""
 	if text.length() > 320:
 		var cut := text.rfind(". ", 300)
 		text = text.substr(0, cut + 1) if cut > 80 else text.substr(0, 300) + "…"

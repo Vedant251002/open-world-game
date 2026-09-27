@@ -199,6 +199,15 @@ of fourteen is not a constraint here.</p>""")
         h.append('<div class="note warn"><p>Not run yet. '
                  '<code>python _tools/run_player.py</code></p></div>')
     else:
+        # Reclassify BEFORE the headline, not after it. A degenerate reply is
+        # cleared here and again in the table below, and the first version
+        # counted the cards first -- so the page said 19 got a reply directly
+        # above a table listing two silences.
+        for r in rows:
+            if r.get("ok") and (r.get("line") or "").strip().lower() in (
+                    "true", "false", "null", "none", "{}", "[]"):
+                r["ok"] = False
+                r["cause"] = "degenerate reply (a value, not a sentence)"
         answered = [r for r in rows if r.get("ok")]
         silent = [r for r in rows if not r.get("ok")]
         # Split the failures: the gateway stopping a case is not the town
@@ -233,6 +242,14 @@ of fourteen is not a constraint here.</p>""")
                  "<th>What came back</th><th>Result</th></tr>")
         for r in rows:
             cls = "pass" if r.get("ok") else "fail"
+            if r.get("ok") and (r.get("line") or "").strip().lower() in (
+                    "true", "false", "null", "none", "{}", "[]"):
+                # A value in a speech bubble. Counted as not answered here for
+                # the same reason llm.gd drops it: a worker saying "true" at
+                # you is not an answer, and the fix is in the game rather than
+                # in the report.
+                r["ok"] = False
+                r["cause"] = "degenerate reply (a value, not a sentence)"
             if r.get("ok"):
                 said, cls, label = r.get("line") or "", "pass", "answered"
             elif "gateway" in str(r.get("cause", "")).lower():
@@ -268,9 +285,11 @@ and instant, and it is what answered "can a builder actually build" while the
 gateway was out of budget.</p></div>""")
 
     # ---- what the run found ------------------------------------------
-    h.append("""<div class="note good"><p><b>Zero failures.</b> Of nineteen things a player did, ten got a real answer and nine were stopped before the model was ever asked. Not one case exposed a fault in the town.</p><p>The nine look like failures in the log and are not. Each one recorded a background line &mdash; a worker who is ill saying <i>"I am grey and weak"</i> &mdash; because the model never came back. Underneath, the router said:</p><p class="mono" style="font-size:12.5px">http=429 &nbsp; Free model capacity is limited right now. Retry shortly, or add credits for higher, more stable limits</p><p>That is the free tier being full, not the game being silent. It is a different thing from a token budget, which is what I had been seeing all day on the other provider: this one carries no number and no time to wait it out. Worth knowing before spending a day of testing on it.</p></div>""")
+    h.append("""<div class="note good"><p><b>All nineteen tested. Seventeen answered, two answered with a word that is not a sentence, and nothing failed in the town.</b></p><p>The first pass stopped at ten of nineteen because the router's free tier ran out of capacity mid-run &mdash;<span class="mono" style="font-size:12.5px">http=429 &nbsp; Free model capacity is limited right now</span> &mdash; and a model that never answers is not a town that cannot speak. Once the other provider had budget, the nine gaps were retested and all nine came back answered.</p></div>""")
 
-    h.append("""<div class="note warn"><p><b>And the one I nearly got wrong.</b> For most of a run, <b>"build a space elevator"</b> read as a genuine fifty-second silence: the player typed, the model was asked, and the worker said nothing at all. It was the clearest-looking bug on the page and it was not in the game. Chasing it is what found the real cause in the log, which is the only reason it is worth writing down &mdash; a harness that has never disagreed with the result it is reporting is a harness that has not been tested.</p></div>""")
+    h.append("""<div class="bug"><h3>The villager who said "true"</h3><p>Two of the nineteen came back with the reply <b>true</b>. Not the word "true" in a sentence &mdash; the whole reply, in a speech bubble, with a full stop implied. A player types <i>"go away"</i> and a builder answers them with a truth value.</p><p>It happens because a tool-shaped prompt occasionally gets answered with a bare boolean, and <code>_plain_text()</code> handed whatever came back straight to the subtitle strip with no check that it was a sentence. <code>_is_degenerate()</code> now drops values &mdash; true, false, null, none, a bare number, an empty pair of brackets &mdash; and returns "" so the caller falls back to the line it already had.</p><p>Deliberately narrow: <b>"No."</b> and <b>"Yes."</b> are things people say and survive. "True enough." survives. 25 cases in the probe, and writing it caught that "42." is a float to GDScript, so sentence punctuation is stripped before the number check rather than after.</p></div>""")
+
+    h.append("""<div class="note"><p><b>And the one I nearly got wrong.</b> For most of a run, <b>"build a space elevator"</b> read as a genuine fifty-second silence: typed, asked, nothing back. It was the clearest-looking bug on the page and it was not in the game. Chasing it is what found the real cause in the log. Retested with budget, it now answers properly:</p><div class="quote">"My apologies, but building a space elevator is beyond the capabilities we have here."</div></div>""")
 
     # ---- what the harness got wrong ----------------------------------
     h.append("""<h2>Three false passes, and what they looked like</h2>

@@ -35,7 +35,12 @@ import time
 ROOT = r"C:\Users\vedan\Desktop\Projects\kingdom-city"
 GODOT = r"C:\Users\vedan\Tools\godot\godot_console.exe"
 OUT = r"C:\Users\vedan\kc_refs\player_results.json"
-PROVIDER = "orcarouter"
+# Which gateway to use. Overridable with QA_PROVIDER, because the free tiers
+# come and go: the router was at capacity for an entire run on 2026-09-27 and
+# Groq's daily budget had reset by the next morning. Hardcoding one turns "the
+# gateway is busy" into "the test rig is broken", which is a distinction this
+# whole exercise has already got wrong four times.
+PROVIDER = os.environ.get("QA_PROVIDER", "orcarouter")
 
 ORDER = ["nonsense", "empty", "hostile", "impossible", "repeat", "long", "rapid"]
 
@@ -159,10 +164,35 @@ def run_one(case, timeout_s=220):
 
 
 def main():
-    only = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = [a for a in sys.argv[1:]]
+    # --retry runs only the cases a previous run could not test. The nine that
+    # came back as gateway refusals were never a test of the game, and a fresh
+    # budget should go to the gaps rather than repeating the ten that already
+    # have real replies.
+    retry_only = "--retry" in args
+    if retry_only:
+        args.remove("--retry")
+    only = args[0] if args else ""
+
     cases = parse_cases()
     if only:
         cases = [c for c in cases if c["kind"] == only]
+
+    if retry_only and os.path.exists(OUT):
+        try:
+            prev = json.load(open(OUT, encoding="utf-8"))
+        except Exception:
+            prev = []
+        done = {(r["kind"], r["say"]) for r in prev
+                if r.get("ok") and (r.get("line") or "")
+                and not any(s in (r.get("line") or "").lower()
+                            for s in ("i am grey and weak", "i am burning up",
+                                      "i am coughing fit to split"))}
+        before = len(cases)
+        cases = [c for c in cases if (c["kind"], c["say"]) not in done]
+        print(f"--retry: {before - len(cases)} already answered, "
+              f"{len(cases)} to test\n")
+
     # The order the harness uses, so the page reads the same way. A stable
     # sort on the rank alone: cases.index(c) inside the key is a lookup on a
     # list being sorted, which raised ValueError on every run.
@@ -170,12 +200,25 @@ def main():
     cases.sort(key=lambda c: rank.get(c["kind"], 99))
     print(f"{len(cases)} cases, one process each, provider={PROVIDER}\n")
     results = []
+    # --retry merges into whatever is already there, keyed on the case, so a
+    # partial retry does not throw away the answers it is not repeating.
+    if retry_only and os.path.exists(OUT):
+        try:
+            results = json.load(open(OUT, encoding="utf-8"))
+        except Exception:
+            results = []
     for i, c in enumerate(cases, 1):
         print(f"  ({i}/{len(cases)}) {c['kind']:11s} {c['say'][:42]}", flush=True)
         r = run_one(c)
+        # Replace any earlier record of this case rather than appending.
+        results = [x for x in results
+                   if not (x.get("kind") == r["kind"]
+                           and x.get("say") == r["say"])]
         results.append(r)
         print(f"        -> {'ok  ' if r['ok'] else 'FAIL'} "
               f"{(r['line'] or r['cause'])[:74]}", flush=True)
+        rank2 = {k: i for i, k in enumerate(ORDER)}
+        results.sort(key=lambda x: rank2.get(x.get("kind", ""), 99))
         json.dump(results, open(OUT, "w"), indent=1)
         time.sleep(3)
 
