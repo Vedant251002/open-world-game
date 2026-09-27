@@ -180,11 +180,20 @@ token budget, and it says nothing about the game. They are counted apart on
 purpose: an earlier run of this matrix reported 11/14 and then 3/14, and both
 numbers were a gateway limit being miscounted as a broken town.</p></div>
 
-<div class="note"><p><b>What is not covered.</b> This is a partial run. The free
-tier allows 200,000 tokens a day and each planning prompt spends about 3,400 of
-them, so the matrix runs out of gateway before it runs out of cases. Anything
-marked <i>gateway</i> was never a test of the game &mdash; the order never
-reached a worker.</p></div>""")
+<div class="note"><p><b>What is not covered.</b> This is a partial
+run in the only sense that matters: {n_gw} of {len(results)} cases were stopped
+by the gateway before the order reached a worker. The free tier allows 200,000
+tokens a day and each planning prompt spends about 3,400 of them, so the matrix
+runs out of budget before it runs out of cases. A case marked <i>gateway</i> is
+not a result.</p></div>
+
+<div class="note"><p><b>What the run did establish.</b> The four that answered
+did so in character, and one of them refused for a reason worth reading:
+<i>"That is not my trade &mdash; I was taken on as a shopkeeper."</i> The worker
+was asked to build, checked the role it had been hired for, and declined. That
+is the game working. It is also why <b>0</b> of the build cases produced a
+building &mdash; not a rendering failure, a role check doing its job on a worker
+that was not a builder.</p></div>""")
 
     # ---- the table ---------------------------------------------------
     h.append("<h2>Every case</h2><table><tr><th>Category</th><th>What was said"
