@@ -91,9 +91,30 @@ def run_one(idx, total, case_id, say, timeout_s=200):
             detail = m.group(0)[:100]
 
     ok = "[ok]" in blob and "=== PASS ===" in blob
+    # A case that returned nothing at all still has a cause underneath, and
+    # that cause decides how the page reports it. "no reply, no reason" in the
+    # harness output is not the same as a worker that stayed quiet; one is a
+    # gateway that never answered, the other is a game that dropped the order.
+    cause = ""
+    for pat, tag in [
+        (r"tokens per day", "daily token budget spent"),
+        (r"tokens per minute", "per-minute token budget spent"),
+        (r"http=(429)", "rate limited"),
+        (r"http=(400)[^\n]*(expected string|not in request\.tools)", "schema rejected"),
+        (r"http=(\d{3})", "gateway error"),
+    ]:
+        m = re.search(pat, blob, re.I)
+        if m:
+            cause = f"{tag} (http={m.group(1)})" if m.groups() else tag
+            break
+    if not ok and not cause:
+        m = re.search(r"\[llm\][^\n]{0,120}", blob)
+        if m:
+            cause = m.group(0)[:110]
     return {
         "ok": ok, "say": say, "cat": case_id, "line": line,
         "why_harness": detail if not ok else "",
+        "cause": cause,
         "seconds": 0.0,
         "tone": TONE.get(case_id, "clerk"),
     }

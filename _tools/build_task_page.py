@@ -38,7 +38,8 @@ CAT_BLURB = {
 # what made the first two runs of this matrix report nonsense.
 GATEWAY = re.compile(
     r"http=(429|500|502|503|504|401|403)|rate limit|ratelimit|tokens per minute|"
-    r"badfield|property '\w+' is unsupported|connection|timed out|badfield",
+    r"tokens per day|badfield|property '\w+' is unsupported|connection|"
+    r"timed out",
     re.I,
 )
 ENGINE = re.compile(r"missingfn|Nonexistent function|Parse Error|SCRIPT ERROR", re.I)
@@ -52,20 +53,38 @@ def load(p, default=None):
         return default
 
 
+# The sentence a background citizen speaks when the town has no field. It is
+# not a reply to anything the harness asked, and an earlier run recorded it as
+# the answer to six unrelated questions -- which is how the harness's own
+# attribution bug was found. Counting it as a pass would repeat the mistake the
+# page exists to document.
+AMBIENT = "There is no field to bring anything in from."
+
+
 def verdict(r):
     """(status, cause) where status is pass/fail/gateway and cause explains it."""
     ev = (r.get("line") or "").strip()
     why = (r.get("why_harness") or "").strip()
+    cause = (r.get("cause") or "").strip()
+    if ev == AMBIENT:
+        return "fail", "background chatter, not a reply to the order"
     if r.get("ok") and ev:
         return "pass", ""
-    blob = f"{ev} {why}"
+    # A recorded cause beats a guessed one. A gateway that spent its budget
+    # did not test the game, and calling that a game failure is the single
+    # most misleading thing this page could do.
+    if cause and GATEWAY.search(f"{cause} {why} {ev}"):
+        return "gateway", cause
+    if cause and ENGINE.search(f"{cause} {why}"):
+        return "fail", cause
+    blob = f"{ev} {why} {cause}"
     if GATEWAY.search(blob):
-        return "gateway", (why or ev or "gateway said no")[:120]
+        return "gateway", (cause or why or ev or "gateway said no")[:120]
     if ENGINE.search(blob):
-        return "fail", (why or "engine error")[:120]
+        return "fail", (cause or why or "engine error")[:120]
     if not ev and not why:
-        return "fail", "no reply and no stated reason"
-    return "fail", (why or ev or "no outcome")[:120]
+        return "fail", cause or "no reply and no stated reason"
+    return "fail", (cause or why or ev or "no outcome")[:120]
 
 
 def esc(s):
@@ -156,11 +175,16 @@ as a failure in the next.</p>"""]
 
     h.append(f"""<div class="note"><p><b>Read these two numbers separately.</b>
 A <i>game</i> failure is the town getting an order wrong &mdash; it is the
-project's to fix. A <i>gateway</i> failure is the free tier refusing a
-8k-tokens-per-minute budget, and it says nothing about the game. They are
-counted apart on purpose: an earlier run of this matrix reported 11/14 and
-then 3/14, and both numbers were a gateway limit being miscounted as a
-broken town.</p></div>""")
+project's to fix. A <i>gateway</i> failure is the free tier refusing its
+token budget, and it says nothing about the game. They are counted apart on
+purpose: an earlier run of this matrix reported 11/14 and then 3/14, and both
+numbers were a gateway limit being miscounted as a broken town.</p></div>
+
+<div class="note"><p><b>What is not covered.</b> This is a partial run. The free
+tier allows 200,000 tokens a day and each planning prompt spends about 3,400 of
+them, so the matrix runs out of gateway before it runs out of cases. Anything
+marked <i>gateway</i> was never a test of the game &mdash; the order never
+reached a worker.</p></div>""")
 
     # ---- the table ---------------------------------------------------
     h.append("<h2>Every case</h2><table><tr><th>Category</th><th>What was said"
