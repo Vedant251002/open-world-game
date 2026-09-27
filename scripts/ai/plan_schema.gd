@@ -388,6 +388,24 @@ static func _building_spec(tier: int) -> Dictionary:
 ## it does not get to wander off while it decides. reply is the tool for
 ## everything that is not a job — a greeting, a question, a typo, "what do you
 ## want". A work tool is only for a job they were actually given.
+## Widen a field so null is an acceptable value for it.
+##
+## Only ever applied to optional fields. A required field that arrives null is
+## a genuine mistake worth a 400; an optional field that arrives null is the
+## model saying "nothing for this one", and refusing the whole plan over it
+## loses the order entirely. Arrays keep their item type -- ["string","null"]
+## would mean an array or a null, not an array of nullable strings.
+static func _nullable(field: Dictionary) -> Dictionary:
+	var t: Variant = field.get("type", "string")
+	if t is Array:
+		return field
+	if str(t) == "null":
+		return field
+	var out := field.duplicate()
+	out["type"] = [str(t), "null"]
+	return out
+
+
 static func tools_for(tier: int, allowed: Array = []) -> Array:
 	var tools: Array = [{
 		"type": "function",
@@ -418,7 +436,15 @@ static func tools_for(tier: int, allowed: Array = []) -> Array:
 			props[f] = _field(f, tier)
 			required.append(f)
 		for f2: String in v["optional"]:
-			props[f2] = _field(f2, tier)
+			# Every optional field is made nullable here, once, rather than one
+			# match arm at a time. Models fill an optional field they have
+			# nothing for with null instead of leaving it out, and strict JSON
+			# Schema calls that a type error -- so a plan containing
+			# {"do":"harvest","in":null} was refused by the gateway with
+			# "/in: expected string, but got null" and the worker said nothing
+			# at all. One bug, twenty fields, all of them optional by
+			# definition, so it is fixed where optionality is declared.
+			props[f2] = _nullable(_field(f2, tier, verb))
 		var params := {
 			"type": "object",
 			"properties": props,

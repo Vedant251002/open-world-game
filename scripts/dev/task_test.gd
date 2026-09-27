@@ -217,6 +217,12 @@ func _pick_worker() -> Worker:
 func _on_spoke(worker: Worker, line: String, kind: String) -> void:
 	if _i < 0 or _i >= _cases.size() or _settle > 0.0:
 		return
+	# Only the worker the order went to. This matters more than it looks: the
+	# town keeps working while the harness waits, so a citizen harvesting with
+	# no field to harvest from speaks "There is no field to bring anything in
+	# from." and the first version of this filter recorded that as the answer
+	# to "how many bricks do we have?". Three unrelated questions came back
+	# with that one sentence, which is what gave the bug away.
 	if _saw.has("to") and worker.display_name() != _saw["to"]:
 		return
 	_saw["spoke"] = true
@@ -226,11 +232,19 @@ func _on_spoke(worker: Worker, line: String, kind: String) -> void:
 
 
 func _on_plan(worker: Worker, _assumptions: Array) -> void:
+	if _i < 0 or _i >= _cases.size() or _settle > 0.0:
+		return
+	if _saw.has("to") and worker.display_name() != _saw["to"]:
+		return
 	_saw["plan"] = true
 	_settle = 0.6
 
 
 func _on_refused(worker: Worker, err: Dictionary) -> void:
+	if _i < 0 or _i >= _cases.size() or _settle > 0.0:
+		return
+	if _saw.has("to") and worker.display_name() != _saw["to"]:
+		return
 	_saw["refused"] = true
 	# The emit sites pass a Validator.error() dict, a res["error"], and a raw
 	# err -- none of which agree on the key, so read all of them rather than
@@ -243,6 +257,10 @@ func _on_refused(worker: Worker, err: Dictionary) -> void:
 
 
 func _on_short(worker: Worker, _missing: Dictionary) -> void:
+	if _i < 0 or _i >= _cases.size() or _settle > 0.0:
+		return
+	if _saw.has("to") and worker.display_name() != _saw["to"]:
+		return
 	_saw["short"] = true
 	_settle = 0.6
 

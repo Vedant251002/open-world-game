@@ -68,16 +68,16 @@ def run_one(idx, total, case_id, say, timeout_s=200):
     blob = (p.stdout or "") + (p.stderr or "")
     # The user-facing line the harness prints, minus the cat/say columns.
     line = ""
-    for m in re.finditer(r"\[task\]\s+\[(ok|FAIL)\]\s+\S+\s+(.*?)\s{2,}([\d.]+)s\s*(.*)",
-                         blob):
-        line = m.group(4).strip()
+    for m in re.finditer(r"^\[task\]\s+\[(?:ok|FAIL)\]\s+\S+\s+(.*?)\s{2,}"
+                         r"([\d.]+)s\s*(.*)$", blob, re.M):
+        line = m.group(3).strip()
         break
 
     # What actually happened underneath, for a failure that came back silent.
     detail = ""
     for pat, tag in [
-        (r"http=(\d+)\s*([^\n\[]*)", "http"),
-        (r"rate limit[^\n\]{0,90}", "ratelimit"),
+        (r"http=(\d+)\s*([^\n]*)", "http"),
+        (r"rate limit[^\n]{0,90}", "ratelimit"),
         (r"property '(\w+)' is unsupported", "badfield"),
         (r"Nonexistent function '(\w+)'", "missingfn"),
     ]:
@@ -120,6 +120,10 @@ def main():
             mark = "ok  " if r["ok"] else "FAIL"
             tail = r["line"] or r["why_harness"] or "(no reply)"
             print(f"        -> {mark} {tail[:80]}", flush=True)
+            # Written after every case, not at the end: the first version of
+            # this script lost a four-minute run to a regex error on line 40
+            # and had nothing to show for it.
+            json.dump(results, open(OUT, "w"), indent=1)
             # The free tier is 8k tokens/min. A planning prompt is a few
             # thousand of them, so spacing is not politeness, it is the only
             # way the later cases are not all rate-limit failures.
