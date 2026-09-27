@@ -295,6 +295,24 @@ func _on_world_ready(t0: int) -> void:
 				say2 = a.substr(6)
 		rt.begin(say2)
 		return
+	if "--tasktest" in args:
+		# TaskTest is the one that checks outcomes rather than routing: a
+		# sentence goes to a real worker and the harness watches for the
+		# effect. See the file for why that is not the same as RouteTest.
+		var tt := TaskTest.new()
+		tt.dispatch = dispatch
+		tt.crew = crew
+		tt.clock = clock
+		tt.town = town
+		tt.world = world
+		tt.village = village
+		add_child(tt)
+		var say3 := ""
+		for a in args:
+			if a.begins_with("--say="):
+				say3 = a.substr(6)
+		tt.begin(say3)
+		return
 	if "--gestures" in args:
 		var gt := GestureTest.new()
 		gt.world = world
