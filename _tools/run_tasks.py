@@ -120,6 +120,24 @@ def run_one(idx, total, case_id, say, timeout_s=200):
     }
 
 
+# A daily budget that is gone does not come back within a run. Once the
+# gateway says the day is spent, every later case in the same run is guaranteed
+# to fail the same way, so the run stops and says so instead of spending ten
+# more 45-second timeouts to learn it ten more times. The daily figure is
+# checked before the per-minute one: a per-minute refusal clears in seconds and
+# is worth waiting out, a daily one needs tomorrow.
+#
+# Both wordings are matched. The gateway sends "tokens per day" and the cause
+# this file writes is "daily token budget spent", and the first version of this
+# matched only the former -- so the run never stopped, which is the one thing
+# it exists to do. A unit test covers the pair.
+SPENT_FOR_TODAY = re.compile(r"tokens per day|daily token budget", re.I)
+
+
+def budget_is_spent(cause):
+    return bool(cause) and bool(SPENT_FOR_TODAY.search(cause))
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     cases = json.load(open(r"C:\Users\vedan\kc_refs\task_cases.json"))
@@ -145,6 +163,19 @@ def main():
             # this script lost a four-minute run to a regex error on line 40
             # and had nothing to show for it.
             json.dump(results, open(OUT, "w"), indent=1)
+
+            if budget_is_spent(r.get("cause", "")):
+                # Everything still queued is now known to be untestable
+                # today, so it is left unrecorded rather than written down
+                # as a failure: nothing was tested, and a failure implies
+                # the town got something wrong.
+                left = len(cases) - len(results)
+                print(f"\n  The gateway says today's budget is spent, so "
+                      f"the {left} case(s) still queued cannot run today.\n"
+                      f"  They are left unrecorded rather than written "
+                      f"down as failures.\n"
+                      f"  Run retry_blocked.py when it resets.", flush=True)
+                break
             # The free tier is 8k tokens/min. A planning prompt is a few
             # thousand of them, so spacing is not politeness, it is the only
             # way the later cases are not all rate-limit failures.
