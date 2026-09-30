@@ -15,11 +15,14 @@ const PORT = Number(process.env.PORT || 8787);
 const env = {
   OPENCODE_API_KEY: process.env.OPENCODE_API_KEY || "",
   OPENCODE_MODEL: process.env.OPENCODE_MODEL || "nemotron-3-ultra-free",
+  GROQ_API_KEY: process.env.GROQ_API_KEY || "",
+  GROQ_MODEL: process.env.GROQ_MODEL || "",
+  AI_PROVIDER: process.env.AI_PROVIDER || "",
   ALLOW_NATIVE: "1",
 };
 
-if (!env.OPENCODE_API_KEY) {
-  console.error("[dev-proxy] no OPENCODE_API_KEY in the environment — every call will 500");
+if (!env.OPENCODE_API_KEY && !env.GROQ_API_KEY) {
+  console.error("[dev-proxy] no OPENCODE_API_KEY or GROQ_API_KEY in the environment — every call will 500");
 }
 
 createServer(async (req, res) => {
@@ -33,8 +36,18 @@ createServer(async (req, res) => {
     body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
   });
 
-  const out = await worker.fetch(request, env);
-  const text = await out.text();
+  // A throw here would be an unhandled rejection, which kills the server and
+  // leaves the game's request hanging until its own timeout.
+  let out;
+  let text;
+  try {
+    out = await worker.fetch(request, env);
+    text = await out.text();
+  } catch (e) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "dev proxy error: " + e.message } }));
+    return;
+  }
   res.writeHead(out.status, Object.fromEntries(out.headers));
   res.end(text);
   console.log(`[dev-proxy] ${req.method} -> ${out.status}`);

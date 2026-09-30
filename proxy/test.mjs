@@ -63,7 +63,7 @@ async function main() {
         headers: {
           Origin: GOOD,
           "Access-Control-Request-Method": "POST",
-          "Access-Control-Request-Headers": "content-type",
+          "Access-Control-Request-Headers": "content-type, x-provider",
         },
       }), env);
     ok(res.status === 204, `answered 204 (got ${res.status})`);
@@ -71,6 +71,8 @@ async function main() {
       "allows the game's origin by name, not '*'");
     ok((res.headers.get("Access-Control-Allow-Headers") || "").includes("content-type"),
       "allows the content-type header the game sends");
+    ok((res.headers.get("Access-Control-Allow-Headers") || "").includes("x-provider"),
+      "allows the X-Provider header the game sends");
   }
 
   console.log("[proxy] who is allowed to ask");

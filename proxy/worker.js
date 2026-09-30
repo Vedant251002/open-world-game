@@ -74,7 +74,9 @@ function corsHeaders(origin) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "content-type",
+    // The game also sends X-Provider; a header missing from this list fails the
+    // preflight, and the browser then refuses every real request.
+    "Access-Control-Allow-Headers": "content-type, x-provider",
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin",
   };
@@ -289,12 +291,16 @@ export default {
     // be seen from the game's own log.
     const answer = await upstream.text();
     console.log(`upstream ${upstream.status} provider=${provider} model=${body.model} ` +
-      `msgs=${body.messages.length} max_tokens=${body.max_tokens} ` +
+      `msgs=${body.messages.length} max_tokens=${body[PROVIDERS[provider].tokenField]} ` +
       `bytes=${answer.length}`);
 
     if (!upstream.ok) {
+      // The game reads a wait hint from error.retry_after; the gateway's own
+      // Retry-After header would otherwise be dropped with the rest.
+      const wait = Number(upstream.headers.get("Retry-After"));
       return new Response(JSON.stringify({
         error: {
+          ...(wait > 0 ? { retry_after: wait } : {}),
           message: `The model gateway refused this (HTTP ${upstream.status}).`,
           upstream_status: upstream.status,
           upstream_body: answer.slice(0, 600),
