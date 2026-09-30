@@ -703,6 +703,18 @@ func _track_employer(delta: float) -> void:
 func walk_to(target: Vector3, then: String = "", keep_state: bool = false) -> bool:
 	_after_arrival = then
 	_path = nav.path(global_position, target)
+	var here := nav.to_cell(global_position)
+	if _path.is_empty() and not nav.in_bounds(here):
+		# Out past the town's grid — somebody who followed the player into
+		# open country. There is no graph out here, so every errand failed
+		# from where they stood and they never came home. Walk straight back
+		# to the nearest edge of it, and route from there.
+		var edge := Vector2i(clampi(here.x, 0, nav.size.x - 1), clampi(here.y, 0, nav.size.y - 1))
+		var entry := nav.nearest_walkable_world(nav.to_world(edge))
+		var rest := nav.path(entry, target)
+		if not rest.is_empty():
+			_path = PackedVector3Array([entry])
+			_path.append_array(rest)
 	_path_i = 0
 	_blocked_for = 0.0
 	_slide = Vector3.ZERO
@@ -716,6 +728,14 @@ func walk_to(target: Vector3, then: String = "", keep_state: bool = false) -> bo
 	if not keep_state:
 		state = State.WALKING
 	return true
+
+
+## A job that cannot start because there is no way to it. Said out loud as
+## well as reported: the failure alone reached the player as a toast of an
+## error code, from a worker who had just said they were on their way.
+func _cannot_reach(code: String, line: String) -> void:
+	_say(line, "refuse")
+	job_failed.emit(self, Validator.error(code, line))
 
 
 func _on_arrived() -> void:
@@ -924,8 +944,8 @@ func take_errand_job(kind: String, target: Vector3, hours: float, line: String,
 		return true
 	if not walk_to(stand, "errand"):
 		job_errand = {}
-		job_failed.emit(self, Validator.error("unreachable_ground",
-			"I cannot get there — something is in the way."))
+		_cannot_reach("unreachable_ground",
+			"I cannot get there — something is in the way.")
 		_clear_job()
 		return false
 	return true
@@ -1364,8 +1384,8 @@ func take_job(plot: Plot, spec: Dictionary, patch: VoxelPatch,
 		_say("%s. I will fetch what I need." % _acknowledge(), "work")
 	elif not walk_to(stand, "build"):
 		# No route: that is a question, not a crash.
-		job_failed.emit(self, Validator.error("unreachable_plot",
-			"I cannot get to that plot — something is in the way."))
+		_cannot_reach("unreachable_plot",
+			"I cannot get to that plot — something is in the way.")
 		_clear_job()
 		return false
 	if line != "":
@@ -1419,8 +1439,8 @@ func take_enclosure_job(patch: VoxelPatch, where: String, assumptions: Array,
 		_gather_hours = 0.0
 		_say("%s. I will fetch what I need." % _acknowledge(), "work")
 	elif not walk_to(stand, "build"):
-		job_failed.emit(self, Validator.error("unreachable_ground",
-			"I cannot get out to that ground — something is in the way."))
+		_cannot_reach("unreachable_ground",
+			"I cannot get out to that ground — something is in the way.")
 		_clear_job()
 		return false
 	if line != "":
@@ -1456,8 +1476,8 @@ func take_stock_job(stock: Livestock, species: String, count: int,
 		return true
 	if not walk_to(stand, "stock"):
 		job_stock = {}
-		job_failed.emit(self, Validator.error("unreachable_ground",
-			"I cannot get them out to there — something is in the way."))
+		_cannot_reach("unreachable_ground",
+			"I cannot get them out to there — something is in the way.")
 		_clear_job()
 		return false
 	return true
@@ -1548,8 +1568,8 @@ func take_field_job(work: FieldWork, assumptions: Array, line: String) -> void:
 	var stand := Vector3(float(c.x) * 0.25, 0.0, float(c.y) * 0.25)
 	stand.y = world.ground_m(stand.x, stand.z)
 	if not walk_to(stand, "build"):
-		job_failed.emit(self, Validator.error("unreachable_plot",
-			"I cannot get out to that ground — something is in the way."))
+		_cannot_reach("unreachable_plot",
+			"I cannot get out to that ground — something is in the way.")
 		_clear_job()
 		return
 	if line != "":

@@ -147,7 +147,7 @@ func _physics_process(delta: float) -> void:
 		var body: Node3D = hit["body"]
 		if kind == "bullet":
 			if body.has_method("take_hit"):
-				body.take_hit(damage, global_position, shooter)
+				body.take_hit(damage, global_position, _live_shooter())
 			if warfare != null and warfare.has_method("note_hit"):
 				warfare.note_hit(self, body)
 			queue_free()
@@ -179,7 +179,7 @@ func _sweep(move: Vector3) -> Dictionary:
 	var from := global_position
 	var bodies: Array = []
 	if warfare != null and warfare.has_method("bodies_for"):
-		bodies = warfare.bodies_for(side, shooter)
+		bodies = warfare.bodies_for(side, _live_shooter())
 	var last_v := VoxelWorld.to_voxel(from)
 	for i in range(1, steps + 1):
 		var p := from + dir * (dist * float(i) / float(steps))
@@ -259,5 +259,13 @@ func _rocket(delta: float) -> void:
 
 func _explode() -> void:
 	if blast_r > 0.0 and warfare != null and warfare.has_method("detonate"):
-		warfare.detonate(global_position, blast_r, blast_power, side, shooter)
+		warfare.detonate(global_position, blast_r, blast_power, side, _live_shooter())
 	queue_free()
+
+
+## Whoever fired this, if they are still in the game. A shot outlives its
+## shooter often enough, and a freed shooter passed on to a typed argument
+## failed the call outright: the shot flew through every body and a rocket
+## never went off.
+func _live_shooter() -> Node3D:
+	return shooter if is_instance_valid(shooter) else null

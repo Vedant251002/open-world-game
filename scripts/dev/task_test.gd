@@ -152,8 +152,15 @@ func _ready() -> void:
 	# Signals first, so nothing that happens while the world streams in is
 	# missed. These are connected here rather than in begin() because _ready
 	# runs before main.gd calls begin() on this node.
-	if dispatch != null:
+	# What the worker actually says, not only what the dispatcher says for
+	# them: an answer from the town's records, or anything said offline, goes
+	# straight to worker.speak() and never passes through dispatch.spoke, so
+	# listening there alone reported "no reply" for replies the player heard.
+	if crew != null:
+		crew.worker_spoke.connect(_on_spoke)
+	elif dispatch != null:
 		dispatch.spoke.connect(_on_spoke)
+	if dispatch != null:
 		dispatch.plan_accepted.connect(_on_plan)
 		dispatch.refused.connect(_on_refused)
 		dispatch.short_of.connect(_on_short)
