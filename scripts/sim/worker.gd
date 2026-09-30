@@ -709,12 +709,18 @@ func walk_to(target: Vector3, then: String = "", keep_state: bool = false) -> bo
 		# open country. There is no graph out here, so every errand failed
 		# from where they stood and they never came home. Walk straight back
 		# to the nearest edge of it, and route from there.
+		# The rim of the grid is often ground nobody has seen yet, so the way
+		# in is the first point, stepping in from the rim towards the target,
+		# that has a route on to it.
 		var edge := Vector2i(clampi(here.x, 0, nav.size.x - 1), clampi(here.y, 0, nav.size.y - 1))
-		var entry := nav.nearest_walkable_world(nav.to_world(edge))
-		var rest := nav.path(entry, target)
-		if not rest.is_empty():
-			_path = PackedVector3Array([entry])
-			_path.append_array(rest)
+		var from := nav.to_world(edge)
+		for i in 25:
+			var entry := nav.nearest_walkable_world(from.lerp(target, float(i) / 24.0), 6)
+			var rest := nav.path(entry, target)
+			if not rest.is_empty():
+				_path = PackedVector3Array([entry])
+				_path.append_array(rest)
+				break
 	_path_i = 0
 	_blocked_for = 0.0
 	_slide = Vector3.ZERO
