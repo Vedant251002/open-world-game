@@ -38,7 +38,11 @@ var arm_r: Node3D
 var leg_l: Node3D
 var leg_r: Node3D
 
+const REST_Y := 0.72
+
+var _batch: BoxKit.Batch
 var _phase := 0.0
+var _t := 0.0
 var _carrying := false
 
 ## The kit they hold, and only while they are using it. A builder carrying a
@@ -51,65 +55,210 @@ func _ready() -> void:
 	_build()
 
 
+## The palette the cast is handed is bright on purpose, so the three of them
+## are told apart in a screenshot; on a person it is fancy dress. Pulled
+## toward dyed cloth: less saturated, a little darker, and never pure.
+static func _natural(c: Color, sat: float = 0.72, val: float = 0.92) -> Color:
+	return Color.from_hsv(c.h, clampf(c.s * sat, 0.0, 0.85), clampf(c.v * val, 0.05, 0.92))
+
+
 func _build() -> void:
-	var boot := hair_colour.darkened(0.45)
-	var trouser := cloth_colour.darkened(0.42)
+	_batch = BoxKit.Batch.new()
+	# Everybody is one of a few dozen different people, and the same person
+	# every time: the choices below come from what they were dressed in.
+	var seed_i := int(hash(str(cloth_colour.to_rgba32()) + str(hair_colour.to_rgba32())
+		+ str(body_colour.to_rgba32())))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_i
 
-	torso = Node3D.new()
-	torso.position.y = 0.72
-	add_child(torso)
-	_box(torso, Vector3(-0.17, 0.0, -0.10), Vector3(0.34, 0.46, 0.20), cloth_colour)
-	# A leather apron on the front, so a worker reads as a builder at fifty
-	# metres rather than as a person in a shirt.
-	_box(torso, Vector3(-0.15, 0.02, 0.09), Vector3(0.30, 0.30, 0.04), accent_colour)
-	# Collar and shoulder yoke, which is most of what makes a box look tailored.
-	_box(torso, Vector3(-0.18, 0.38, -0.11), Vector3(0.36, 0.08, 0.22),
-		cloth_colour.darkened(0.18))
+	var cloth := _natural(cloth_colour)
+	var accent := _natural(accent_colour, 0.65, 0.95)
+	# Deep skin tones are lifted a touch: under a hat brim in shade a face
+	# that dark loses its eyes, and eyes are the whole of a face at this size.
+	var skin := body_colour.lightened(0.10) if body_colour.get_luminance() < 0.22 else body_colour
+	var skin_dk := skin.darkened(0.16)
+	var hair := hair_colour
+	var boot := Color("#54392a").lerp(hair_colour, 0.1)
+	var trouser := _natural(cloth_colour.darkened(0.15), 0.5, 0.85)
+	var leather := Color("#5a3d27")
+	var brass := Color("#b48a3c")
+	var linen := Color("#d9d0bc")
+
+	# What they wear over the shirt. The three principals keep the outfit that
+	# says what they do; everybody else is dealt one.
+	var outfit := "shirt"
 	if long_coat:
-		_box(torso, Vector3(-0.18, -0.16, -0.11), Vector3(0.36, 0.20, 0.22),
-			cloth_colour.darkened(0.10))
-		_box(torso, Vector3(-0.19, 0.00, -0.12), Vector3(0.04, 0.40, 0.24),
-			cloth_colour.darkened(0.28))
-		_box(torso, Vector3(0.15, 0.00, -0.12), Vector3(0.04, 0.40, 0.24),
-			cloth_colour.darkened(0.28))
+		outfit = "coat"
+	elif accessory == "scarf" and rolled_sleeves:
+		outfit = "apron"
+	elif accessory == "brim" and rolled_sleeves == false and hair_colour.get_luminance() < 0.15:
+		outfit = "overalls"
 	else:
-		# A belt, and a pouch on the hip.
-		_box(torso, Vector3(-0.18, 0.03, -0.11), Vector3(0.36, 0.05, 0.22),
-			hair_colour.darkened(0.2))
-		_box(torso, Vector3(0.10, -0.02, 0.05), Vector3(0.10, 0.11, 0.07),
-			accent_colour.darkened(0.25))
+		outfit = ["shirt", "vest", "apron", "overalls", "shirt"][rng.randi() % 5]
+	var female := rolled_sleeves or (outfit != "coat" and rng.randf() < 0.45)
+	var style := 1 if female else rng.randi() % 3     # hair: 0 crop, 1 long, 2 mop
+	if female and rng.randf() < 0.4:
+		style = 3                                     # a bun
+	var bearded := long_coat and hair.get_luminance() > 0.35
+	if not female and not bearded and rng.randf() < 0.2:
+		bearded = true
+	var shirt := cloth
+	if outfit == "apron" or outfit == "overalls" or outfit == "vest":
+		shirt = cloth.lerp(linen, 0.35)
+	if outfit == "overalls":
+		trouser = Color("#5b6d88") if accessory == "brim" else _natural(cloth_colour.darkened(0.15), 0.4, 0.85)
 
+	# ------------------------------------------------------------- torso
+	torso = Node3D.new()
+	torso.position.y = REST_Y
+	add_child(torso)
+	# The shirt, and a slightly wider shoulder yoke: it is the shoulders that
+	# make a block into somebody with somewhere to carry a load.
+	_box(torso, Vector3(-0.17, 0.0, -0.10), Vector3(0.34, 0.46, 0.20), shirt)
+	_box(torso, Vector3(-0.175, 0.36, -0.105), Vector3(0.35, 0.09, 0.21), shirt.darkened(0.10))
+	# Neck, and a shirt collar around it.
+	_box(torso, Vector3(-0.05, 0.44, -0.05), Vector3(0.10, 0.10, 0.10), skin_dk, 0.6)
+	_box(torso, Vector3(-0.085, 0.41, -0.09), Vector3(0.17, 0.045, 0.18), linen.darkened(0.05))
+	_box(torso, Vector3(-0.045, 0.34, 0.095), Vector3(0.09, 0.09, 0.012), skin_dk, 0.6)
+	# Belt with a buckle, on everyone; the rest is on top of it.
+	var belt_y := 0.04
+	_box(torso, Vector3(-0.175, belt_y, -0.105), Vector3(0.35, 0.05, 0.21), leather, 0.55)
+	_box(torso, Vector3(-0.025, belt_y - 0.003, 0.103), Vector3(0.05, 0.056, 0.012), brass, 0.35)
+
+	match outfit:
+		"coat":
+			var coat := cloth.darkened(0.04)
+			# Front panels either side of an open shirt, a skirt to the thigh,
+			# lapels, buttons: a coat has a great many small edges.
+			_box(torso, Vector3(-0.18, 0.02, 0.085), Vector3(0.14, 0.40, 0.03), coat)
+			_box(torso, Vector3(0.04, 0.02, 0.085), Vector3(0.14, 0.40, 0.03), coat)
+			_box(torso, Vector3(-0.18, -0.20, -0.11), Vector3(0.36, 0.22, 0.22), coat.darkened(0.06))
+			_box(torso, Vector3(-0.185, -0.22, -0.115), Vector3(0.37, 0.03, 0.23), coat.darkened(0.25))
+			_box(torso, Vector3(-0.03, 0.02, 0.09), Vector3(0.06, 0.34, 0.02), linen.darkened(0.08))
+			_box(torso, Vector3(-0.115, 0.22, 0.10), Vector3(0.05, 0.20, 0.02), coat.lightened(0.10))
+			_box(torso, Vector3(0.065, 0.22, 0.10), Vector3(0.05, 0.20, 0.02), coat.lightened(0.10))
+			for i in 3:
+				_box(torso, Vector3(-0.145, 0.09 + i * 0.09, 0.112), Vector3(0.022, 0.022, 0.012),
+					brass, 0.35)
+			# A hammer through the belt and a pouch, the builder's whole trade.
+			_box(torso, Vector3(0.12, -0.08, 0.02), Vector3(0.05, 0.13, 0.07), leather.darkened(0.1), 0.55)
+			_box(torso, Vector3(0.135, -0.16, 0.035), Vector3(0.022, 0.14, 0.022), Color("#7a5a36"))
+			_box(torso, Vector3(-0.19, -0.06, 0.02), Vector3(0.03, 0.10, 0.07), leather, 0.55)
+		"apron":
+			var apr := linen.lerp(accent, 0.12)
+			_box(torso, Vector3(-0.115, 0.20, 0.10), Vector3(0.23, 0.20, 0.014), apr)
+			_box(torso, Vector3(-0.15, -0.16, 0.10), Vector3(0.30, 0.36, 0.014), apr)
+			_box(torso, Vector3(-0.155, -0.16, 0.100), Vector3(0.31, 0.03, 0.02), accent, 0.9)
+			_box(torso, Vector3(-0.095, -0.06, 0.112), Vector3(0.19, 0.10, 0.01), apr.darkened(0.10))
+			_box(torso, Vector3(-0.115, 0.38, 0.10), Vector3(0.03, 0.10, 0.014), leather, 0.55)
+			_box(torso, Vector3(0.085, 0.38, 0.10), Vector3(0.03, 0.10, 0.014), leather, 0.55)
+			_box(torso, Vector3(-0.175, 0.39, -0.105), Vector3(0.35, 0.03, 0.03), leather, 0.55)
+			_box(torso, Vector3(0.10, -0.03, -0.11), Vector3(0.05, 0.10, 0.012), leather, 0.55)
+		"overalls":
+			var den := trouser
+			_box(torso, Vector3(-0.13, 0.03, 0.098), Vector3(0.26, 0.29, 0.016), den, 0.9)
+			_box(torso, Vector3(-0.09, 0.15, 0.108), Vector3(0.18, 0.10, 0.012), den.darkened(0.12))
+			_box(torso, Vector3(-0.12, 0.30, 0.098), Vector3(0.04, 0.10, 0.016), den, 0.9)
+			_box(torso, Vector3(0.08, 0.30, 0.098), Vector3(0.04, 0.10, 0.016), den, 0.9)
+			_box(torso, Vector3(-0.115, 0.31, -0.108), Vector3(0.04, 0.10, 0.016), den, 0.9)
+			_box(torso, Vector3(0.075, 0.31, -0.108), Vector3(0.04, 0.10, 0.016), den, 0.9)
+			_box(torso, Vector3(-0.13, 0.03, -0.108), Vector3(0.26, 0.11, 0.016), den, 0.9)
+			_box(torso, Vector3(-0.112, 0.31, 0.106), Vector3(0.025, 0.025, 0.012), brass, 0.35)
+			_box(torso, Vector3(0.088, 0.31, 0.106), Vector3(0.025, 0.025, 0.012), brass, 0.35)
+		"vest":
+			var vst := accent.darkened(0.15)
+			_box(torso, Vector3(-0.175, 0.06, 0.085), Vector3(0.13, 0.34, 0.03), vst)
+			_box(torso, Vector3(0.045, 0.06, 0.085), Vector3(0.13, 0.34, 0.03), vst)
+			_box(torso, Vector3(-0.175, 0.06, -0.11), Vector3(0.35, 0.34, 0.03), vst)
+			for i in 3:
+				_box(torso, Vector3(-0.012, 0.10 + i * 0.09, 0.115), Vector3(0.024, 0.024, 0.01), brass, 0.35)
+		_:
+			# A plain shirt gets a pouch and a neckerchief instead.
+			_box(torso, Vector3(0.09, -0.04, 0.05), Vector3(0.10, 0.10, 0.07), leather.lightened(0.05), 0.55)
+			_box(torso, Vector3(-0.09, 0.33, 0.08), Vector3(0.18, 0.06, 0.03), accent)
+			_box(torso, Vector3(-0.03, 0.26, 0.09), Vector3(0.06, 0.08, 0.02), accent.darkened(0.12))
+
+	# -------------------------------------------------------------- head
 	head = Node3D.new()
 	head.position.y = 0.50
 	torso.add_child(head)
-	_box(head, Vector3(-0.13, 0.0, -0.12), Vector3(0.26, 0.26, 0.24), body_colour)
-	# Hair: a cap of it, with a fringe at the front rather than a flat slab.
-	_box(head, Vector3(-0.14, 0.18, -0.13), Vector3(0.28, 0.10, 0.26), hair_colour)
-	_box(head, Vector3(-0.14, 0.13, 0.10), Vector3(0.28, 0.06, 0.04), hair_colour)
-	# Eyes, nose and mouth, at 0.05 m each. Small, but they are what makes a box
-	# a person — and they are what tells you which way it is looking.
-	_box(head, Vector3(-0.09, 0.10, 0.12), Vector3(0.05, 0.05, 0.02), Color("#1b1b1f"))
-	_box(head, Vector3(0.04, 0.10, 0.12), Vector3(0.05, 0.05, 0.02), Color("#1b1b1f"))
-	_box(head, Vector3(-0.02, 0.06, 0.12), Vector3(0.04, 0.05, 0.03),
-		body_colour.darkened(0.12))
-	_box(head, Vector3(-0.05, 0.02, 0.12), Vector3(0.10, 0.02, 0.02),
-		body_colour.darkened(0.35))
-	_add_accessory()
+	_box(head, Vector3(-0.14, 0.0, -0.13), Vector3(0.28, 0.28, 0.26), skin, 0.6)
+	# Ears, and a jaw a touch narrower than the cranium.
+	_box(head, Vector3(-0.158, 0.08, -0.03), Vector3(0.02, 0.08, 0.06), skin_dk, 0.6)
+	_box(head, Vector3(0.138, 0.08, -0.03), Vector3(0.02, 0.08, 0.06), skin_dk, 0.6)
+	# Eyes: white, iris, a lid line above and a brow over that. At 0.05 m a
+	# face is a handful of boxes; it is enough to make them look at you.
+	var brow := hair.lerp(Color.BLACK, 0.25)
+	var iris := Color("#2b2119") if body_colour.get_luminance() < 0.5 else Color("#3d5a78")
+	for sx in [-1.0, 1.0]:
+		var x0: float = -0.10 if sx < 0.0 else 0.04
+		_box(head, Vector3(x0, 0.125, 0.128), Vector3(0.06, 0.05, 0.010), Color("#efeae0"), 0.35)
+		_box(head, Vector3(x0 + (0.03 if sx < 0.0 else 0.0), 0.125, 0.135),
+			Vector3(0.03, 0.05, 0.008), iris, 0.3)
+		_box(head, Vector3(x0 + (0.038 if sx < 0.0 else 0.012), 0.132, 0.140),
+			Vector3(0.014, 0.028, 0.006), Color("#0c0b0b"), 0.3)
+		_box(head, Vector3(x0 - 0.005, 0.178, 0.128), Vector3(0.07, 0.014, 0.012), skin_dk.darkened(0.1), 0.6)
+		_box(head, Vector3(x0 - 0.008, 0.198, 0.126), Vector3(0.076, 0.022, 0.014), brow)
+		# Cheeks, with a little colour in them.
+		_box(head, Vector3(x0 - 0.01 if sx < 0.0 else x0 + 0.02, 0.055, 0.128),
+			Vector3(0.05, 0.035, 0.006), skin.lerp(Color("#d9756a"), 0.14), 0.6)
+	# Nose, then the mouth: a line with the corners lifted.
+	_box(head, Vector3(-0.022, 0.07, 0.128), Vector3(0.044, 0.066, 0.034), skin.lightened(0.05), 0.55)
+	_box(head, Vector3(-0.022, 0.066, 0.146), Vector3(0.044, 0.02, 0.012), skin.darkened(0.22), 0.55)
+	var lip := skin.lerp(Color("#9c4a44"), 0.55)
+	_box(head, Vector3(-0.045, 0.028, 0.128), Vector3(0.09, 0.016, 0.010), lip, 0.5)
+	_box(head, Vector3(-0.058, 0.038, 0.128), Vector3(0.016, 0.014, 0.010), lip, 0.5)
+	_box(head, Vector3(0.042, 0.038, 0.128), Vector3(0.016, 0.014, 0.010), lip, 0.5)
+	if bearded:
+		_box(head, Vector3(-0.115, -0.03, 0.09), Vector3(0.23, 0.07, 0.05), hair, 0.95)
+		_box(head, Vector3(-0.14, 0.02, 0.02), Vector3(0.028, 0.10, 0.10), hair, 0.95)
+		_box(head, Vector3(0.112, 0.02, 0.02), Vector3(0.028, 0.10, 0.10), hair, 0.95)
+		_box(head, Vector3(-0.07, 0.048, 0.132), Vector3(0.14, 0.024, 0.02), hair, 0.95)
+		_box(head, Vector3(-0.04, 0.008, 0.132), Vector3(0.08, 0.036, 0.02), hair, 0.95)
 
-	var sleeve := 0.24 if rolled_sleeves else 0.40
-	arm_l = _limb(Vector3(-0.21, 0.42, 0.0), cloth_colour, body_colour, 0.40, sleeve)
-	arm_r = _limb(Vector3(0.21, 0.42, 0.0), cloth_colour, body_colour, 0.40, sleeve)
+	# Hair, by style: a skull-cap of it always, and then what hangs from it.
+	_box(head, Vector3(-0.15, 0.20, -0.14), Vector3(0.30, 0.10, 0.28), hair, 0.9)
+	_box(head, Vector3(-0.15, 0.06, -0.14), Vector3(0.30, 0.16, 0.05), hair, 0.9)
+	_box(head, Vector3(-0.152, 0.14, -0.10), Vector3(0.026, 0.10, 0.16), hair, 0.9)
+	_box(head, Vector3(0.126, 0.14, -0.10), Vector3(0.026, 0.10, 0.16), hair, 0.9)
+	# The fringe: a swept edge across the forehead rather than a ruler line.
+	_box(head, Vector3(-0.15, 0.225, 0.10), Vector3(0.30, 0.05, 0.05), hair, 0.9)
+	_box(head, Vector3(-0.15, 0.20, 0.11), Vector3(0.14, 0.03, 0.04), hair.lightened(0.04), 0.9)
+	match style:
+		0:
+			pass
+		1:
+			# Long: down over the shoulders at the back and in two locks either side.
+			_box(head, Vector3(-0.15, -0.16, -0.16), Vector3(0.30, 0.34, 0.06), hair, 0.9)
+			_box(head, Vector3(-0.17, -0.04, -0.13), Vector3(0.03, 0.16, 0.20), hair, 0.9)
+			_box(head, Vector3(0.14, -0.04, -0.13), Vector3(0.03, 0.16, 0.20), hair, 0.9)
+		2:
+			_box(head, Vector3(-0.16, 0.18, -0.15), Vector3(0.32, 0.06, 0.30), hair.lightened(0.05), 0.9)
+			_box(head, Vector3(-0.09, 0.26, 0.02), Vector3(0.18, 0.05, 0.14), hair, 0.9)
+		3:
+			_box(head, Vector3(-0.07, 0.24, -0.20), Vector3(0.14, 0.12, 0.10), hair, 0.9)
+			_box(head, Vector3(-0.08, 0.10, -0.16), Vector3(0.16, 0.12, 0.04), hair, 0.9)
+	_add_accessory(hair, cloth, accent, leather)
+
+	# -------------------------------------------------------------- arms
+	var sleeve := 0.24 if rolled_sleeves else 0.36
+	var cuff := shirt.lightened(0.06) if rolled_sleeves else cloth.darkened(0.2)
+	arm_l = _arm(Vector3(-0.225, 0.42, 0.0), cloth if outfit != "coat" else cloth.darkened(0.04),
+		skin, cuff, sleeve)
+	arm_r = _arm(Vector3(0.225, 0.42, 0.0), cloth if outfit != "coat" else cloth.darkened(0.04),
+		skin, cuff, sleeve)
 	torso.add_child(arm_l)
 	torso.add_child(arm_r)
 
-	leg_l = _limb(Vector3(-0.09, 0.0, 0.0), trouser, boot, 0.44, 0.30)
-	leg_r = _limb(Vector3(0.09, 0.0, 0.0), trouser, boot, 0.44, 0.30)
+	# -------------------------------------------------------------- legs
+	leg_l = _leg(Vector3(-0.085, REST_Y, 0.0), trouser, boot)
+	leg_r = _leg(Vector3(0.085, REST_Y, 0.0), trouser, boot)
 	add_child(leg_l)
 	add_child(leg_r)
-	leg_l.position.y = 0.72
-	leg_r.position.y = 0.72
 
 	_build_kit()
+	_batch.flush()
+	_batch = null
 
 
 ## The two things they hold on a site. Both start hidden; the gesture that uses
@@ -138,7 +287,7 @@ func _build_kit() -> void:
 	_box(_sheet, Vector3(-0.12, -0.07, -0.006), Vector3(0.24, 0.022, 0.012), ink)
 	_box(_sheet, Vector3(-0.12, 0.038, -0.006), Vector3(0.24, 0.022, 0.012), ink)
 
-	# The hammer, in the right hand — the limb hangs to y = -0.40, so this
+	# The hammer, in the right hand — the limb hangs to y = -0.42, so this
 	# hangs on past it and the head is out where a swing can be read.
 	_tool = Node3D.new()
 	_tool.position = Vector3(0.0, -0.40, 0.02)
@@ -147,60 +296,72 @@ func _build_kit() -> void:
 	_box(_tool, Vector3(-0.022, -0.24, -0.022), Vector3(0.044, 0.32, 0.044),
 		Color("#6d4a2c"))
 	_box(_tool, Vector3(-0.052, -0.30, -0.046), Vector3(0.104, 0.075, 0.092),
-		Color("#474c55"))
+		Color("#474c55"), 0.4)
 	_box(_tool, Vector3(0.052, -0.285, -0.030), Vector3(0.030, 0.045, 0.060),
-		Color("#5b616b"))
+		Color("#5b616b"), 0.4)
 
 
 ## The one thing you actually recognise them by from a distance.
-func _add_accessory() -> void:
+func _add_accessory(_hair: Color, cloth: Color, accent: Color, leather: Color) -> void:
 	match accessory:
 		"scarf":
-			_box(head, Vector3(-0.145, 0.16, -0.135), Vector3(0.29, 0.13, 0.27),
-				accent_colour)
-			_box(head, Vector3(-0.05, 0.10, -0.16), Vector3(0.10, 0.12, 0.04),
-				accent_colour.darkened(0.15))
+			# A kerchief over the crown, knotted at the back with two tails.
+			var k := accent
+			_box(head, Vector3(-0.155, 0.235, -0.145), Vector3(0.31, 0.07, 0.29), k)
+			_box(head, Vector3(-0.155, 0.19, -0.145), Vector3(0.31, 0.05, 0.03), k.darkened(0.1))
+			_box(head, Vector3(-0.155, 0.19, 0.12), Vector3(0.31, 0.03, 0.03), k.darkened(0.1))
+			_box(head, Vector3(-0.045, 0.14, -0.19), Vector3(0.09, 0.09, 0.05), k.darkened(0.12))
+			_box(head, Vector3(-0.07, 0.06, -0.19), Vector3(0.04, 0.09, 0.03), k)
+			_box(head, Vector3(0.03, 0.05, -0.19), Vector3(0.04, 0.10, 0.03), k)
 		"cap":
-			_box(head, Vector3(-0.145, 0.24, -0.135), Vector3(0.29, 0.07, 0.27),
-				cloth_colour.darkened(0.35))
+			var c := cloth.darkened(0.32)
+			_box(head, Vector3(-0.155, 0.235, -0.145), Vector3(0.31, 0.06, 0.29), c)
+			_box(head, Vector3(-0.14, 0.29, -0.13), Vector3(0.28, 0.03, 0.26), c.lightened(0.05))
+			_box(head, Vector3(-0.155, 0.20, -0.145), Vector3(0.31, 0.04, 0.29), c.darkened(0.1))
 			# The peak, at the front, which is what makes it a cap and not a box.
-			_box(head, Vector3(-0.11, 0.24, 0.13), Vector3(0.22, 0.03, 0.09),
-				cloth_colour.darkened(0.45))
+			_box(head, Vector3(-0.115, 0.225, 0.13), Vector3(0.23, 0.025, 0.11), c.darkened(0.25), 0.6)
 		"brim":
-			_box(head, Vector3(-0.22, 0.23, -0.21), Vector3(0.44, 0.03, 0.44),
-				hair_colour.darkened(0.15))
-			_box(head, Vector3(-0.13, 0.24, -0.12), Vector3(0.26, 0.11, 0.24),
-				hair_colour.darkened(0.3))
-			_box(head, Vector3(-0.13, 0.29, -0.125), Vector3(0.26, 0.03, 0.25),
-				accent_colour)
+			var straw := Color("#c9aa66")
+			_box(head, Vector3(-0.235, 0.235, -0.235), Vector3(0.47, 0.022, 0.47), straw, 0.95)
+			_box(head, Vector3(-0.16, 0.255, -0.16), Vector3(0.32, 0.10, 0.31), straw.darkened(0.06), 0.95)
+			_box(head, Vector3(-0.165, 0.255, -0.165), Vector3(0.33, 0.035, 0.32), leather.darkened(0.1), 0.6)
+			_box(head, Vector3(-0.165, 0.29, -0.165), Vector3(0.33, 0.012, 0.32), straw.darkened(0.25), 0.95)
 
 
-func _limb(at: Vector3, upper: Color, lower: Color, length: float,
-		sleeve: float) -> Node3D:
+## A sleeve with a shoulder on it, a cuff, and a hand.
+func _arm(at: Vector3, sleeve_c: Color, skin: Color, cuff: Color, sleeve: float) -> Node3D:
 	var n := Node3D.new()
 	n.position = at
-	# Upper covering (sleeve or trouser) hangs from the joint; what is left
-	# below it is skin or boot. Rolling the sleeves up is a shorter covering.
-	_box(n, Vector3(-0.06, -sleeve, -0.06), Vector3(0.12, sleeve, 0.12), upper)
-	_box(n, Vector3(-0.055, -length, -0.055),
-		Vector3(0.11, length - sleeve, 0.11), lower)
+	_box(n, Vector3(-0.058, -sleeve, -0.062), Vector3(0.116, sleeve + 0.04, 0.124), sleeve_c)
+	# Skin from the end of the sleeve to the wrist, and a hand a little wider.
+	_box(n, Vector3(-0.048, -0.36, -0.048), Vector3(0.096, 0.36 - sleeve + 0.005, 0.096), skin, 0.6)
+	_box(n, Vector3(-0.062, -sleeve - 0.005, -0.066), Vector3(0.124, 0.04, 0.132), cuff)
+	_box(n, Vector3(-0.052, -0.43, -0.056), Vector3(0.104, 0.08, 0.112), skin.lightened(0.02), 0.6)
+	_box(n, Vector3(-0.012, -0.40, 0.05), Vector3(0.024, 0.04, 0.02), skin, 0.6)
 	return n
 
 
-## Boxes and paint come from BoxKit rather than being made here.
-##
-## Three of these people is sixty small cubes, and every one of them used to
-## carry a BoxMesh and a StandardMaterial3D of its own. Nothing could batch, so
-## a worker cost twenty draw calls in the colour pass and twenty more in the
-## shadow pass, for a figure a metre and a half tall. Shared, the whole crew
-## comes down to a handful of distinct materials.
-func _box(parent: Node3D, origin: Vector3, size: Vector3, colour: Color) -> void:
-	BoxKit.add(parent, origin, size, colour)
+## Trousers, a turned-up cuff, and a boot with a toe and a sole.
+func _leg(at: Vector3, trouser: Color, boot: Color) -> Node3D:
+	var n := Node3D.new()
+	n.position = at
+	_box(n, Vector3(-0.066, -0.32, -0.068), Vector3(0.132, 0.32, 0.136), trouser)
+	_box(n, Vector3(-0.07, -0.335, -0.072), Vector3(0.14, 0.035, 0.144), trouser.darkened(0.15))
+	_box(n, Vector3(-0.068, -0.44, -0.07), Vector3(0.136, 0.11, 0.14), boot, 0.55)
+	_box(n, Vector3(-0.07, -0.44, 0.06), Vector3(0.14, 0.06, 0.09), boot.lightened(0.05), 0.55)
+	_box(n, Vector3(-0.072, -0.44, -0.074), Vector3(0.144, 0.025, 0.21), boot.darkened(0.5), 0.7)
+	return n
+
+
+func _box(parent: Node3D, origin: Vector3, size: Vector3, colour: Color,
+		rough: float = 0.9) -> void:
+	_batch.box(parent, origin, size, colour, rough)
 
 
 ## speed is metres per second; 0 stands still.
 func animate(delta: float, speed: float, carrying: bool = false) -> void:
 	_carrying = carrying
+	_t += delta
 	# Whatever a work gesture was holding has to be let go of here, or a worker
 	# who was bent over a course walks to the next corner still bent over it,
 	# with the trowel still in his hand.
@@ -213,17 +374,26 @@ func animate(delta: float, speed: float, carrying: bool = false) -> void:
 		if not carrying:
 			arm_l.rotation.x = -swing * 0.75
 			arm_r.rotation.x = swing * 0.75
-		torso.position.y = 0.72 + absf(sin(_phase)) * 0.02
+		torso.position.y = REST_Y + absf(sin(_phase)) * 0.02
 		torso.rotation.z = sin(_phase) * 0.03
+		# Shoulders counter-rotate against the hips, the head holds level.
+		torso.rotation.y = -sin(_phase) * 0.07
+		head.rotation.y = sin(_phase) * 0.05
 	else:
 		_phase = 0.0
 		leg_l.rotation.x = lerpf(leg_l.rotation.x, 0.0, delta * 9.0)
 		leg_r.rotation.x = lerpf(leg_r.rotation.x, 0.0, delta * 9.0)
-		torso.position.y = lerpf(torso.position.y, 0.72, delta * 9.0)
+		# Breathing: the chest rises a few millimetres, the arms hang a
+		# little looser on the out-breath, the head drifts.
+		var br := sin(_t * 1.9 + float(get_instance_id() % 7))
+		torso.position.y = lerpf(torso.position.y, REST_Y + br * 0.004, delta * 9.0)
 		torso.rotation.z = lerpf(torso.rotation.z, 0.0, delta * 9.0)
+		head.rotation.y = lerpf(head.rotation.y, sin(_t * 0.37 + float(get_instance_id() % 5)) * 0.18, delta * 2.0)
 		if not carrying:
 			arm_l.rotation.x = lerpf(arm_l.rotation.x, 0.0, delta * 9.0)
 			arm_r.rotation.x = lerpf(arm_r.rotation.x, 0.0, delta * 9.0)
+			arm_l.rotation.z = lerpf(arm_l.rotation.z, 0.03 + br * 0.012, delta * 9.0)
+			arm_r.rotation.z = lerpf(arm_r.rotation.z, -0.03 - br * 0.012, delta * 9.0)
 
 	if carrying:
 		arm_l.rotation.x = 1.35
@@ -291,7 +461,8 @@ func _settle(delta: float) -> void:
 	head.rotation.x = lerpf(head.rotation.x, 0.0, k)
 	leg_l.rotation.x = lerpf(leg_l.rotation.x, 0.0, k)
 	leg_r.rotation.x = lerpf(leg_r.rotation.x, 0.0, k)
-	torso.position.y = lerpf(torso.position.y, 0.72, k)
+	torso.position.y = lerpf(torso.position.y, REST_Y, k)
+	head.rotation.y = lerpf(head.rotation.y, 0.0, k)
 	torso.rotation.y = lerpf(torso.rotation.y, 0.0, k)
 	torso.rotation.z = lerpf(torso.rotation.z, 0.0, k)
 	if _sheet != null:

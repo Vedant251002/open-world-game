@@ -60,7 +60,7 @@ const SPECIES := {
 		"L": 1.3, "H": 0.85, "W": 0.50, "neck": 0.28, "neck_up": 0.25,
 		"head": Vector3(0.20, 0.24, 0.30), "muzzle": Vector3(0.14, 0.13, 0.12),
 		"ears": "side", "tail": 0.16, "tail_up": false, "leg": 0.075,
-		"c_body": Color("#e6e2d6"), "c_belly": Color("#d9d3c4"),
+		"c_body": Color("#dcd6c6"), "c_belly": Color("#cfc8b6"),
 		"c_head": Color("#2f2b26"), "c_muzzle": Color("#3b3630"),
 		"c_leg": Color("#3a342c"), "c_hoof": C_HOOF,
 		"features": ["fleece"],
@@ -72,11 +72,11 @@ const SPECIES := {
 		"L": 2.4, "H": 1.45, "W": 0.64, "neck": 0.50, "neck_up": 0.15,
 		"head": Vector3(0.28, 0.32, 0.46), "muzzle": Vector3(0.22, 0.20, 0.18),
 		"ears": "side", "tail": 0.85, "tail_up": false, "leg": 0.095,
-		"c_body": Color("#1d1b19"), "c_belly": Color("#1d1b19"),
-		"c_head": Color("#1d1b19"), "c_muzzle": Color("#c99a86"),
-		"c_leg": Color("#1d1b19"), "c_hoof": C_HOOF,
+		"c_body": Color("#2e2925"), "c_belly": Color("#3a332e"),
+		"c_head": Color("#2e2925"), "c_muzzle": Color("#d3a696"),
+		"c_leg": Color("#2e2925"), "c_hoof": C_HOOF,
 		"c_patch": Color("#eeeae2"),
-		"features": ["holstein", "horns_short", "udder"],
+		"features": ["holstein", "blaze", "horns_short", "udder"],
 		"speed": 1.0, "flee": 2.0, "shy": 2.0, "fall": 22.0,
 		"gives": "milk", "every": 20.0,
 	},
@@ -281,10 +281,15 @@ static func spec(kind: String) -> Dictionary:
 static func build(kind: String, root: Node3D) -> Dictionary:
 	var s := spec(kind)
 	var out := {}
+	# Every box of a limb is welded into one mesh (see BoxKit.Batch), so a hen
+	# is seven meshes rather than sixty, all on the one material.
+	_batch = BoxKit.Batch.new()
 	match str(s["plan"]):
 		"quadruped": out = _quadruped(s, root)
 		"bird": out = _bird(s, kind, root)
 		"fish": out = _fish(s, kind, root)
+	_batch.flush()
+	_batch = null
 	_trim(root, s)
 	return out
 
@@ -317,11 +322,25 @@ static func _trim(root: Node3D, s: Dictionary) -> void:
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
-static func _box(parent: Node3D, origin: Vector3, size: Vector3, colour: Color) -> MeshInstance3D:
-	return BoxKit.add(parent, origin, size, colour)
+static var _batch: BoxKit.Batch
+
+
+static func _box(parent: Node3D, origin: Vector3, size: Vector3, colour: Color,
+		rough: float = 0.9) -> void:
+	_batch.box(parent, origin, size, colour, rough)
+
+
+## A hash in [0, 1) from a small integer, for the scatter of wool and patches:
+## the same animal always has the same coat.
+static func _h(i: int) -> float:
+	return float(hash(i * 7919 + 13) & 0xffff) / 65536.0
 
 
 # ------------------------------------------------------------- quadrupeds
+
+static func tw_tuft(leg_r: float) -> float:
+	return leg_r * 1.9
+
 
 ## Barrel, neck, head, four legs and a tail, in the proportions given.
 ##
@@ -360,18 +379,61 @@ static func _quadruped(s: Dictionary, root: Node3D) -> Dictionary:
 	_box(torso, Vector3(-W * 0.40, body_h * 0.35, -body_l * 0.5 - 0.01),
 		Vector3(W * 0.80, body_h * 0.62, body_l * 0.12), c_body)
 
+	# A darker saddle along the spine: coats are never one tone.
+	if not ("fleece" in feats or "holstein" in feats):
+		_box(torso, Vector3(-W * 0.34, body_h * 0.98, -body_l * 0.44),
+			Vector3(W * 0.68, body_h * 0.05, body_l * 0.86), c_body.darkened(0.14))
 	if "fleece" in feats:
-		# Wool stands proud of the body and hides the neck.
-		_box(torso, Vector3(-W * 0.58, body_h * 0.2, -body_l * 0.55),
-			Vector3(W * 1.16, body_h * 0.95, body_l * 1.1), c_body.lightened(0.04))
+		# Wool stands proud of the body and hides the neck: a core, then a
+		# scatter of clumps of different sizes and tones over it, which is
+		# what makes a sheep read as a fleece rather than a white box.
+		_box(torso, Vector3(-W * 0.56, body_h * 0.2, -body_l * 0.53),
+			Vector3(W * 1.12, body_h * 0.92, body_l * 1.06), c_body.darkened(0.03), 1.0)
+		for i in 34:
+			var fx := _h(i * 3) * 2.0 - 1.0
+			var fz := _h(i * 3 + 1) * 2.0 - 1.0
+			var side := 0
+			if i % 4 == 0:
+				side = 1 if _h(i * 3 + 2) > 0.5 else -1     # a clump on a flank
+			var cs := W * (0.16 + _h(i * 5) * 0.16)
+			var tone := c_body.lightened(0.08 + _h(i * 11) * 0.10) if i % 3 != 0 \
+				else c_body.darkened(0.14)
+			var cx := fx * W * 0.42
+			var cy := body_h * (0.88 + _h(i * 13) * 0.16)
+			if side != 0:
+				cx = side * W * 0.56
+				cy = body_h * (0.35 + _h(i * 13) * 0.55)
+			_box(torso, Vector3(cx - cs * 0.5, cy - cs * 0.5, fz * body_l * 0.44 - cs * 0.5),
+				Vector3(cs, cs * 0.8, cs * 1.1), tone, 1.0)
+		# A ruff of wool round the neck and a topknot.
+		_box(torso, Vector3(-W * 0.36, body_h * 0.55, body_l * 0.42),
+			Vector3(W * 0.72, body_h * 0.6, body_l * 0.14), c_body.lightened(0.05), 1.0)
 	if "holstein" in feats:
+		# Patches that differ side to side, and run over the back, the way a
+		# Holstein's do: no two flanks alike.
 		var p: Color = s["c_patch"]
-		_box(torso, Vector3(-W * 0.5 - 0.01, body_h * 0.32, -body_l * 0.5),
-			Vector3(W * 1.02, body_h * 0.6, body_l * 0.28), p)
-		_box(torso, Vector3(-W * 0.5 - 0.01, body_h * 0.5, body_l * 0.02),
-			Vector3(W * 1.02, body_h * 0.5, body_l * 0.22), p)
-		_box(torso, Vector3(-W * 0.5 - 0.01, body_h * 0.28, body_l * 0.32),
-			Vector3(W * 0.5, body_h * 0.4, body_l * 0.18), p)
+		var bl := body_l
+		# Left flank (x < 0) and right flank (x > 0), each its own map.
+		_box(torso, Vector3(-W * 0.5 - 0.012, body_h * 0.36, -bl * 0.5),
+			Vector3(0.02, body_h * 0.62, bl * 0.30), p)
+		_box(torso, Vector3(-W * 0.5 - 0.012, body_h * 0.55, -bl * 0.08),
+			Vector3(0.02, body_h * 0.44, bl * 0.24), p)
+		_box(torso, Vector3(-W * 0.5 - 0.012, body_h * 0.22, bl * 0.24),
+			Vector3(0.02, body_h * 0.34, bl * 0.16), p)
+		_box(torso, Vector3(W * 0.5 - 0.008, body_h * 0.50, -bl * 0.34),
+			Vector3(0.02, body_h * 0.48, bl * 0.20), p)
+		_box(torso, Vector3(W * 0.5 - 0.008, body_h * 0.30, -bl * 0.02),
+			Vector3(0.02, body_h * 0.62, bl * 0.30), p)
+		_box(torso, Vector3(W * 0.5 - 0.008, body_h * 0.52, bl * 0.30),
+			Vector3(0.02, body_h * 0.36, bl * 0.14), p)
+		# The back: a white saddle crossing the spine.
+		_box(torso, Vector3(-W * 0.3, body_h * 0.99, -bl * 0.12),
+			Vector3(W * 0.6, 0.012, bl * 0.28), p)
+		_box(torso, Vector3(-W * 0.24, body_h * 0.99, bl * 0.24),
+			Vector3(W * 0.48, 0.012, bl * 0.14), p)
+		# White socks and a white belly band.
+		_box(torso, Vector3(-W * 0.44, -0.004, -bl * 0.3), Vector3(W * 0.88, body_h * 0.1, bl * 0.6),
+			p.darkened(0.06))
 	if "udder" in feats:
 		_box(torso, Vector3(-W * 0.22, -body_h * 0.22, -body_l * 0.36),
 			Vector3(W * 0.44, body_h * 0.24, body_l * 0.26), C_PINK)
@@ -423,9 +485,24 @@ static func _quadruped(s: Dictionary, root: Node3D) -> Dictionary:
 	# Eyes, on the sides where a prey animal keeps them.
 	var ey := hd.x * 0.16
 	_box(head, Vector3(-hd.x * 0.5 - 0.005, hd.y * 0.12, hd.z * 0.28),
-		Vector3(0.01, ey, ey), C_INK)
+		Vector3(0.01, ey, ey), C_INK, 0.25)
 	_box(head, Vector3(hd.x * 0.5 - 0.005, hd.y * 0.12, hd.z * 0.28),
-		Vector3(0.01, ey, ey), C_INK)
+		Vector3(0.01, ey, ey), C_INK, 0.25)
+	# A pale glint in the top corner: the difference between a face and a hole.
+	_box(head, Vector3(-hd.x * 0.5 - 0.008, hd.y * 0.12 + ey * 0.5, hd.z * 0.28 + ey * 0.5),
+		Vector3(0.008, ey * 0.4, ey * 0.4), C_CREAM, 0.2)
+	_box(head, Vector3(hd.x * 0.5, hd.y * 0.12 + ey * 0.5, hd.z * 0.28 + ey * 0.5),
+		Vector3(0.008, ey * 0.4, ey * 0.4), C_CREAM, 0.2)
+	# A pale brow-ridge over each eye.
+	_box(head, Vector3(-hd.x * 0.5 - 0.004, hd.y * 0.12 + ey * 1.05, hd.z * 0.22),
+		Vector3(0.008, ey * 0.3, ey * 1.9), (s["c_head"] as Color).darkened(0.18))
+	_box(head, Vector3(hd.x * 0.5 - 0.004, hd.y * 0.12 + ey * 1.05, hd.z * 0.22),
+		Vector3(0.008, ey * 0.3, ey * 1.9), (s["c_head"] as Color).darkened(0.18))
+	# Nostrils on the muzzle end.
+	_box(head, Vector3(-mz.x * 0.3, -hd.y * 0.42 + mz.y * 0.4, hd.z * 0.55 + mz.z - 0.006),
+		Vector3(mz.x * 0.14, mz.y * 0.16, 0.014), C_INK, 0.3)
+	_box(head, Vector3(mz.x * 0.16, -hd.y * 0.42 + mz.y * 0.4, hd.z * 0.55 + mz.z - 0.006),
+		Vector3(mz.x * 0.14, mz.y * 0.16, 0.014), C_INK, 0.3)
 	if "blaze" in feats:
 		_box(head, Vector3(-hd.x * 0.12, -hd.y * 0.2, hd.z * 0.57),
 			Vector3(hd.x * 0.24, hd.y * 0.6, 0.01), C_CREAM)
@@ -533,6 +610,10 @@ static func _quadruped(s: Dictionary, root: Node3D) -> Dictionary:
 		if "white_tail_tip" in feats:
 			_box(tail, Vector3(-tw * 0.52, -tw * 0.52, -tail_len - 0.01),
 				Vector3(tw * 1.04, tw * 1.04, tail_len * 0.3), s["c_patch"])
+	if tail_len > 0.5 and not ("long_tail" in feats):
+		var tuft: Color = s["c_patch"] if s.has("c_patch") else s["c_leg"].darkened(0.1)
+		_box(tail, Vector3(-tw_tuft(leg_r) * 0.5, -tw_tuft(leg_r) * 0.5, -tail_len - 0.14),
+			Vector3(tw_tuft(leg_r), tw_tuft(leg_r), 0.16), tuft)
 	if "puff_tail" in feats:
 		_box(tail, Vector3(-W * 0.18, -W * 0.12, -W * 0.28), Vector3(W * 0.36, W * 0.34, W * 0.3),
 			C_CREAM)
@@ -564,6 +645,12 @@ static func _bird(s: Dictionary, kind: String, root: Node3D) -> Dictionary:
 		Vector3(b.x * 0.84, b.y * 0.3, b.z * 0.7), s["c_belly"])
 	_box(torso, Vector3(-b.x * 0.36, b.y * 0.15, -b.z * 0.6),
 		Vector3(b.x * 0.72, b.y * 0.6, b.z * 0.22), s["c_body"].darkened(0.06))
+	# Rows of feathers across the back, each a shade off the last.
+	for i in 4:
+		var shade := -0.06 + (i % 2) * 0.10
+		_box(torso, Vector3(-b.x * 0.5 - 0.004, b.y * 0.3, -b.z * 0.38 + i * b.z * 0.18),
+			Vector3(b.x * 1.008, b.y * 0.7, b.z * 0.09), s["c_body"].lightened(shade) if shade > 0
+			else s["c_body"].darkened(-shade))
 	if "mallard_chest" in feats:
 		_box(torso, Vector3(-b.x * 0.5 - 0.005, b.y * 0.15, b.z * 0.18),
 			Vector3(b.x * 1.01, b.y * 0.7, b.z * 0.26), s["c_chest"])
@@ -622,7 +709,9 @@ static func _bird(s: Dictionary, kind: String, root: Node3D) -> Dictionary:
 			_box(head, Vector3(side * hs * 0.22 - eye * 0.25, hs * 0.25 + eye * 0.25, hs * 0.55 + 0.02),
 				Vector3(eye * 0.5, eye * 0.5, 0.01), C_INK)
 		else:
-			_box(head, Vector3(ex + eo, hs * 0.35, hs * 0.35), Vector3(0.01, eye, eye), eye_c)
+			_box(head, Vector3(ex + eo, hs * 0.35, hs * 0.35), Vector3(0.01, eye, eye), eye_c, 0.25)
+			_box(head, Vector3(ex + eo * 1.6 + (0.003 if side > 0 else -0.003), hs * 0.35 + eye * 0.5,
+				hs * 0.35 + eye * 0.5), Vector3(0.008, eye * 0.4, eye * 0.4), C_CREAM, 0.2)
 	if "comb" in feats:
 		var comb := Color("#c8352c")
 		for i in 3:
@@ -666,15 +755,15 @@ static func _bird(s: Dictionary, kind: String, root: Node3D) -> Dictionary:
 	var folded: Array = []
 	for side in [-1.0, 1.0]:
 		var x0: float = side * b.x * 0.5 + (0.0 if side > 0 else -0.02)
-		var panel := _box(torso, Vector3(x0, b.y * 0.28, -b.z * 0.42),
+		var panel := BoxKit.add(torso, Vector3(x0, b.y * 0.28, -b.z * 0.42),
 			Vector3(0.02, b.y * 0.5, b.z * 0.74), s["c_wing"])
 		folded.append(panel)
 		if "black_wingtips" in feats:
-			var tip := _box(torso, Vector3(x0 - 0.002, b.y * 0.3, -b.z * 0.44),
+			var tip := BoxKit.add(torso, Vector3(x0 - 0.002, b.y * 0.3, -b.z * 0.44),
 				Vector3(0.024, b.y * 0.3, b.z * 0.16), s["c_wingtip"])
 			folded.append(tip)
 		if "speculum" in feats:
-			var sp := _box(torso, Vector3(x0 - 0.002, b.y * 0.42, -b.z * 0.2),
+			var sp := BoxKit.add(torso, Vector3(x0 - 0.002, b.y * 0.42, -b.z * 0.2),
 				Vector3(0.024, b.y * 0.16, b.z * 0.22), Color("#2b4c9c"))
 			folded.append(sp)
 	out["folded"] = folded

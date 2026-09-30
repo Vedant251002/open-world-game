@@ -23,9 +23,13 @@ uniform vec3 paint_albedo = vec3(0.5);
 uniform float paint_rough : hint_range(0.0, 1.0) = 0.88;
 uniform float weave_scale : hint_range(1.0, 400.0) = 90.0;
 uniform float weave_depth : hint_range(0.0, 1.0) = 0.35;
+// Batched figures (BoxKit.Batch) carry colour per vertex, and roughness in its
+// alpha, and give every face a metre-scale UV so the bevel below is constant.
+uniform bool vertex_paint = false;
 
 varying vec3 paint_world_pos;
 varying vec3 paint_world_nrm;
+varying vec4 paint_vcol;
 
 float bk_hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -47,6 +51,7 @@ float bk_vnoise(vec2 p) {
 void vertex() {
 	paint_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	paint_world_nrm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	paint_vcol = COLOR;
 }
 
 void fragment() {
@@ -81,18 +86,50 @@ void fragment() {
 	float footprint = max(fwidth(w.x), fwidth(w.y));
 	float legible = 1.0 - smoothstep(0.35, 1.4, footprint);
 
-	float shade = 1.0 + (n - 0.5) * 0.20 * weave_depth * legible;
+	vec3 base = paint_albedo;
+	float rough = paint_rough;
+	float wd = weave_depth;
+	float edge;
+	if (vertex_paint) {
+		base = paint_vcol.rgb;
+		rough = paint_vcol.a;
+		// Skin and leather are smooth; only cloth and wool show a weave.
+		wd *= smoothstep(0.55, 0.85, rough);
+		vec2 e2 = min(UV, UV2 - UV);
+		edge = 1.0 - smoothstep(0.0, 0.011, min(e2.x, e2.y));
+	} else {
+		// BoxMesh lays its six faces out in a 3x2 atlas.
+		vec2 f = fract(UV * vec2(3.0, 2.0));
+		vec2 e2 = min(f, 1.0 - f);
+		edge = 1.0 - smoothstep(0.0, 0.06, min(e2.x, e2.y));
+	}
 
-	ALBEDO = paint_albedo * shade;
-	ROUGHNESS = clamp(paint_rough + (n - 0.5) * 0.14 * legible, 0.05, 1.0);
+	float shade = 1.0 + (n - 0.5) * 0.20 * wd * legible;
+	// A pressed edge on every box: the rim of each face is a little darker,
+	// which is most of what turns a stack of cuboids into a crafted figure.
+	shade *= 1.0 - 0.17 * edge;
+	// Undersides and shadowed flanks sit darker than the tops, as baked
+	// occlusion, so a figure has weight even where the sun is flat on it.
+	float up = paint_world_nrm.y * 0.5 + 0.5;
+	shade *= mix(0.80, 1.04, up);
+
+	// Pigments are never quite as saturated as a vertex colour says.
+	base = mix(vec3(dot(base, vec3(0.299, 0.587, 0.114))), base, 0.9);
+	ALBEDO = base * shade;
+	// A little self-fill so a face under a hat brim is a face, not a hole.
+	EMISSION = base * shade * 0.09;
+	ROUGHNESS = clamp(rough + (n - 0.5) * 0.14 * legible, 0.05, 1.0);
 	METALLIC = 0.0;
 	SPECULAR = 0.35;
+	// A soft cool rim, which is what lifts a small dark figure off the ground.
+	RIM = 0.30;
+	RIM_TINT = 0.55;
 
 	// Derived normal, from the gradient of the one noise value. fwidth() is
 	// already being computed above for the fade, so this is two more
 	// instructions rather than two more texture fetches.
-	if (weave_depth * legible > 0.001) {
-		vec2 slope = vec2(dFdx(n), dFdy(n)) * weave_depth * legible * 2.2;
+	if (wd * legible > 0.001) {
+		vec2 slope = vec2(dFdx(n), dFdy(n)) * wd * legible * 2.2;
 		vec3 t = (an.y >= an.x && an.y >= an.z)
 			? vec3(1.0, 0.0, 0.0)
 			: ((an.x >= an.z) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0));
