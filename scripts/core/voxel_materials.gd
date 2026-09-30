@@ -255,4 +255,6 @@ static func set_sky(to_sun: Vector3, tint: Color, glitter: float, reflect: Color
 		m.set_shader_parameter("sun_dir", to_sun)
 		m.set_shader_parameter("sun_tint", Vector3(lin_tint.r, lin_tint.g, lin_tint.b))
 		m.set_shader_parameter("sun_glitter", glitter)
+		# Only the glass shader reads this: windows lit from inside after dusk.
+		m.set_shader_parameter("night_glow", smoothstep(0.08, -0.12, to_sun.y))
 		m.set_shader_parameter("sky_reflect", Vector3(lin_reflect.r, lin_reflect.g, lin_reflect.b))

@@ -13,7 +13,7 @@ const MOON_ENERGY := 0.85
 ## Fill-light multipliers for the compatibility renderer (no sky radiance
 ## ambient there). Kept modest: shade should be a cool, darker version of the
 ## sunlit colour, not the same brightness.
-const AMBIENT_COMPAT_DAY := 3.2
+const AMBIENT_COMPAT_DAY := 5.0
 const AMBIENT_COMPAT_NIGHT := 3.0
 const EXPOSURE_COMPAT := 0.9
 const EXPOSURE_FPLUS := 0.9
@@ -612,7 +612,9 @@ func _apply_time() -> void:
 	if not _no_fog:
 		env.fog_density = FOG_DENSITY * (1.0 + mist * 1.4) + weather_fog * 0.03
 		env.fog_sun_scatter = clampf(twilight * 0.55 + day_amt * 0.12, 0.0, 0.7)
-	env.fog_light_color = horizon.lerp(sky_top, 0.15 + 0.2 * night)
+	# Dimmed after dark: fog is added over the lit scene, so a fog as bright as
+	# the night horizon made the far hills glow teal above a moonlit town.
+	env.fog_light_color = horizon.lerp(sky_top, 0.15 + 0.2 * night) * lerpf(1.0, 0.4, night)
 	if not _no_vol:
 		env.volumetric_fog_density = lerpf(0.0035, 0.0012, day_amt) * (1.0 + mist) \
 			+ weather_fog * 0.02
