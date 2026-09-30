@@ -1509,6 +1509,14 @@ func _finish_job() -> void:
 		})
 
 	job_finished.emit(self, patch)
+	# The building is done; only the walk home is left. Kept, it read as a job
+	# in hand for as long as the next step took to start (or for good, if the
+	# next step was not a build): answers said "building it, 100%", and the
+	# next quarry or field job kept strolling round the old site.
+	job_patch = null
+	job_construction = null
+	job_plot = null
+	job_spec = {}
 
 	# Walk back and say so. Coming back to report is the beat that closes the
 	# loop; a notification would not be the same thing at all.

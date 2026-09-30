@@ -245,12 +245,27 @@ func hire(w: Worker, role: Role) -> void:
 	w.hired = true
 	w.employer = _employer
 	w.wander_m = 7.0
-	w.follow_slot = hired().size() - 1
+	w.follow_slot = _free_slot(w)
 	w.seed_follow(_employer.global_position)
 	w.home = _employer.global_position
 	w.set_physics_process(true)
 	w.visible = true
 	roster_changed.emit()
+
+
+## The lowest follow slot nobody else hired holds. Counting the crew instead
+## reused a slot once somebody had been let go from the middle: hire a fourth
+## and fifth, dismiss the fourth, hire a sixth, and the sixth stands exactly on
+## the fifth.
+func _free_slot(who: Worker) -> int:
+	var taken := {}
+	for o: Worker in workers:
+		if o != who and o.hired:
+			taken[o.follow_slot] = true
+	var slot := 0
+	while taken.has(slot):
+		slot += 1
+	return slot
 
 
 ## Leaving somebody at a place instead of at your heels: the shopkeeper
@@ -275,6 +290,10 @@ func dismiss(w: Worker) -> void:
 	w.employer = null
 	w.wander_m = CITIZEN_WANDER_M
 	w.home = w.global_position
+	# Their morning job and goal were for the job they have just lost: a cook
+	# rehired as a guard would otherwise be sent to "cook a shift" every dawn.
+	w.standing = ""
+	w.goal = null
 	roster_changed.emit()
 
 
@@ -289,6 +308,7 @@ func snapshot() -> Array:
 			"id": w.memory.worker_id, "name": w.memory.display_name,
 			"hired": w.hired, "role": w.role.id if w.role != null else "citizen",
 			"pos": w.global_position, "home": w.home,
+			"posted": w.hired and w.employer == null,
 			"memory": w.memory.to_dict(), "standing": w.standing, "trades": true,
 			"goal": w.goal.to_dict() if w.goal != null else {},
 		})
@@ -324,6 +344,11 @@ func restore(saved: Array) -> void:
 		var at: Vector3 = e.get("pos", w.global_position)
 		w.global_position = Vector3(at.x, _world.ground_m(at.x, at.z) + 0.3, at.z)
 		w.home = e.get("home", w.home)
+		# Left at a post rather than following: without this a shopkeeper put
+		# behind the counter walked out after the player on every load.
+		if bool(e.get("posted", false)) and w.hired:
+			w.employer = null
+			w.wander_m = 3.0
 	roster_changed.emit()
 
 

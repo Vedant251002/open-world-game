@@ -226,9 +226,12 @@ func of_kind(kind: String) -> Array[Dictionary]:
 	return out
 
 
-## What became of an order: the completion that names it, or nothing yet.
+## What became of an order: the latest entry that names it, or nothing yet.
+## Latest, not first: "started on it" is filed before "built it", and the first
+## match kept reporting the order as still under way once it was finished.
 func outcome_of(order_id: int) -> Dictionary:
-	for e: Dictionary in episodic:
+	for i in range(episodic.size() - 1, -1, -1):
+		var e: Dictionary = episodic[i]
 		if int(e.get("order", -1)) == order_id and str(e.get("kind", "")) != "order":
 			return e
 	return {}
@@ -254,7 +257,9 @@ func answer_question(index: int) -> void:
 func practise(skill: String, amount: float = 1.0) -> void:
 	if not skills.has(skill):
 		return
-	skills[skill] = mini(int(skills[skill]) + int(amount), 5)
+	# Fractional gains count: harvesting, cooking and digging practise by 0.1 to
+	# 0.4 a time, and truncating each to an int made every one of them a no-op.
+	skills[skill] = minf(float(skills[skill]) + amount, 5.0)
 
 
 ## A worker with masonry 0 produces visibly rougher stonework. The engine
