@@ -390,7 +390,8 @@ func submit(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 	if arch != "" and _instruction_is_plain(instruction) \
 			and ArchetypeLibrary.land_plan(instruction, int(ctx.get("tier", 1))).is_empty() \
 			and ArchetypeLibrary.errand_plan(instruction).is_empty():
-		key = ArchetypeLibrary.cache_key(arch, int(ctx.get("tier", 1)), plot, mem)
+		key = ArchetypeLibrary.cache_key(arch, int(ctx.get("tier", 1)), plot, mem) \
+			+ "|" + _cache_words(instruction)
 		var hit := ArchetypeLibrary.cached(key)
 		if not hit.is_empty():
 			cache_hits += 1
@@ -725,6 +726,24 @@ func _plain_text(raw: String) -> String:
 func _instruction_is_plain(instruction: String) -> bool:
 	var w := instruction.strip_edges().split(" ", false)
 	return w.size() <= 5
+
+
+## Words that carry no design. Everything else an order says goes into the
+## cache key: keyed on the archetype alone, "build a big hut" was served the
+## small one cached by "build a small hut", and "a two floor hut" the bungalow.
+const CACHE_FILLER := ["build", "make", "put", "raise", "me", "us", "a", "an",
+	"the", "some", "new", "please", "up", "can", "could", "you", "for"]
+
+
+func _cache_words(instruction: String) -> String:
+	var out: Array[String] = []
+	var low := instruction.to_lower()
+	for ch: String in [".", ",", "!", "?", "'", "\u2019", "\""]:
+		low = low.replace(ch, "")
+	for w: String in low.split(" ", false):
+		if w not in CACHE_FILLER:
+			out.append(w)
+	return " ".join(out)
 
 
 func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
