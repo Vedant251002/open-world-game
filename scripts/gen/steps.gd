@@ -570,6 +570,12 @@ const ALIASES := {
 
 ## One step, with its fields put where this verb keeps them.
 static func tidy(step: Dictionary) -> Dictionary:
+	# A field the model had nothing for comes back null as often as absent, and
+	# "in": null would otherwise be read as a reference to a step called
+	# "<null>". Null means not said.
+	for k: Variant in step.keys():
+		if step[k] == null:
+			step.erase(k)
 	var verb := str(step.get("do", ""))
 	if not known(verb):
 		return step

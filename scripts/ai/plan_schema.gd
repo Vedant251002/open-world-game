@@ -156,6 +156,14 @@ static func _merge_field(props: Dictionary, name: String, spec: Dictionary) -> v
 			if e not in merged:
 				merged.append(e)
 		was["enum"] = merged
+	# Two verbs' bounds on one number widen to cover both; otherwise whichever
+	# verb came first in the table capped the rest.
+	for bound: String in ["minimum", "maximum"]:
+		if was.has(bound) and spec.has(bound):
+			was[bound] = mini(int(was[bound]), int(spec[bound])) if bound == "minimum" \
+				else maxi(int(was[bound]), int(spec[bound]))
+		elif was.has(bound) != spec.has(bound):
+			was.erase(bound)
 
 
 static func _step_schemas(tier: int, allowed: Array = [], mode: String = "router") -> Array:
@@ -228,7 +236,10 @@ static func _field(name: String, tier: int, verb: String = "") -> Dictionary:
 		"crop":
 			return {"type": "string", "enum": Steps.CROPS}
 		"count":
-			return {"type": "integer", "minimum": 1, "maximum": Steps.COUNT_MAX}
+			# The validator lets a trade run to five hundred; a schema that
+			# stopped at a dozen made "sell 50 timber" impossible to say.
+			return {"type": "integer", "minimum": 1,
+				"maximum": 500 if verb == "trade" else Steps.COUNT_MAX}
 		"units":
 			return {"type": "integer", "minimum": 1, "maximum": Steps.UNITS_MAX}
 		"id":
@@ -339,8 +350,10 @@ static func _building_spec(tier: int) -> Dictionary:
 			"kind": {"type": "string", "enum": ["building"]},
 			"archetype": {"type": "string",
 				"enum": _names(Vocabulary.archetypes_for_tier(tier))},
+			# Seven to sixty a side is what the validator will build; a schema
+			# that allowed a four metre hut only got it refused.
 			"footprint": {"type": "array", "minItems": 2, "maxItems": 2,
-				"items": {"type": "integer"}},
+				"items": {"type": "integer", "minimum": 7, "maximum": 60}},
 			"stories": {"type": "integer", "minimum": 1,
 				"maximum": Vocabulary.max_stories(tier)},
 			"orientation": {"type": "string", "enum": Vocabulary.ORIENTATIONS},
@@ -352,8 +365,9 @@ static func _building_spec(tier: int) -> Dictionary:
 			"materials": {
 				"type": "object",
 				"properties": {
-					"walls": {"type": "string", "enum": _names(VoxelTypes.names_for_tier(tier))},
-					"roof": {"type": "string", "enum": _names(VoxelTypes.names_for_tier(tier))},
+					"walls": {"type": "string", "enum": _material_names(tier, VoxelTypes.STRUCTURAL)},
+					"roof": {"type": "string",
+						"enum": _material_names(tier, VoxelTypes.STRUCTURAL + VoxelTypes.SURFACE)},
 					"trim": {"type": "string"},
 					"foundation": {"type": "string"},
 				},
@@ -403,6 +417,10 @@ static func _nullable(field: Dictionary) -> Dictionary:
 		return field
 	var out := field.duplicate()
 	out["type"] = [str(t), "null"]
+	# An enum is checked as well as the type, so without null in it a nullable
+	# crop or gate is still refused when the model sends null.
+	if out.has("enum"):
+		out["enum"] = (out["enum"] as Array) + [null]
 	return out
 
 
@@ -483,7 +501,11 @@ static func from_tool_calls(calls: Array) -> Dictionary:
 			continue
 		var step := {"do": name}
 		for k: Variant in args:
-			step[str(k)] = args[k]
+			# _nullable() invites null for an optional field; it means "not
+			# said", and left in it reads as the step's own id or a place called
+			# "<null>".
+			if args[k] != null:
+				step[str(k)] = args[k]
 		steps.append(step)
 	if steps.is_empty():
 		if said == "":
@@ -507,6 +529,16 @@ static func _args(raw: Variant) -> Dictionary:
 		if j.parse(str(raw)) == OK and j.data is Dictionary:
 			return j.data
 	return {}
+
+
+## The materials of a tier that fall in the given categories. The validator
+## refuses a wall of dirt or a roof of gravel, so the decoder is not offered them.
+static func _material_names(tier: int, categories: Array) -> Array:
+	var out: Array = []
+	for n: String in VoxelTypes.names_for_tier(tier):
+		if n in categories:
+			out.append(n)
+	return out
 
 
 ## PackedStringArray does not survive JSON.stringify as a list of strings.

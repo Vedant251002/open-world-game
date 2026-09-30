@@ -16,12 +16,61 @@ static func error(code: String, question: String, detail: String = "") -> Dictio
 	return {"code": code, "question": question, "detail": detail}
 
 
+## A field the model filled with null means "nothing for this one", exactly as
+## if it had left it out. Without this a null slot reads as the string "<null>"
+## and is refused as an unknown wall, or crashes a typed assignment outright.
+static func _opt(d: Dictionary, key: String, fallback: Variant) -> Variant:
+	var v: Variant = d.get(key, fallback)
+	return fallback if v == null else v
+
+
+## The spec with every null field taken out, in the spec itself, its materials
+## and each module. check_spec() reads null as "not said"; the generator reads
+## the spec with plain get(), where a null stories or modules is a crash, so it
+## is handed this copy rather than the original.
+static func scrub(spec: Dictionary) -> Dictionary:
+	var out := spec.duplicate()
+	_drop_nulls(out)
+	if out.get("materials", null) is Dictionary:
+		var mats: Dictionary = (out["materials"] as Dictionary).duplicate()
+		_drop_nulls(mats)
+		out["materials"] = mats
+	if out.get("modules", null) is Array:
+		var mods: Array = []
+		for m: Variant in out["modules"] as Array:
+			if m is Dictionary:
+				var md: Dictionary = (m as Dictionary).duplicate()
+				_drop_nulls(md)
+				mods.append(md)
+			else:
+				mods.append(m)
+		out["modules"] = mods
+	return out
+
+
+static func _drop_nulls(d: Dictionary) -> void:
+	for k: Variant in d.keys():
+		if d[k] == null:
+			d.erase(k)
+
+
+## Whether the model gave a number, or a string that is one. Anything else has
+## no int() or float() constructor and would crash the check that read it.
+static func _is_num(v: Variant) -> bool:
+	return v is int or v is float or (v is String and (v as String).is_valid_float())
+
+
+## An int from whatever the model sent, or `fallback` when it is not a number.
+static func _int_of(v: Variant, fallback: int) -> int:
+	return int(v) if _is_num(v) else fallback
+
+
 # ------------------------------------------------------------- pre-generation
 
 static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Dictionary:
 	var tier := int(ctx.get("tier", 1))
 
-	if str(spec.get("kind", "building")) != "building":
+	if str(_opt(spec, "kind", "building")) != "building":
 		return error("unsupported_kind",
 			"I only know how to put up buildings at the moment.")
 
@@ -31,7 +80,7 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 	# and came out as whatever geometry the fallback happened to hold — ask
 	# for an airport in a village of huts and you got a hut, silently. Being
 	# told we are not up to it yet is the answer; a hut is not.
-	var arch := str(spec.get("archetype", ""))
+	var arch := str(_opt(spec, "archetype", ""))
 	if arch != "" and arch not in Vocabulary.archetypes_for_tier(tier):
 		var known := Vocabulary.archetype_tier(arch)
 		if known > 0:
@@ -42,19 +91,22 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 			"I would not know where to start with %s." % an(arch), arch)
 
 	# --- enums ---
-	var orientation := str(spec.get("orientation", "face_street"))
+	var orientation := str(_opt(spec, "orientation", "face_street"))
 	if orientation not in Vocabulary.ORIENTATIONS:
 		return error("bad_orientation",
 			"Which way did you want it to face?", orientation)
 
-	var roof := str(spec.get("roof", "gable"))
+	var roof := str(_opt(spec, "roof", "gable"))
 	if roof not in Vocabulary.ROOFS:
 		return error("bad_roof", "What sort of roof did you have in mind?", roof)
 
 	# --- materials ---
-	var mats: Dictionary = spec.get("materials", {})
+	var mats_v: Variant = _opt(spec, "materials", {})
+	if not (mats_v is Dictionary):
+		return error("bad_materials", "I could not follow what it should be built of.")
+	var mats: Dictionary = mats_v
 	for slot: String in ["walls", "roof", "trim", "foundation"]:
-		if not mats.has(slot):
+		if mats.get(slot, null) == null:
 			continue
 		var mat_name := str(mats[slot])
 		if VoxelTypes.id_of(mat_name) < 0:
@@ -63,10 +115,10 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 		if VoxelTypes.tech_tier(VoxelTypes.id_of(mat_name)) > tier:
 			return error("material_above_tier",
 				"Nobody round here knows how to make %s yet." % mat_name, mat_name)
-	if mats.has("walls") and str(mats["walls"]) not in VoxelTypes.STRUCTURAL:
+	if mats.get("walls", null) != null and str(mats["walls"]) not in VoxelTypes.STRUCTURAL:
 		return error("material_wrong_category",
 			"You cannot hold a roof up with %s." % str(mats["walls"]))
-	if mats.has("roof") and str(mats["roof"]) not in VoxelTypes.SURFACE \
+	if mats.get("roof", null) != null and str(mats["roof"]) not in VoxelTypes.SURFACE \
 			and str(mats["roof"]) not in VoxelTypes.STRUCTURAL:
 		return error("material_wrong_category",
 			"That is not something you can roof with.", str(mats["roof"]))
@@ -74,6 +126,8 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 	# --- footprint ---
 	var fp: Variant = spec.get("footprint", null)
 	if not (fp is Array) or (fp as Array).size() != 2:
+		return error("bad_footprint", "How big did you want it?")
+	if not _is_num((fp as Array)[0]) or not _is_num((fp as Array)[1]):
 		return error("bad_footprint", "How big did you want it?")
 	var fw := float((fp as Array)[0])
 	var fd := float((fp as Array)[1])
@@ -94,13 +148,17 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 			% [int(plot_m.x), int(plot_m.y)])
 
 	# --- stories ---
-	var stories := int(spec.get("stories", 1))
+	var stories_v: Variant = _opt(spec, "stories", 1)
+	if not _is_num(stories_v):
+		return error("bad_stories",
+			"I can manage up to %d floors with what we have." % Vocabulary.max_stories(tier))
+	var stories := int(stories_v)
 	if stories < 1 or stories > Vocabulary.max_stories(tier):
 		return error("bad_stories",
 			"I can manage up to %d floors with what we have." % Vocabulary.max_stories(tier))
 
 	# --- modules ---
-	var modules: Variant = spec.get("modules", [])
+	var modules: Variant = _opt(spec, "modules", [])
 	if not (modules is Array):
 		return error("bad_modules", "I could not follow what should go inside.")
 	var allowed := Vocabulary.modules_for_tier(tier)
@@ -121,18 +179,21 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 				"I do not know what a %s is." % mtype.replace("_", " "), mtype)
 		present.append(mtype)
 
-		var wall := str(md.get("wall", "any"))
+		var wall := str(_opt(md, "wall", "any"))
 		if wall not in Vocabulary.WALLS:
 			return error("bad_wall", "Which wall should the %s go against?" % mtype, wall)
-		var size := str(md.get("size", "medium"))
+		var size := str(_opt(md, "size", "medium"))
 		if size not in Vocabulary.SIZES:
 			return error("bad_size", "How big should the %s be?" % mtype, size)
-		var priority := str(md.get("priority", "preferred"))
+		var priority := str(_opt(md, "priority", "preferred"))
 		if priority not in Vocabulary.PRIORITIES:
 			return error("bad_priority", "Is the %s essential or not?" % mtype, priority)
 		if priority == "required":
 			required_count += 1
-		for n: Variant in md.get("needs", []):
+		var needs_v: Variant = _opt(md, "needs", [])
+		if not (needs_v is Array):
+			return error("bad_need", "What does a %s need?" % mtype.replace("_", " "))
+		for n: Variant in needs_v as Array:
 			if str(n) not in Vocabulary.NEEDS:
 				return error("bad_need", "What does a %s need %s for?" % [mtype, str(n)], str(n))
 		for f: Variant in [md.get("faces", null)]:
@@ -143,7 +204,7 @@ static func check_spec(spec: Dictionary, plot: Plot, ctx: Dictionary) -> Diction
 
 	# adjacent_to must name something in this same spec.
 	for m2: Variant in modules as Array:
-		var adj := str((m2 as Dictionary).get("adjacent_to", ""))
+		var adj := str(_opt(m2 as Dictionary, "adjacent_to", ""))
 		if adj != "" and adj not in present:
 			return error("dangling_adjacency",
 				"You said the %s should be next to the %s, but there is no %s in this plan."
@@ -237,7 +298,7 @@ static func check_step(step: Dictionary, seen: Dictionary, plot: Plot,
 
 	var schema: Dictionary = Steps.entry(verb)
 	for field: String in schema["required"]:
-		if not step.has(field):
+		if step.get(field, null) == null:
 			return error("step_missing_field",
 				"You will have to tell me more than that.", "%s.%s" % [verb, field])
 
@@ -245,7 +306,7 @@ static func check_step(step: Dictionary, seen: Dictionary, plot: Plot,
 	# Pointing "put the hens in it" at an errand is not a plan, it is a sentence
 	# that parsed.
 	for ref: String in Steps.REF_FIELDS:
-		if not step.has(ref):
+		if step.get(ref, null) == null:
 			continue
 		var target := str(step[ref])
 		if target == "" or target == "here":
@@ -288,29 +349,35 @@ static func check_step(step: Dictionary, seen: Dictionary, plot: Plot,
 		"cook", "craft", "fish", "hunt":
 			return _check_hours(step, verb)
 		"plant_tree":
-			var n := int(step.get("count", 1))
+			var n := _int_of(_opt(step, "count", 1), 0)
 			if n < 1 or n > 12:
 				return error("bad_count", "I can put in up to a dozen at a go.")
 			return {}
 		"pave":
 			if str(step.get("from", "")).strip_edges() == "" or str(step.get("to", "")).strip_edges() == "":
 				return error("no_place", "A road goes from somewhere to somewhere. Which two?")
-			if step.has("material"):
+			if step.get("material", null) != null:
 				var m := str(step["material"])
 				if VoxelTypes.id_of(m) < 0:
 					return error("bad_material", "I cannot lay a road in %s." % m, m)
 				if VoxelTypes.tech_tier(VoxelTypes.id_of(m)) > tier:
 					return error("material_above_tier", "We have no %s yet." % m.replace("_", " "), m)
-			if step.has("width"):
-				var w := int(step["width"])
+			if step.get("width", null) != null:
+				var w := _int_of(step["width"], 0)
 				if w < 1 or w > 6:
 					return error("bad_width", "Between one and six metres wide.")
 			return {}
 		"level":
-			if step.has("size"):
-				var sz: Array = step["size"]
-				if sz.size() != 2 or int(sz[0]) < 3 or int(sz[0]) > 24:
+			if step.get("size", null) != null:
+				var sz: Variant = step["size"]
+				if not (sz is Array) or (sz as Array).size() != 2:
 					return error("bad_size", "Between three and twenty-four metres a side.")
+				# Both sides: only the first was ever checked, so a 4 by 5000
+				# level was accepted and the worker set to flatten it.
+				for side: Variant in sz as Array:
+					var len_m := _int_of(side, 0)
+					if len_m < 3 or len_m > 24:
+						return error("bad_size", "Between three and twenty-four metres a side.")
 			return {}
 		"teach":
 			if str(step.get("who", "")).strip_edges() == "":
@@ -347,7 +414,7 @@ static func _check_registered(step: Dictionary, verb: String) -> Dictionary:
 	var entry := Steps.entry(verb)
 	var types: Dictionary = entry.get("types", {})
 	for field: String in types:
-		if not step.has(field):
+		if step.get(field, null) == null:
 			continue
 		var t: Variant = types[field]
 		if t is Array:
@@ -367,8 +434,8 @@ static func _check_trade(step: Dictionary) -> Dictionary:
 	var kind := str(step.get("kind", ""))
 	if not Town.PRICE.has(kind):
 		return error("not_traded", "Nobody at the market deals in %s." % kind.replace("_", " "), kind)
-	if step.has("count"):
-		var n := int(step["count"])
+	if step.get("count", null) != null:
+		var n := _int_of(step["count"], 0)
 		if n < 1 or n > 500:
 			return error("bad_count", "Between one and five hundred at a time.")
 	return {}
@@ -383,8 +450,8 @@ static func _check_place_step(step: Dictionary, verb: String) -> Dictionary:
 
 
 static func _check_hours(step: Dictionary, _verb: String) -> Dictionary:
-	if step.has("hours"):
-		var h := float(step["hours"])
+	if step.get("hours", null) != null:
+		var h := float(step["hours"]) if _is_num(step["hours"]) else -1.0
 		if h < 0.0 or h > Steps.SHIFT_MAX_HOURS:
 			return error("bad_hours",
 				"That is longer than a day's work. How long did you mean?")
@@ -392,7 +459,8 @@ static func _check_hours(step: Dictionary, _verb: String) -> Dictionary:
 
 
 static func _check_patrol(step: Dictionary) -> Dictionary:
-	var places: Array = step.get("places", [])
+	var places_v: Variant = _opt(step, "places", [])
+	var places: Array = places_v if places_v is Array else []
 	if places.size() < 2:
 		return error("patrol_needs_places",
 			"A round needs at least two places to walk between.")
@@ -405,8 +473,8 @@ static func _check_scout(step: Dictionary) -> Dictionary:
 	var dir := str(step.get("direction", ""))
 	if dir not in Steps.DIRECTIONS:
 		return error("bad_direction", "Which way — north, south, east or west?", dir)
-	if step.has("distance"):
-		var d := int(step["distance"])
+	if step.get("distance", null) != null:
+		var d := _int_of(step["distance"], 0)
 		if d < 5 or d > Steps.SCOUT_MAX_M:
 			return error("bad_distance",
 				"I can scout up to about %d metres out." % Steps.SCOUT_MAX_M)
@@ -447,11 +515,12 @@ static func check_role(role: Dictionary) -> Dictionary:
 
 
 static func _check_enclose(step: Dictionary, tier: int) -> Dictionary:
-	var size: Array = step.get("size", [])
+	var size_v: Variant = _opt(step, "size", [])
+	var size: Array = size_v if size_v is Array else []
 	if size.size() != 2:
 		return error("bad_enclosure_size", "How big did you want it?")
-	var w := int(size[0])
-	var d := int(size[1])
+	var w := _int_of(size[0], 0)
+	var d := _int_of(size[1], 0)
 	if w < Steps.ENCLOSURE_MIN_M or d < Steps.ENCLOSURE_MIN_M:
 		return error("enclosure_too_small",
 			"That is too small to keep anything in. How big did you want it?")
@@ -459,7 +528,7 @@ static func _check_enclose(step: Dictionary, tier: int) -> Dictionary:
 		return error("enclosure_too_large",
 			"That is not a pen, that is a field with a fence round it. Smaller?")
 
-	var mat := str(step.get("material", "timber"))
+	var mat := str(_opt(step, "material", "timber"))
 	if VoxelTypes.id_of(mat) < 0:
 		return error("bad_material",
 			"I have never worked with %s. What should I use?" % mat.replace("_", " "),
@@ -468,7 +537,7 @@ static func _check_enclose(step: Dictionary, tier: int) -> Dictionary:
 		return error("material_above_tier",
 			"We have no %s in this town yet." % mat.replace("_", " "), mat)
 
-	var gate := str(step.get("gate", "worker_choice"))
+	var gate := str(_opt(step, "gate", "worker_choice"))
 	if gate not in Steps.GATES:
 		return error("bad_gate", "Which side did you want the gate?", gate)
 	return {}
@@ -480,7 +549,7 @@ static func _check_stock(step: Dictionary) -> Dictionary:
 		return error("unknown_species",
 			"We have no %s anywhere near this town." % species.replace("_", " "),
 			species)
-	var n := int(step.get("count", 0))
+	var n := _int_of(_opt(step, "count", 0), -1)
 	if n < 0 or n > Steps.COUNT_MAX:
 		return error("bad_count",
 			"I cannot drive that many back on my own. How many did you want?",
@@ -489,15 +558,15 @@ static func _check_stock(step: Dictionary) -> Dictionary:
 
 
 static func _check_sow(step: Dictionary) -> Dictionary:
-	var crop := str(step.get("crop", "wheat"))
+	var crop := str(_opt(step, "crop", "wheat"))
 	if crop not in Steps.CROPS:
 		return error("unknown_crop",
 			"I have no %s seed. Wheat or carrots?" % crop.replace("_", " "), crop)
-	if step.has("size"):
-		var size: Array = step["size"]
-		if size.size() != 2:
+	if step.get("size", null) != null:
+		if not (step["size"] is Array) or (step["size"] as Array).size() != 2:
 			return error("bad_field_size", "How big did you want the field?")
-		for n: int in [int(size[0]), int(size[1])]:
+		var size: Array = step["size"]
+		for n: int in [_int_of(size[0], 0), _int_of(size[1], 0)]:
 			if n < Steps.FIELD_MIN_M or n > Steps.FIELD_MAX_M:
 				return error("bad_field_size",
 					"A field wants to be between %d and %d metres a side."
@@ -514,7 +583,7 @@ static func _check_gather(step: Dictionary) -> Dictionary:
 		return error("not_gatherable",
 			"You cannot dig %s out of the ground — it has to be made."
 			% mat.replace("_", " "), mat)
-	var units := int(step.get("units", 0))
+	var units := _int_of(_opt(step, "units", 0), -1)
 	if units < 0 or units > Steps.UNITS_MAX:
 		return error("bad_units", "That is more than I could carry in a week.",
 			str(units))

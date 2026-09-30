@@ -188,7 +188,7 @@ const BASE := {
 	},
 	"shrine": {
 		"footprint": [11, 11], "stories": 1, "roof": "hip",
-		"materials": {"walls": "sandstone", "roof": "clay_tile", "trim": "dark_oak",
+		"materials": {"walls": "sandstone", "roof": "thatch", "trim": "dark_oak",
 			"foundation": "cobble"},
 		"modules": [
 			{"type": "entrance", "wall": "front", "priority": "required"},
@@ -197,7 +197,7 @@ const BASE := {
 	},
 	"well_house": {
 		"footprint": [9, 9], "stories": 1, "roof": "hip",
-		"materials": {"walls": "cobble", "roof": "thatch", "trim": "dark_oak",
+		"materials": {"walls": "sandstone", "roof": "thatch", "trim": "dark_oak",
 			"foundation": "cobble"},
 		"modules": [
 			{"type": "entrance", "wall": "front", "priority": "required"},
@@ -269,16 +269,63 @@ static var _cache: Dictionary = {}
 ## hut, and "what do you want" is not a hut. Callers that must have a building
 ## still use guess_archetype(). Callers that are allowed to do nothing use this.
 static func named_archetype(instruction: String) -> String:
-	var text := instruction.to_lower()
+	var text := _plain(instruction)
 	# Longest match wins, so "tower block" is not read as "tower" and an
-	# "apartment block" is not read as a "block of".
+	# "apartment block" is not read as a "block of". Whole words only: "hut" is
+	# not in "shut", "store" is not in "two storey hut" (which was a store), and
+	# "lab" is not in "table". A building named as a landmark -- "a hut near the
+	# well" -- is only the answer when nothing else is named.
 	var best := ""
 	var best_len := 0
+	var best_landmark := true
 	for word: String in KEYWORDS:
-		if word.length() > best_len and text.find(word) >= 0:
+		var at := _word_at(text, word)
+		if at < 0:
+			continue
+		var landmark := _is_landmark(text, at)
+		if (best_landmark and not landmark) \
+				or (landmark == best_landmark and word.length() > best_len):
 			best = KEYWORDS[word]
 			best_len = word.length()
+			best_landmark = landmark
 	return best
+
+
+## Lower case, letters and digits only, padded with a space each end so a word
+## is always " word ".
+static func _plain(instruction: String) -> String:
+	var out := " "
+	for ch in instruction.to_lower():
+		out += ch if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") else " "
+	out += " "
+	# A flat roof is a roof, not a flat.
+	for phrase: String in [" flat roof", " flat ground", " flat land"]:
+		out = out.replace(phrase, " ")
+	return out
+
+
+## Where " word " (or its plural) starts in a _plain() text, or -1.
+static func _word_at(text: String, word: String) -> int:
+	var best := -1
+	for suffix: String in ["", "s", "es"]:
+		var i := text.find(" %s%s " % [word, suffix])
+		if i >= 0 and (best < 0 or i < best):
+			best = i
+	return best
+
+
+const LANDMARK_LEADS := ["near", "nearby", "by", "beside", "behind", "opposite",
+	"next", "outside", "around", "front", "beyond", "past", "from", "across",
+	"between"]
+
+
+## Whether the word at `at` is being used to say where, not what.
+static func _is_landmark(text: String, at: int) -> bool:
+	var before := text.substr(0, at).strip_edges().split(" ", false)
+	for k in range(maxi(before.size() - 3, 0), before.size()):
+		if String(before[k]) in LANDMARK_LEADS:
+			return true
+	return false
 
 
 static func guess_archetype(instruction: String) -> String:
@@ -296,7 +343,9 @@ static func floors_in(instruction: String) -> int:
 	var words := text.split(" ", false)
 	for i in words.size():
 		var w := String(words[i])
-		if not (w.begins_with("floor") or w.begins_with("stor")
+		# "storey" and "story", not "stor": "2 stores" is not two floors.
+		if not (w.begins_with("floor") or w.begins_with("storey")
+				or w.begins_with("stories") or w.begins_with("story")
 				or w.begins_with("level")):
 			continue
 		# The count sits just before the word, as a digit or as English.
@@ -400,9 +449,18 @@ static func land_plan(instruction: String, tier: int) -> Dictionary:
 		var count := 6 if species == "hen" else 4
 		if _has_word(text, ["few"]):
 			count = 3
-		for token: String in text.replace(",", " ").split(" ", false):
-			if token.is_valid_int():
-				count = clampi(int(token), 1, Steps.COUNT_MAX)
+		# A number counts the animals only when it sits by an animal word: the
+		# "10" in "a 10 metre pen for hens" is the pen, not ten hens.
+		var tokens := text.replace(",", " ").split(" ", false)
+		for k in tokens.size():
+			if not String(tokens[k]).is_valid_int():
+				continue
+			var animal := false
+			for near in range(k + 1, mini(k + 3, tokens.size())):
+				if String(tokens[near]) in STOCK_WORDS:
+					animal = true
+			if animal:
+				count = clampi(int(tokens[k]), 1, Steps.COUNT_MAX)
 				break
 		var step := {"do": "stock", "species": species, "count": count}
 		if wants_pen:
@@ -616,6 +674,7 @@ const DECORATE_WORDS := ["decorate", "dress up", "smarten up", "spruce up", "mak
 const DELEGATE_WORDS := ["tell ", "have ", "get ", "ask ", "send "]
 const RECRUIT_WORDS := ["recruit", "find somebody", "find someone", "take somebody on",
 	"take someone on", "hire a ", "hire an ", "hire somebody", "hire someone"]
+const BUILD_LEADS := ["build ", "put up ", "raise ", "construct ", "erect ", "set up "]
 const REPORT_WORDS := ["report", "how are we doing", "how do we stand", "give me an account",
 	"give an account", "an account of", "the books", "how are the stores"]
 
@@ -624,6 +683,15 @@ static func errand_plan(instruction: String) -> Dictionary:
 	var text := instruction.to_lower().strip_edges().rstrip(".!")
 	var steps: Array = []
 	var assumptions: Array = []
+
+	# "Build a house to sleep in" is a house, not a rest; "build a store to sell
+	# fish" is a store, not a morning's fishing. The errand words below match
+	# anywhere in the sentence, so an order that opens by building a building
+	# is settled before they get a look. A road is the exception: it is built
+	# between buildings, and its own words say so.
+	if _starts_with_any(text, BUILD_LEADS) and named_archetype(text) != "" \
+			and not _has_any(text, ROAD_WORDS):
+		return {}
 
 	if _has_any(text, REPORT_WORDS):
 		steps.append({"do": "report"})
@@ -898,6 +966,11 @@ static func fallback(instruction: String, mem: WorkerMemory, plot: Plot,
 	var asked := floors_in(instruction)
 	if asked > 0:
 		spec["stories"] = asked
+	else:
+		# The archetype's usual height, held to what this tier can raise: a
+		# watchtower is three floors and a tier one town may build two, so
+		# without this "build a watchtower" was refused every time.
+		spec["stories"] = mini(int(spec["stories"]), Vocabulary.max_stories(tier))
 	var text := instruction.to_lower()
 	var fp: Array = spec["footprint"]
 	if text.find("big") >= 0 or text.find("large") >= 0:
@@ -905,8 +978,11 @@ static func fallback(instruction: String, mem: WorkerMemory, plot: Plot,
 	elif text.find("small") >= 0 or text.find("tiny") >= 0 or text.find("little") >= 0:
 		spec["footprint"] = [float(fp[0]) * 0.72, float(fp[1]) * 0.72]
 
-	_fit_to_plot(spec, plot)
+	# Preferences first, then the fit: "smaller" and "bigger" rescale the
+	# footprint, and applied after the fit they left a seven metre hut at 5.6 (a
+	# refusal) and a tower block wider than its plot, both as floats.
 	_apply_preferences(spec, mem)
+	_fit_to_plot(spec, plot)
 	var dropped := _trim_to_fit(spec)
 
 	var assumptions: Array = [
@@ -986,12 +1062,19 @@ static func _fit_to_plot(spec: Dictionary, plot: Plot) -> void:
 	if plot.street_dir.x != 0:
 		avail = Vector2(m.y, m.x)
 	var fp: Array = spec["footprint"]
+	# The smallest side that can still be cut into two rooms: a cell is 3.5 m and
+	# the wall between two takes a voxel, so 8 m in timber and 9 m in masonry,
+	# whose walls are two voxels thick. Below that a required hearth has nowhere
+	# to go and the build is refused, which is what "a small hut" came to.
+	var mats: Dictionary = spec.get("materials", {})
+	var least := 9.0 if str(mats.get("walls", "timber")) in ["brick", "sandstone",
+		"granite", "concrete", "rebar_concrete"] else 8.0
 	# Four metres of yard, not two. The setback the generator uses is bigger
 	# now, and a plan that fills the parcel to its last metre gets pushed back
 	# out again by the clamp in _resolve_dimensions.
 	spec["footprint"] = [
-		int(maxf(minf(float(fp[0]), avail.x - 4.0), 7.0)),
-		int(maxf(minf(float(fp[1]), avail.y - 4.0), 7.0)),
+		int(maxf(minf(float(fp[0]), avail.x - 4.0), least)),
+		int(maxf(minf(float(fp[1]), avail.y - 4.0), least)),
 	]
 
 
@@ -1005,14 +1088,15 @@ static func _apply_preferences(spec: Dictionary, mem: WorkerMemory) -> void:
 	if roof_mat != "":
 		if roof_mat.begins_with("not:"):
 			if str(mats.get("roof", "")) == roof_mat.trim_prefix("not:"):
-				mats["roof"] = "thatch" if roof_mat != "not:thatch" else "clay_tile"
-		elif VoxelTypes.id_of(roof_mat) >= 0:
+				mats["roof"] = "thatch" if roof_mat != "not:thatch" else "plank"
+		elif VoxelTypes.id_of(roof_mat) >= 0 and (roof_mat in VoxelTypes.SURFACE
+				or roof_mat in VoxelTypes.STRUCTURAL):
 			mats["roof"] = roof_mat
 	var walls := mem.wants("walls")
 	if walls != "":
 		if walls.begins_with("not:"):
 			if str(mats.get("walls", "")) == walls.trim_prefix("not:"):
-				mats["walls"] = "timber" if walls != "not:timber" else "cobble"
+				mats["walls"] = "timber" if walls != "not:timber" else "sandstone"
 		elif VoxelTypes.id_of(walls) >= 0 and walls in VoxelTypes.STRUCTURAL:
 			mats["walls"] = walls
 	var roof := mem.wants("roof")
@@ -1042,6 +1126,15 @@ static func _apply_preferences(spec: Dictionary, mem: WorkerMemory) -> void:
 			for m: Dictionary in mods:
 				if str(m.get("type", "")) != drop or str(m.get("priority", "")) == "required":
 					kept.append(m)
+			# Nothing may still want to be beside a room that is gone: the
+			# bakery's oven asks for the storeroom, and "no storage" left it
+			# asking, which the validator refuses as a dangling adjacency.
+			var left: Array[String] = []
+			for m3: Dictionary in kept:
+				left.append(str(m3.get("type", "")))
+			for m4: Dictionary in kept:
+				if m4.has("adjacent_to") and str(m4["adjacent_to"]) not in left:
+					m4.erase("adjacent_to")
 			spec["modules"] = kept
 		else:
 			var has := false
@@ -1062,7 +1155,8 @@ static func _apply_preferences(spec: Dictionary, mem: WorkerMemory) -> void:
 		if t.find("plaza") >= 0 and t.find("door") >= 0:
 			spec["orientation"] = "face_plaza"
 		for mat_name: String in VoxelTypes.NAMES:
-			if t.find(mat_name) >= 0 and t.find("like") >= 0 \
+			# "dislike" contains "like": "I dislike brick" is not a request for it.
+			if t.find(mat_name) >= 0 and t.find("like") >= 0 and t.find("dislike") < 0 \
 					and mat_name in VoxelTypes.STRUCTURAL:
 				(spec["materials"] as Dictionary)["walls"] = mat_name
 
@@ -1086,7 +1180,10 @@ static func cache_key(archetype: String, tier: int, plot: Plot,
 
 
 static func cached(key: String) -> Dictionary:
-	return _cache.get(key, {})
+	# A copy: the dispatcher tidies and annotates the plan it is handed, and a
+	# hit that shares the stored dictionary carries those edits into every later
+	# order that hits the same key.
+	return (_cache.get(key, {}) as Dictionary).duplicate(true)
 
 
 static func store(key: String, plan: Dictionary) -> void:
