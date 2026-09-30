@@ -1,17 +1,27 @@
 """Bake tileable PBR texture layers for every DELEGATE voxel material.
 
-Run:  python _tools/gen_pbr.py [--size 512] [--out res://assets/tex]
+Run:  python _tools/gen_pbr.py [--size 512] [--out assets/tex_web]
 
 Why generated rather than downloaded: no accounts, no network at build time, no
-licence questions, and the palette stays locked to VoxelTypes.PROPS so the
-textures cannot drift away from the material table the game already ships.
+licence questions, and the palette stays locked to the material table.
 
-Every layer is seamless. That matters more than it looks: a voxel face is one
-0.25 m quad, the texture repeats across it, and a seam on a wall is a line
-running the whole height of a building.
+Every layer is seamless (all noise hashes wrap on the tile period, all stamped
+strokes wrap around the edges). A voxel face is a 0.25 m quad, so a seam on a
+wall is a line running the whole height of a building.
 
 Output per material: <name>_a.png albedo, _n.png normal, _o.png ORM
 (R = ambient occlusion, G = roughness, B = metallic).
+
+Albedo PNGs are authored in sRGB, the way a painter picks colours. The shader
+decodes them to linear light (voxel_common.gdshaderinc), so a value here of
+0.30 on a channel is a real-world reflectance of about 0.07. Keep mean values
+mid-range: realistic surfaces are 0.2-0.6 linear, never near white.
+
+The look targets a realistic PBR resource pack: individual stones with mortar
+and crevice AO, painted grass blades and leaf clusters, straw bundles, boards
+with grain and butt joints. Shapes come from wrapped Worley cells and from
+stamped strokes (blades, straws, leaves) rather than from plain noise, which is
+what makes a texture read as an object instead of as a smudge.
 """
 import argparse
 import math
@@ -20,35 +30,50 @@ import numpy as np
 from PIL import Image
 
 # ---------------------------------------------------------------- noise
-# All noise is periodic so the baked tile wraps exactly. Godot's ImageTexture
-# default wrap mode is the sampler default, and a non-wrapping tile shows a
-# hard seam every 0.25 m of wall.
 
 def _hash2(ix, iy, seed):
-    h = (ix.astype(np.int64) * 374761393
-         + iy.astype(np.int64) * 668265263
+    h = (np.asarray(ix).astype(np.int64) * 374761393
+         + np.asarray(iy).astype(np.int64) * 668265263
          + seed * 1274126177) & 0xFFFFFFFF
     h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
     h = h ^ (h >> 16)
     return (h & 0xFFFFFF).astype(np.float64) / 0x1000000
 
 
+def _grid(n):
+    y, x = np.mgrid[0:n, 0:n]
+    return x / n, y / n
+
+
+def noise2(n, fx, fy, seed):
+    """Tileable value noise in [0,1] with independent integer frequencies.
+
+    The lattice hash wraps at fx / fy, so the tile repeats exactly; unequal
+    frequencies give the streaks (wood grain, straw, bark) isotropic noise
+    cannot.
+    """
+    X, Y = _grid(n)
+    u = X * fx
+    v = Y * fy
+    iu = np.floor(u).astype(np.int64)
+    iv = np.floor(v).astype(np.int64)
+    fu = u - iu
+    fv = v - iv
+    fu = fu * fu * fu * (fu * (fu * 6 - 15) + 10)
+    fv = fv * fv * fv * (fv * (fv * 6 - 15) + 10)
+    i0 = iu % fx
+    i1 = (iu + 1) % fx
+    j0 = iv % fy
+    j1 = (iv + 1) % fy
+    a = _hash2(i0, j0, seed)
+    b = _hash2(i1, j0, seed)
+    c = _hash2(i0, j1, seed)
+    d = _hash2(i1, j1, seed)
+    return (a * (1 - fu) + b * fu) * (1 - fv) + (c * (1 - fu) + d * fu) * fv
+
+
 def value_noise(n, freq, seed):
-    """Tileable value noise in [0,1]. freq must be an integer."""
-    x = np.arange(n, dtype=np.float64) * freq / n
-    xi = np.floor(x).astype(np.int64)
-    xf = x - xi
-    u = xf * xf * (3 - 2 * xf)
-    ix = xi[:, None]
-    iy = xi[None, :]
-    v = u[:, None]
-    a = _hash2(ix, iy, seed)
-    b = _hash2(ix + 1, iy, seed)
-    c = _hash2(ix, iy + 1, seed)
-    d = _hash2(ix + 1, iy + 1, seed)
-    top = a * (1 - v) + b * v
-    bot = c * (1 - v) + d * v
-    return top * (1 - v.T) + bot * v.T
+    return noise2(n, freq, freq, seed)
 
 
 def fbm(n, freq, octaves, seed, gain=0.5):
@@ -57,34 +82,48 @@ def fbm(n, freq, octaves, seed, gain=0.5):
     norm = 0.0
     f = freq
     for i in range(octaves):
-        total += amp * value_noise(n, f, seed + i * 977)
+        total += amp * noise2(n, f, f, seed + i * 977)
         norm += amp
         amp *= gain
         f *= 2
     return total / norm
 
 
-def worley(n, cells, seed, jitter=0.85):
-    """Tileable Worley/Voronoi. Returns (f1, cell_id, f2)."""
-    x = np.arange(n, dtype=np.float64) * cells / n
-    xi = np.floor(x).astype(np.int64)
-    xf = (x - xi)[:, None]
+def worley(n, cells, seed, jitter=0.9, warp=0.0):
+    """Tileable, optionally domain-warped Worley/Voronoi.
+
+    Returns a dict: f1, f2 (in cell units), id (0..1 per cell) and dx, dy (the
+    offset from the nearest feature point, for tilting each stone's facet).
+    """
+    X, Y = _grid(n)
+    U = X * cells
+    V = Y * cells
+    if warp > 0:
+        U = U + (fbm(n, 5, 3, seed + 11) - 0.5) * 2.0 * warp
+        V = V + (fbm(n, 5, 3, seed + 23) - 0.5) * 2.0 * warp
+    iu = np.floor(U).astype(np.int64)
+    iv = np.floor(V).astype(np.int64)
     f1 = np.full((n, n), 9.0)
     f2 = np.full((n, n), 9.0)
-    cid = np.zeros((n, n), dtype=np.int64)
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            cx = xi[None, :] + dx
-            cy = xi[:, None] + dy
-            px = cx + 0.5 + (_hash2(cx, cy, seed) - 0.5) * jitter
-            py = cy + 0.5 + (_hash2(cx, cy, seed + 313) - 0.5) * jitter
-            d = np.sqrt((xf - px.T) ** 2 + (xf.T - py) ** 2)
-            cell = _hash2(cx, cy, seed + 771)
+    cid = np.zeros((n, n))
+    ox = np.zeros((n, n))
+    oy = np.zeros((n, n))
+    for dy in (-2, -1, 0, 1, 2):
+        for dx in (-2, -1, 0, 1, 2):
+            cx = iu + dx
+            cy = iv + dy
+            hx = _hash2(cx % cells, cy % cells, seed)
+            hy = _hash2(cx % cells, cy % cells, seed + 313)
+            px = cx + 0.5 + (hx - 0.5) * jitter
+            py = cy + 0.5 + (hy - 0.5) * jitter
+            d = np.sqrt((U - px) ** 2 + (V - py) ** 2)
             m = d < f1
             f2 = np.where(m, f1, np.minimum(f2, d))
-            cid = np.where(m, (cell * 1e6).astype(np.int64), cid)
+            cid = np.where(m, _hash2(cx % cells, cy % cells, seed + 771), cid)
+            ox = np.where(m, U - px, ox)
+            oy = np.where(m, V - py, oy)
             f1 = np.where(m, d, f1)
-    return f1, cid % 997, f2
+    return dict(f1=f1, f2=f2, id=cid, dx=ox, dy=oy)
 
 
 def norm01(a):
@@ -92,768 +131,767 @@ def norm01(a):
     return (a - lo) / (hi - lo) if hi > lo else np.zeros_like(a)
 
 
+def sstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
 # ---------------------------------------------------------------- helpers
-
-def height_to_normal(height, strength=1.0):
-    """Sobel over a wrapping height field -> tangent-space normal map."""
-    h = height.astype(np.float64)
-    dx = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) * 0.5
-    dy = (np.roll(h, -1, axis=0) - np.roll(h, 1, axis=0)) * 0.5
-    nx = -dx * strength * 8.0
-    ny = -dy * strength * 8.0
-    nz = np.ones_like(h)
-    ln = np.sqrt(nx * nx + ny * ny + nz * nz)
-    nx, ny, nz = nx / ln, ny / ln, nz / ln
-    return np.stack([nx * 0.5 + 0.5, ny * 0.5 + 0.5, nz * 0.5 + 0.5], axis=-1)
-
-
-def _boxblur(a, radius):
-    """Wrapped separable box blur, exact same size in / out.
-
-    Cumulative sums rather than np.apply_along_axis + convolve: the latter is
-    O(n^2 * radius) in interpreted per-row calls and took minutes per material.
-    """
-    n0, n1 = a.shape
-    r = max(int(radius), 1)
-    # centre the kernel: odd widths are exact, even widths are handled by
-    # averaging the two nearest centred windows
-    def blur1(m):
-        m = np.asarray(m, dtype=np.float64)
-        ext = np.concatenate([m, m, m], axis=0)
-        z = np.zeros((1,) + m.shape[1:], dtype=np.float64)
-        c = np.cumsum(np.concatenate([z, ext, z], axis=0), axis=0)
-        w = 2 * r
-        starts = np.arange(len(m)) + r
-        return (c[starts + w] - c[starts]) / w
-    if r % 2 == 1:
-        return blur1(blur1(a.T).T)
-    a1 = blur1(blur1(a.T).T)
-    b = np.roll(a, 1, axis=0)
-    b1 = blur1(blur1(b.T).T)
-    a2 = blur1(blur1(np.roll(a, 1, axis=1).T).T)
-    return (a1 + b1 + a2) / 3.0
-
-
-def cavity_ao(height, radius=7):
-    """Crevice darkening: how far below the locally-blurred surface a point is."""
-    h = height
-    blur = _boxblur(h, radius)
-    ao = norm01((h - blur) * 0.5 + 0.5)
-    return np.clip(0.35 + 0.65 * ao, 0.0, 1.0)
-
 
 def hexcol(s):
     s = s.lstrip("#")
     return np.array([int(s[i:i + 2], 16) / 255.0 for i in (0, 2, 4)])
 
 
-def tint(base, mul):
-    """base rgb in 0..1, mul an (n,n) or (n,n,3) multiplier. Returns (n,n,3)."""
-    b = base.reshape(1, 1, 3) if base.ndim == 1 else base
-    m = np.asarray(mul, dtype=np.float64)
-    if m.ndim == 2:
-        m = m[..., None]
-    if m.ndim == 4:
-        m = m[0]
-    return np.clip(b * m, 0.0, 1.0)
+def C(*v):
+    return np.array(v, dtype=np.float64)
+
+
+def pick(palette, t):
+    """Choose a palette colour per texel from a 0..1 field. Returns (n,n,3)."""
+    p = np.asarray(palette)
+    idx = np.minimum((t * len(p)).astype(np.int64), len(p) - 1)
+    return p[idx]
+
+
+def mixc(a, b, t):
+    t = np.asarray(t)[..., None]
+    return a * (1 - t) + b * t
+
+
+def _boxblur(a, radius):
+    """Wrapped separable box blur (cumulative sums), same size in and out."""
+    r = max(int(radius), 1)
+
+    def blur1(m):
+        ext = np.concatenate([m, m, m], axis=0)
+        z = np.zeros((1,) + m.shape[1:])
+        c = np.cumsum(np.concatenate([z, ext, z], axis=0), axis=0)
+        w = 2 * r + 1
+        starts = np.arange(len(m)) + len(m) - r
+        return (c[starts + w] - c[starts]) / w
+
+    return blur1(blur1(a.T).T)
+
+
+def height_to_normal(height, strength=1.0):
+    """Central differences over a wrapping height field -> tangent-space normal."""
+    h = height.astype(np.float64)
+    dx = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) * 0.5
+    dy = (np.roll(h, -1, axis=0) - np.roll(h, 1, axis=0)) * 0.5
+    nx = -dx * strength * 10.0
+    ny = -dy * strength * 10.0
+    nz = np.ones_like(h)
+    ln = np.sqrt(nx * nx + ny * ny + nz * nz)
+    return np.stack([nx / ln * 0.5 + 0.5, ny / ln * 0.5 + 0.5, nz / ln * 0.5 + 0.5], axis=-1)
+
+
+def cavity_ao(height, radius=6):
+    """Crevice darkening: how far a texel sits below its blurred neighbourhood."""
+    h = height
+    c = (h - _boxblur(h, radius)) / (h.std() + 1e-6)
+    ao = 1.0 + 0.30 * np.minimum(c, 0.0) + 0.04 * np.maximum(c, 0.0)
+    # deep slots (mortar, grout, fissures) fall well below the local mean
+    ao = ao * (0.75 + 0.25 * sstep(0.0, 0.25, h - h.min()))
+    return np.clip(ao, 0.5, 1.0)
+
+
+def paint_stroke(canvas, hmap, n, cx, cy, ang, length, width, col0, col1,
+                 height, taper=0.7, leaf=False, rib=None):
+    """Stamp one blade / straw / leaf onto the wrapped canvases (painter's order)."""
+    half = int(length + width) + 2
+    ys = np.arange(int(cy) - half, int(cy) + half + 1)
+    xs = np.arange(int(cx) - half, int(cx) + half + 1)
+    YY, XX = np.meshgrid(ys, xs, indexing="ij")
+    dx = XX - cx
+    dy = YY - cy
+    ca, sa = math.cos(ang), math.sin(ang)
+    t = dx * ca + dy * sa
+    d = -dx * sa + dy * ca
+    tt = t / length
+    inside = (tt >= 0) & (tt <= 1)
+    if leaf:
+        hw = width * 0.5 * np.sin(np.clip(tt, 0, 1) * math.pi) ** 0.75
+    else:
+        hw = width * 0.5 * (1.0 - taper * np.clip(tt, 0, 1))
+    a = np.clip(hw + 0.6 - np.abs(d), 0.0, 1.0) * inside
+    if not a.any():
+        return
+    col = col0[None, None, :] * (1 - np.clip(tt, 0, 1))[..., None] \
+        + col1[None, None, :] * np.clip(tt, 0, 1)[..., None]
+    if rib is not None:
+        line = np.clip(1.0 - np.abs(d) / 0.9, 0, 1) * inside
+        col = col * (1 - line[..., None] * rib) + col * 0 + line[..., None] * rib * col * 1.25
+    iy = YY % n
+    ix = XX % n
+    a3 = a[..., None]
+    canvas[iy, ix] = canvas[iy, ix] * (1 - a3) + col * a3
+    hh = height * (0.55 + 0.45 * np.sin(np.clip(tt, 0, 1) * math.pi * 0.5 + 0.2))
+    if leaf:
+        hh = height * (0.55 + 0.45 * (1.0 - np.abs(d) / (hw + 1e-3)))
+    hmap[iy, ix] = hmap[iy, ix] * (1 - a) + hh * a
 
 
 # ---------------------------------------------------------------- patterns
-# Each returns (albedo[n,n,3], height[n,n], rough_mul[n,n], metal[n,n]).
+# Each returns (albedo[n,n,3] sRGB, height[n,n], rough[n,n], metal[n,n]).
 
-def p_brick(n, base):
-    rows, cols = 12, 6
+def p_stones(n, palette, cells, seed, jitter=0.85, warp=0.4, grout=None,
+             grout_w=0.07, shoulder=0.30, grain_amp=0.10, moss=0.0,
+             tilt=0.10):
+    """Irregular stones set in mortar or soil: cobble, flagstone, rock, granite."""
+    w = worley(n, cells, seed, jitter, warp)
+    e = (w["f2"] - w["f1"]) * 1.0          # cell units, 0 on the joint
+    body = sstep(grout_w * 0.6, grout_w + shoulder, e)
+    inner = e > grout_w * 0.9
+    tone = 0.86 + 0.28 * _hash2(w["id"] * 997, w["id"] * 331, seed + 5)
+    grain = fbm(n, 48, 4, seed + 31)
+    fleck = noise2(n, 220, 220, seed + 41)
+    base = pick(palette, w["id"])
+    stone = base * (tone * (0.86 + grain_amp * 2.4 * (grain - 0.5) + 0.14))[..., None]
+    stone = stone * (0.90 + 0.14 * fleck)[..., None]
+    # rounded shoulder darkens toward the joint, as if the stone rolls away
+    stone = stone * (0.76 + 0.24 * body)[..., None]
+    # weathering: patches of paler dust and darker wet on each stone
+    weather = fbm(n, 9, 4, seed + 57)
+    stone = stone * (0.92 + 0.18 * weather)[..., None]
+    if grout is None:
+        grout = C(0.30, 0.27, 0.22)
+    gr = fbm(n, 90, 3, seed + 67)
+    grout_col = grout[None, None, :] * (0.7 + 0.6 * gr)[..., None]
+    alb = np.where(inner[..., None], stone, grout_col)
+    alb = mixc(grout_col, alb, sstep(grout_w * 0.5, grout_w * 1.4, e))
+    if moss > 0:
+        m = sstep(0.55, 0.75, fbm(n, 6, 4, seed + 77)) * moss * (1 - body)
+        alb = mixc(alb, C(0.20, 0.34, 0.12) * (0.8 + 0.4 * gr)[..., None], m)
+    facet = (w["dx"] * math.cos(w["id"].mean() * 6.28 + 1.0)
+             + w["dy"] * math.sin(w["id"].mean() * 6.28 + 1.0)) * tilt
+    facet = tilt * (w["dx"] * (_hash2(w["id"] * 9973, 3, seed) - 0.5)
+                    + w["dy"] * (_hash2(w["id"] * 7919, 5, seed) - 0.5)) * 2.0
+    h = body * 0.75 + facet + (grain - 0.5) * 0.10 * body + fleck * 0.02
+    rough = np.where(inner, 0.86 + grain * 0.10, 0.98)
+    return alb, h, rough, np.zeros((n, n))
+
+
+def p_coursed(n, palette, rows, cols, seed, mortar_col, joint=0.06,
+              tone_var=0.28, hue_var=0.0, strata=0.0, pit=0.12, stagger=0.5,
+              chamfer=0.10, round_h=0.55):
+    """Staggered rectangular units in mortar: brick, sandstone blocks."""
+    y = np.arange(n)[:, None].astype(np.float64)
+    x = np.arange(n)[None, :].astype(np.float64)
     bh, bw = n / rows, n / cols
-    y = np.arange(n)[:, None]
-    x = np.arange(n)[None, :]
     row = np.floor(y / bh)
-    off = np.where(row % 2 > 0.5, 0.5, 0.0)
-    col_id = np.floor(x / bw + off)
+    off = np.where(row % 2 > 0.5, stagger, 0.0)
+    col = np.floor(x / bw + off)
     fy = (y / bh) % 1.0
     fx = (x / bw + off) % 1.0
-    mortar = 0.055
-    # fy is (n,1) and fx is (1,n); every combination must be built out of place
-    # or the broadcast result cannot be assigned back to the narrow operand.
-    jy = np.clip((fy - mortar) / 0.10, 0, 1) * np.clip((1 - fy - mortar) / 0.10, 0, 1)
-    jx = np.clip((fx - mortar) / 0.09, 0, 1) * np.clip((1 - fx - mortar) / 0.09, 0, 1)
-    joint = jy * jx
-    # per-brick tone: some bricks much darker, some much paler than the base
-    t = _hash2(col_id.astype(np.int64), row.astype(np.int64), 4242)
-    tone = 0.70 + t * 0.62
-    grit = fbm(n, 128, 3, 91)
-    pit = norm01(value_noise(n, 96, 517))
-    face = tone * (0.80 + grit * 0.30) * (0.92 + pit * 0.16)
-    mortar_col = tint(np.array([0.62, 0.58, 0.52]), 0.9 + grit * 0.3)
-    # Firing variance: bricks from different kilns land anywhere from a
-    # burnt purple-brown to an over-fired near-black, and a wall of identically
-    # coloured bricks reads as a photo of a wall rather than a wall.
-    fire = _hash2(col_id.astype(np.int64) // 3, row.astype(np.int64) // 5, 881)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (fire - 0.5) * 0.44
-    hue[..., 1] = 1.0 - (fire - 0.5) * 0.14 + (grit - 0.5) * 0.10
-    hue[..., 2] = 1.0 - (fire - 0.5) * 0.30 + (grit - 0.5) * 0.14
-    alb = np.where(joint[..., None] > 0.5,
-                   tint(base, face[..., None]) * hue, mortar_col)
-    h = joint * (0.55 + grit * 0.25) + fbm(n, 8, 3, 12) * 0.10
-    rough = 0.92 + grit * 0.10
-    return alb, h, rough, np.zeros_like(h)
+    ri = np.broadcast_to(row.astype(np.int64), (n, n))
+    ci = np.broadcast_to((col % cols).astype(np.int64), (n, n))
+    # distance to the unit's own edge, in unit-relative terms
+    dy_ = np.minimum(fy, 1 - fy) * bh / n * rows
+    dx_ = np.minimum(fx, 1 - fx) * bw / n * cols
+    ed = np.minimum(dy_ * (rows / cols), dx_)   # roughly isotropic
+    dist_px = np.minimum(np.minimum(fy, 1 - fy) * bh, np.minimum(fx, 1 - fx) * bw)
+    jp = joint * n / 12.0 * 1.6                  # joint half-width in pixels
+    body = sstep(jp * 0.6, jp + chamfer * n / 12.0 * 2.2, dist_px)
+    inner = dist_px > jp * 0.8
+    t = _hash2(ci, ri, seed)
+    tone = 1.0 + (t - 0.5) * 2.0 * tone_var
+    grit = fbm(n, 96, 4, seed + 9)
+    fine = noise2(n, 200, 200, seed + 13)
+    base = pick(palette, _hash2(ci, ri, seed + 3))
+    face = base * (tone * (0.86 + 0.28 * grit) * (0.94 + 0.12 * fine))[..., None]
+    if hue_var:
+        fire = _hash2(ci // 2, ri // 3, seed + 21) - 0.5
+        face = face * np.stack([1 + fire * hue_var, 1 - fire * hue_var * 0.3,
+                                1 - fire * hue_var * 0.8], axis=-1)
+    if strata:
+        s = np.sin((y / n * rows * 5.0 + fbm(n, 4, 3, seed + 33) * 4.0) * math.pi)
+        face = face * (1 + s * strata)[..., None]
+    face = face * (0.80 + 0.20 * body)[..., None]
+    # pits and pores
+    p = norm01(noise2(n, 150, 150, seed + 17))
+    pits = sstep(1 - pit, 1.0, p)
+    face = face * (1 - 0.35 * pits)[..., None]
+    mgr = fbm(n, 110, 3, seed + 19)
+    mort = mortar_col[None, None, :] * (0.72 + 0.5 * mgr)[..., None]
+    alb = np.where(inner[..., None], face, mort)
+    alb = mixc(mort, alb, sstep(jp * 0.5, jp * 1.3, dist_px))
+    h = body * round_h + grit * 0.10 - pits * 0.12
+    return alb, h, np.where(inner, 0.90 + grit * 0.08, 0.98), np.zeros((n, n))
 
 
-def p_stone(n, base, cells=9, rough_base=0.88):
-    f1, cid, f2 = worley(n, cells, 71, 0.9)
-    edge = np.clip((f2 - f1) * cells * 1.5, 0, 1)      # 0 at the joint
-    dome = np.sqrt(np.clip(1.0 - (f1 * cells) ** 2, 0, 1))
-    # cell id packed into an int; split it so the hash has two dimensions
-    tone = 0.74 + _hash2(cid // 1000, cid, 313) * 0.55
-    grain = fbm(n, 64, 4, 909)
-    speck = norm01(value_noise(n, 200, 55))
-    shade = tone * (0.82 + grain * 0.30) * (0.94 + speck * 0.12)
-    # Stone is a mix of minerals, not one grey. Feldspar goes pink, mica goes
-    # near-black, quartz goes pale — a brightness ramp alone gives 33 distinct
-    # colours and reads as painted concrete.
-    cast = _hash2(cid // 1000, cid, 331) * 2.0 - 1.0
-    alb = tint(base, shade[..., None])
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + cast * 0.20 + (grain - 0.5) * 0.16
-    hue[..., 1] = 1.0 + cast * 0.06 + (grain - 0.5) * 0.08
-    hue[..., 2] = 1.0 - cast * 0.16 + (grain - 0.5) * 0.14
-    alb = alb * hue
-    h = edge * (0.5 + dome * 0.5) + grain * 0.18
-    return alb, h, rough_base + grain * 0.08, np.zeros_like(h)
-
-
-def p_wood(n, base, boards=5):
+def p_planks(n, boards, palette, seed, grain_contrast=1.0, knots=True,
+             gap=0.05, rough_base=0.82, weather=0.0):
+    """Horizontal boards with staggered butt joints, growth rings and knots."""
+    y = np.arange(n)[:, None].astype(np.float64)
+    x = np.arange(n)[None, :].astype(np.float64)
     bh = n / boards
-    y = np.arange(n)[:, None]
-    x = np.arange(n)[None, :]
-    row = np.floor(y / bh)
+    row = np.floor(y / bh).astype(np.int64)
     fy = (y / bh) % 1.0
-    seam = np.clip((fy - 0.06) / 0.08, 0, 1) * np.clip((1 - fy - 0.06) / 0.08, 0, 1)
-    tone = np.broadcast_to(
-        0.76 + _hash2(row.astype(np.int64), np.zeros((1, n), np.int64), 21) * 0.46,
-        (n, n)).copy()
-    # grain runs along the board: low frequency along it, high across it
-    rings = np.abs(np.sin((y / bh * 3.0 + fbm(n, 16, 4, 6) * 5.0) * math.pi))
-    streak = fbm(n, 64, 4, 8)
-    figure = fbm(n, 12, 4, 9)
-    shade = tone * (0.74 + figure * 0.26 + streak * 0.22) * (0.80 + rings * 0.30)
-    shade = np.where(seam > 0.5, shade * 0.55, shade)
-    alb = tint(base, shade[..., None])
-    # Board-to-board colour, not just tone: sawn softwood greys unevenly, and
-    # heartwood next to sapwood is a visible step in hue on the same board.
-    cast = _hash2(np.broadcast_to(row.astype(np.int64), (n, n)),
-                  np.full((n, n), 17, np.int64), 903) * 2.0 - 1.0
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + cast * 0.26 + (streak - 0.5) * 0.10
-    hue[..., 1] = 1.0 + cast * 0.10 + (streak - 0.5) * 0.06
-    hue[..., 2] = 1.0 - cast * 0.22 + (streak - 0.5) * 0.10
-    alb = alb * hue
-    h = seam * 0.7 + streak * 0.22 + rings * 0.10
-    rough = 0.86 + streak * 0.12
-    return alb, h, rough, np.zeros_like(h)
+    rowb = np.broadcast_to(row, (n, n))
+    # butt joints: each board is split in two at a random x
+    split = (_hash2(np.arange(boards), np.zeros(boards, np.int64), seed + 2) * 0.7
+             + 0.15) * n
+    sp = split[rowb]
+    seg = (x > sp).astype(np.int64)
+    dj = np.abs(x - sp)
+    dj = np.minimum(dj, np.minimum(np.abs(x - sp - n), np.abs(x - sp + n)))
+    joint = 1.0 - sstep(0.5, 3.0, dj) * 1.0
+    bid = rowb * 2 + seg
+    tone = 0.82 + 0.36 * _hash2(bid, np.zeros_like(bid), seed + 5)
+    base = pick(palette, _hash2(bid, np.ones_like(bid), seed + 6))
+    # growth rings drawn as stretched sinusoids bent by low-frequency noise;
+    # the local coordinate across the board is what runs them
+    bend = fbm(n, 5, 3, seed + 8) * 2.4 + noise2(n, 3, boards * 3, seed + 12) * 3.0
+    cross = fy * 5.0 + bend + _hash2(bid, 7, seed + 14) * 10
+    rings = 0.5 + 0.5 * np.sin(cross * math.pi * 2)
+    rings = rings ** 1.5
+    streak = noise2(n, 6, n // 3, seed + 16)
+    fibre = noise2(n, 3, n // 2, seed + 18)
+    shade = tone * (0.80 + (0.16 * rings + 0.14 * streak + 0.06 * fibre) * grain_contrast)
+    alb = base * shade[..., None]
+    if knots:
+        kn = np.zeros((n, n))
+        for k in range(boards * 1):
+            r = np.random.default_rng(seed * 31 + k)
+            if r.random() < 0.6:
+                kx = r.random() * n
+                ky = (k + 0.3 + r.random() * 0.4) * bh
+                dxk = np.minimum(np.abs(x - kx), n - np.abs(x - kx))
+                dyk = np.minimum(np.abs(y - ky), n - np.abs(y - ky))
+                d = np.sqrt((dxk / 2.6) ** 2 + (dyk / 1.2) ** 2) / (n / 90.0)
+                kn = np.maximum(kn, np.clip(1 - d / 6.0, 0, 1))
+                kn = np.maximum(kn, 0.0)
+        ringk = 0.5 + 0.5 * np.sin(kn * 22.0)
+        alb = alb * (1 - 0.35 * (kn > 0.02) * (0.5 + 0.5 * ringk))[..., None]
+    seam = np.clip(1.0 - sstep(gap * 0.4, gap + 0.08, np.minimum(fy, 1 - fy)), 0, 1)
+    alb = alb * (1 - 0.68 * seam)[..., None]
+    alb = alb * (1 - 0.55 * joint)[..., None]
+    if weather:
+        gr = fbm(n, 7, 4, seed + 40)
+        alb = mixc(alb, np.mean(alb, axis=2, keepdims=True) * C(1.0, 0.98, 0.92), weather * gr)
+    h = (1 - seam) * 0.55 + (1 - joint) * 0.2 + rings * 0.10 * grain_contrast + streak * 0.08
+    rough = rough_base + streak * 0.10
+    return alb, h, rough, np.zeros((n, n))
 
 
-def p_thatch(n, base):
-    straw = fbm(n, 8, 3, 3)
-    strand = fbm(n, 256, 2, 44)
-    # long thin fibres: hash on heavily anisotropic coordinates
-    fib = np.zeros((n, n))
-    u0 = np.arange(n)[:, None].astype(np.float64)
-    v0 = np.arange(n)[None, :].astype(np.float64)
-    for s in range(6):
-        ang = s * math.pi / 3 + 0.4
-        u = (u0 * math.cos(ang) * 26).astype(np.int64)
-        v = (v0 * math.sin(ang) * 260).astype(np.int64)
-        fib += _hash2(u, v, s * 17 + 3) * 0.16
-    clump = fbm(n, 6, 4, 88)
-    shade = 0.52 + clump * 0.42 + strand * 0.26 + fib
-    alb = tint(base, shade[..., None])
-    # Weathered thatch is grey-gold where the sun has bleached it and green-grey
-    # where it has not, with new growth still green at the base of each layer.
-    age = fbm(n, 4, 4, 223)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (age - 0.5) * 0.30
-    hue[..., 1] = 1.0 + (age - 0.5) * 0.14
-    hue[..., 2] = 1.0 - (age - 0.5) * 0.30 + (clump - 0.5) * 0.12
-    alb = alb * hue
-    h = fib * 1.4 + clump * 0.35 + strand * 0.2
-    return alb, np.clip(h, 0, 1), 0.97 + strand * 0.03, np.zeros((n, n))
+def p_bark(n, seed=3):
+    """Deep vertical fissures with scaly plates."""
+    warp = fbm(n, 4, 3, seed + 5) * 1.6
+    ridge = noise2(n, 22, 4, seed) * 0.6 + noise2(n, 44, 9, seed + 1) * 0.4
+    r = np.abs(np.sin((ridge * 6.0 + warp) * math.pi)) ** 0.7
+    plate = noise2(n, 10, 30, seed + 2)
+    fine = noise2(n, 140, 140, seed + 3)
+    shade = 0.45 + 0.55 * r
+    pal = [C(0.30, 0.22, 0.15), C(0.36, 0.27, 0.18), C(0.26, 0.20, 0.15), C(0.33, 0.26, 0.19)]
+    base = pick(pal, plate)
+    alb = base * (shade * (0.85 + 0.3 * fine))[..., None]
+    lichen = sstep(0.70, 0.85, fbm(n, 6, 4, seed + 9))
+    alb = mixc(alb, C(0.32, 0.36, 0.22) * (0.8 + 0.4 * fine)[..., None], lichen * 0.45 * r)
+    h = r * 0.85 + fine * 0.08
+    return alb, h, 0.95 - 0.06 * r, np.zeros((n, n))
 
 
-def p_asphalt(n, base):
-    """Road surface: grey aggregate set in black tar.
-
-    Not p_soil: asphalt's colour comes from exposed chips of pale stone in a
-    dark binder, and a smooth noise ramp on a single dark hue is what left it
-    at a colorfulness of 0.019 and reading as a flat lid.
-    """
-    binder = fbm(n, 10, 4, 331)
-    chip_n = fbm(n, 44, 3, 337)
-    chips = norm01(value_noise(n, 96, 341))
-    shade = 0.46 + binder * 0.26 + chip_n * 0.24
-    alb = tint(base, np.clip(shade, 0, 1.5)[..., None])
-    # Asphalt's base colour is very dark (#37393c), and a multiplicative hue
-    # shift on a dark base barely moves it: +30% of 0.21 is 0.06, which is
-    # invisible and leaves the colorfulness at 0.012. The hue has to be applied
-    # around the pixel's own luminance rather than around 1.0, so a dark texel
-    # gets a proportionally larger swing than a bright one.
-    pale = np.clip((chips - 0.40) * 2.6, 0, 1)
-    luma = alb.mean(axis=2)
-    # target: exposed aggregate is genuinely pale grey stone, the binder
-    # between the chips stays near-black. The chips have to get most of the way
-    # to real aggregate brightness, or the whole road stays a black lid.
-    target = np.empty((n, n, 3))
-    target[..., 0] = 0.09 + pale * 0.62
-    target[..., 1] = 0.10 + pale * 0.64
-    target[..., 2] = 0.12 + pale * 0.66
-    alb = np.clip(alb + (target - luma[..., None]) * 0.95, 0.0, 1.0)
-    h = chip_n * 0.5 + binder * 0.4 + pale * 0.2
-    return alb, h, 0.93 + chip_n * 0.06, np.zeros((n, n))
-
-
-def p_grass(n, base):
-    blades = np.zeros((n, n))
-    u0 = np.arange(n)[:, None].astype(np.float64)
-    v0 = np.arange(n)[None, :].astype(np.float64)
-    for s in range(10):
-        ang = s * 0.63 + 0.2
-        u = (u0 * math.cos(ang) * 90).astype(np.int64)
-        v = (v0 * math.sin(ang) * 220).astype(np.int64)
-        blades += _hash2(u, v, s * 31 + 5) * 0.10
-    clump = fbm(n, 10, 4, 12)
-    patch = fbm(n, 3, 3, 19)
-    fine = fbm(n, 96, 3, 23)
-    # Dry, dying blades and fresh wet growth are different pigments, not
-    # different brightness. The first bake's grass held 61 distinct colours
-    # because everything was one green scaled up and down; a meadow is
-    # yellow-green through to blue-green, and that spread is most of why a
-    # field of grass stops reading as a painted plane.
-    dry = fbm(n, 5, 4, 27)
-    lush = fbm(n, 8, 3, 29)
-    shade = 0.44 + clump * 0.40 + patch * 0.30 + fine * 0.20 + blades
-    alb = tint(base, shade[..., None])
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (dry - 0.5) * 0.52 + (lush - 0.5) * 0.10
-    hue[..., 1] = 1.0 + (dry - 0.5) * 0.16 + (lush - 0.5) * 0.20
-    hue[..., 2] = 1.0 - (dry - 0.5) * 0.46 + (lush - 0.5) * 0.34
-    alb = np.broadcast_to(alb, (n, n, 3)) * hue
-    h = blades * 1.6 + clump * 0.5 + fine * 0.25
-    return alb, np.clip(h, 0, 1), 0.95 + fine * 0.05, np.zeros((n, n))
+def p_thatch(n, seed=7):
+    """Layered courses of straw bundles, each strand painted."""
+    rng = np.random.default_rng(seed)
+    canvas = np.tile(C(0.20, 0.15, 0.08), (n, n, 1))
+    hmap = np.zeros((n, n))
+    courses = 6
+    ch = n / courses
+    pal = [C(0.72, 0.56, 0.28), C(0.64, 0.49, 0.24), C(0.80, 0.66, 0.36),
+           C(0.55, 0.42, 0.20), C(0.70, 0.60, 0.38), C(0.60, 0.50, 0.30)]
+    for c in range(courses):
+        cy0 = c * ch
+        bundle_w = n / 12
+        for i in range(int(n * 0.95)):
+            bx = rng.random() * n
+            ang = math.pi / 2 + (rng.random() - 0.5) * 0.28
+            # strands start a little above the course and hang below it
+            cy = cy0 - ch * 0.15 + rng.random() * ch * 0.35
+            L = ch * (0.95 + rng.random() * 0.55)
+            g = 0.75 + 0.5 * math.sin((bx / bundle_w) * 2.4 + c) * 0.5
+            col1 = pal[rng.integers(len(pal))] * (0.85 + rng.random() * 0.35) * g
+            col0 = col1 * 0.55
+            paint_stroke(canvas, hmap, n, bx, cy, ang, L, 1.5 + rng.random() * 1.6,
+                         col0, col1, 0.25 + c / courses * 0.25 + rng.random() * 0.2, taper=0.5)
+    # course overlap shadow: dark band just under each ragged edge
+    ys = (np.arange(n)[:, None] % ch) / ch
+    ragged = noise2(n, 40, courses, seed + 1) * 0.08
+    canvas = canvas * (0.60 + 0.40 * np.clip(ys * 3.0, 0, 1))[..., None]
+    age = fbm(n, 4, 3, seed + 3)
+    canvas = canvas * np.stack([1 + (age - 0.5) * 0.18, np.ones_like(age), 1 - (age - 0.5) * 0.26], axis=-1)
+    return canvas, hmap + (1 - ys) * 0.0 + np.clip(ys * 2.0, 0, 1) * 0.25, \
+        0.95 + 0.04 * noise2(n, 30, 30, seed), np.zeros((n, n))
 
 
-def p_soil(n, base, clumpy=0.6, gravel=False):
-    """Soil, sand, asphalt, clay.
-
-    The important part is that `shade` is not a scalar. Multiplying one hue by a
-    brightness ramp keeps every texel on the same line through RGB, which is why
-    the first bake gave dirt 21 distinct colours and gravel a colourfulness of
-    0.009 — a texture that reads as a flat tinted surface no matter how much
-    noise is in it. Real dirt is a mixture: iron-stained, pale silica, damp
-    patches. So the base hue is perturbed per texel on two axes before the
-    brightness ramp is applied.
-    """
-    lumps = fbm(n, 14, 5, 61)
-    fine = fbm(n, 110, 3, 67)
-    spec = norm01(value_noise(n, 150, 71))
-    # Two independent slow fields decide which mineral shows through.
-    warm = fbm(n, 6, 4, 73)
-    cool = fbm(n, 11, 4, 79)
-    shade = 0.52 + lumps * clumpy + fine * 0.30
-    h = lumps * 0.9 + fine * 0.3
-
-    # per-texel hue drift, centred on the material's own colour
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (warm - 0.5) * 0.55
-    hue[..., 1] = 1.0 + (warm - 0.5) * 0.16 + (cool - 0.5) * 0.20
-    hue[..., 2] = 1.0 + (cool - 0.5) * 0.55
-
-    if gravel:
-        f1, cid, f2 = worley(n, 46, 83, 1.0)
-        dome = np.sqrt(np.clip(1.0 - (f1 * 46) ** 2, 0, 1))
-        tone = 0.70 + _hash2(cid // 1000, cid, 97) * 0.6
-        shade = 0.40 + dome * tone * 0.75 + fine * 0.2
-        h = dome * 0.8 + lumps * 0.3
-        # Each stone gets its own cast, which is most of what gravel is.
-        cast = _hash2(cid // 1000, cid, 151) * 2.0 - 1.0
-        stone = _hash2(cid // 1000, cid, 157) * 2.0 - 1.0
-        hue[..., 0] = 1.0 + cast * 0.60 + stone * 0.24
-        hue[..., 1] = 1.0 + cast * 0.34 + stone * 0.10
-        hue[..., 2] = 1.0 - cast * 0.52 - stone * 0.18
-    alb = tint(base, np.clip(shade, 0, 1.4)[..., None]) * hue
-    return alb, h, 0.96 + fine * 0.05, np.zeros((n, n))
-
-
-def p_plaster(n, base, pores=True):
-    mottle = fbm(n, 7, 4, 41)
-    fine = fbm(n, 90, 3, 47)
-    shade = 0.86 + mottle * 0.20 + fine * 0.12
-    h = mottle * 0.4 + fine * 0.25
-    # Concrete is never neutral: it picks up the sky's blue on the exposed
-    # faces and a faint warm stain where water has run. A true grey texture
-    # measured a colorfulness of 0.008 and read as untextured plastic.
-    stain = fbm(n, 3, 4, 181)
-    damp = fbm(n, 7, 4, 187)
-    alb = tint(base, shade[..., None])
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (stain - 0.5) * 0.44
-    hue[..., 1] = 1.0 + (stain - 0.5) * 0.20 + (damp - 0.5) * 0.10
-    hue[..., 2] = 1.0 + (0.5 - stain) * 0.34 + (damp - 0.5) * 0.16
-    alb = alb * hue
-    if pores:
-        p = norm01(value_noise(n, 128, 53))
-        pits = np.clip((p - 0.86) * 8, 0, 1)
-        shade = shade * (1 - pits * 0.35)
-        h = h - pits * 0.5
-    return alb, h, 0.90 + fine * 0.08, np.zeros((n, n))
-
-
-def p_metal(n, base, brushed=True, rough=0.34, metal=0.85):
-    streak = fbm(n, 4, 2, 29)
-    brush = fbm(n, 200, 2, 31)
-    patina = fbm(n, 12, 4, 37)
-    shade = 0.80 + streak * 0.20 + (brush * 0.16 if brushed else fine_rand(n, 0.12, 43))
-    h = (brush * 0.5 + patina * 0.3) if brushed else fine_rand(n, 0.3, 47)
-    alb = tint(base, shade[..., None])
-    # Bare steel is never neutral either: oxide bloom goes warm orange, the
-    # clean roll goes faintly blue. A perfectly grey metal measured a
-    # colorfulness of 0.012 and lost every hint of being a real material.
-    oxide = fbm(n, 7, 4, 191)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (oxide - 0.5) * 0.30
-    hue[..., 1] = 1.0 + (oxide - 0.5) * 0.10
-    hue[..., 2] = 1.0 - (oxide - 0.5) * 0.22 + (streak - 0.5) * 0.10
-    alb = alb * hue
-    return alb, h, np.full((n, n), rough) + brush * 0.10, np.full((n, n), metal)
-
-
-def fine_rand(n, amp, seed):
-    return (fbm(n, 64, 3, seed) - 0.5) * amp
-
-
-def p_ribbed(n, base, period=8):
-    x = np.arange(n)
-    ridge = np.abs(np.sin(x / n * math.pi * period))
-    dirt = fbm(n, 20, 4, 63)
-    shade = 0.62 + ridge * 0.44 - dirt * 0.22
-    h = ridge * 0.9 + dirt * 0.15
-    alb = tint(base, np.clip(shade, 0.05, 1.4)[..., None])
-    return alb, h, 0.46 + dirt * 0.20, np.full((n, n), 0.78)
-
-
-def p_corrugated(n, base, period=6, along='y'):
-    a = np.arange(n)[:, None] if along == 'y' else np.arange(n)[None, :]
-    wave = (np.sin(a / n * math.pi * period) * 0.5 + 0.5)
-    dirt = fbm(n, 18, 4, 73)
-    shade = 0.58 + wave * 0.48 - dirt * 0.20
-    h = wave * 0.95 + dirt * 0.12
-    alb = tint(base, np.clip(shade, 0.05, 1.4)[..., None])
-    # Galvanised sheet is famously blotchy: the spangle pattern is large, high
-    # contrast, and drifts from near-white to a dull blue-grey. That mottle is
-    # the whole character of the material and it was absent.
-    spangle = fbm(n, 4, 4, 293)
-    rust = np.clip((fbm(n, 6, 4, 307) - 0.55) * 3.0, 0, 1)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (spangle - 0.5) * 0.30 + rust * 0.55
-    hue[..., 1] = 1.0 + (spangle - 0.5) * 0.26 + rust * 0.22
-    hue[..., 2] = 1.0 - (spangle - 0.5) * 0.30 - rust * 0.30
-    alb = alb * hue
-    return alb, h, 0.48 + dirt * 0.18, np.full((n, n), 0.72)
-
-
-def p_tiles(n, base, rows=9):
-    y = np.arange(n)[:, None]
-    x = np.arange(n)[None, :]
+def p_tiles(n, base, rows=8, seed=15):
+    """Overlapping curved clay roof tiles."""
+    y = np.arange(n)[:, None].astype(np.float64)
+    x = np.arange(n)[None, :].astype(np.float64)
     rh = n / rows
-    cw = rh * 1.1
+    cw = rh * 0.95
+    cols = int(round(n / cw))
+    cw = n / cols
     row = np.floor(y / rh)
     off = np.where(row % 2 > 0.5, 0.5, 0.0)
-    col = np.floor(x / cw + off)
+    colf = x / cw + off
+    col = np.floor(colf)
     fy = (y / rh) % 1.0
-    fx = (x / cw + off) % 1.0
-    # rounded lower lip of each course; grooves between tiles in a course
-    lip = np.clip(fy / 0.30, 0, 1) * np.clip((1.0 - fy) / 0.06, 0, 1)
-    groove = np.clip((fx - 0.03) / 0.06, 0, 1) * np.clip((1 - fx - 0.03) / 0.06, 0, 1)
-    tone = 0.72 + _hash2(np.broadcast_to(col.astype(np.int64), (n, n)),
-                        np.broadcast_to(row.astype(np.int64), (n, n)), 15) * 0.5
-    wear = fbm(n, 30, 4, 17)
-    shade = tone * (0.78 + wear * 0.3) * (0.45 + 0.55 * lip) * (0.7 + 0.3 * groove)
-    alb = tint(base, np.clip(shade, 0.03, 1.4)[..., None])
-    h = lip * groove * 0.8 + wear * 0.2
-    return alb, h, 0.80 + wear * 0.14, np.zeros((n, n))
+    fx = colf % 1.0
+    ri = np.broadcast_to(row.astype(np.int64), (n, n))
+    ci = np.broadcast_to((col % cols).astype(np.int64), (n, n))
+    # each tile is a half-round barrel: cross-section lit on one flank
+    barrel = np.sin(fx * math.pi)
+    slope = np.cos(fx * math.pi)
+    lip = sstep(0.0, 0.7, fy) * (1 - sstep(0.90, 1.0, fy) * 0.9)
+    t = _hash2(ci, ri, seed)
+    pal = [C(0.55, 0.30, 0.22), C(0.61, 0.34, 0.25), C(0.49, 0.27, 0.20),
+           C(0.59, 0.38, 0.28), C(0.45, 0.26, 0.20)]
+    baseg = pick(pal, _hash2(ci, ri, seed + 4))
+    wear = fbm(n, 30, 4, seed + 2)
+    alb = baseg * ((0.80 + 0.26 * t) * (0.86 + 0.28 * wear) * (0.52 + 0.48 * lip)
+                   * (0.80 + 0.20 * barrel) * (1 + 0.10 * slope))[..., None]
+    moss = sstep(0.62, 0.8, fbm(n, 8, 4, seed + 7)) * (1 - lip * 0.6)
+    alb = mixc(alb, C(0.25, 0.33, 0.15) * (0.8 + 0.4 * wear)[..., None], moss * 0.5)
+    groove = sstep(0.0, 0.10, np.minimum(fx, 1 - fx))
+    alb = alb * (0.62 + 0.38 * groove)[..., None]
+    h = barrel * 0.5 * lip + lip * 0.4 + wear * 0.08
+    return alb, h, 0.82 + wear * 0.12, np.zeros((n, n))
 
 
-def p_shingle(n, base, rows=10):
-    y = np.arange(n)[:, None]
-    x = np.arange(n)[None, :]
+def p_shingle(n, seed=27, rows=8):
+    """Slate-grey roofing shingles, each a separate tab."""
+    y = np.arange(n)[:, None].astype(np.float64)
+    x = np.arange(n)[None, :].astype(np.float64)
     rh = n / rows
     cw = rh * 1.5
+    cols = int(round(n / cw))
+    cw = n / cols
     row = np.floor(y / rh)
     off = np.where(row % 2 > 0.5, 0.5, 0.0)
-    col = np.floor(x / cw + off)
+    colf = x / cw + off
+    col = np.floor(colf)
     fy = (y / rh) % 1.0
-    fx = (x / cw + off) % 1.0
-    tab = np.clip((fy - 0.12) / 0.10, 0, 1)
-    slit = np.clip((fx - 0.02) / 0.05, 0, 1) * np.clip((1 - fx - 0.02) / 0.05, 0, 1)
-    tone = 0.70 + _hash2(np.broadcast_to(col.astype(np.int64), (n, n)),
-                        np.broadcast_to(row.astype(np.int64), (n, n)), 27) * 0.5
-    grit = fbm(n, 140, 3, 29)
-    shade = tone * (0.8 + grit * 0.3) * (0.4 + 0.6 * tab) * (0.72 + 0.28 * slit)
-    alb = tint(base, np.clip(shade, 0.03, 1.4)[..., None])
-    # Roofing granules are not grey: they are slate blue, brown and mica green
-    # mixed together, and at cf=0.003 this read as a solid black lid.
-    gran = _hash2(np.broadcast_to(col.astype(np.int64), (n, n)),
-                  np.broadcast_to(row.astype(np.int64), (n, n)), 233) * 2.0 - 1.0
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + gran * 0.34
-    hue[..., 1] = 1.0 + gran * 0.16
-    hue[..., 2] = 1.0 - gran * 0.26
-    alb = alb * hue
-    h = tab * slit * 0.7 + grit * 0.3
-    return alb, h, 0.94 + grit * 0.06, np.zeros((n, n))
+    fx = colf % 1.0
+    ri = np.broadcast_to(row.astype(np.int64), (n, n))
+    ci = np.broadcast_to((col % cols).astype(np.int64), (n, n))
+    tab = sstep(0.0, 0.75, fy) * (1 - 0.8 * sstep(0.9, 1.0, fy))
+    slit = sstep(0.0, 0.05, np.minimum(fx, 1 - fx))
+    pal = [C(0.26, 0.28, 0.32), C(0.32, 0.30, 0.30), C(0.24, 0.27, 0.27),
+           C(0.36, 0.32, 0.30), C(0.22, 0.24, 0.29)]
+    baseg = pick(pal, _hash2(ci, ri, seed))
+    grit = fbm(n, 140, 3, seed + 2)
+    tone = 0.85 + 0.30 * _hash2(ci, ri, seed + 6)
+    alb = baseg * (tone * (0.82 + 0.3 * grit) * (0.5 + 0.5 * tab) * (0.7 + 0.3 * slit))[..., None]
+    h = tab * slit * 0.7 + grit * 0.2
+    return alb, h, 0.92 + grit * 0.06, np.zeros((n, n))
 
 
-def p_panel(n, base, rivets=True, rough=0.5, metal=0.2):
-    f1, cid, f2 = worley(n, 4, 55, 0.0)     # panel grid
-    gx = np.abs(np.sin(np.arange(n)[:, None] / n * math.pi * 4))
-    seam = np.clip((gx - 0.90) / 0.06, 0, 1)
-    brush = fbm(n, 256, 2, 59)
-    shade = 0.84 + brush * 0.16
-    h = brush * 0.4
+def p_grass(n, seed=19):
+    """Blades painted over a dark, dense undergrowth."""
+    rng = np.random.default_rng(seed)
+    bgc = fbm(n, 6, 4, seed + 1)
+    canvas = mixc(C(0.10, 0.20, 0.06), C(0.14, 0.26, 0.07), bgc)
+    hmap = np.zeros((n, n))
+    pal = [C(0.26, 0.48, 0.13), C(0.34, 0.57, 0.17), C(0.22, 0.42, 0.11),
+           C(0.42, 0.62, 0.21), C(0.30, 0.50, 0.12), C(0.48, 0.60, 0.20),
+           C(0.20, 0.38, 0.12), C(0.36, 0.55, 0.15)]
+    patch = fbm(n, 4, 4, seed + 2)
+    for i in range(int(n * n / 55)):
+        cx = rng.random() * n
+        cy = rng.random() * n
+        ang = rng.random() * 2 * math.pi
+        L = (0.05 + rng.random() * 0.055) * n
+        pn = patch[int(cy) % n, int(cx) % n]
+        col1 = pal[rng.integers(len(pal))] * (0.82 + rng.random() * 0.4)
+        # meadow patches drift toward yellow-green or blue-green
+        col1 = col1 * np.array([1 + (pn - 0.5) * 0.45, 1.0, 1 - (pn - 0.5) * 0.5])
+        col0 = col1 * 0.42
+        paint_stroke(canvas, hmap, n, cx, cy, ang, L, 1.6 + rng.random() * 1.6,
+                     col0, col1, i / (n * n / 55) * 0.7 + rng.random() * 0.2, taper=0.85)
+    big = fbm(n, 3, 3, seed + 4)
+    canvas = canvas * (0.88 + 0.24 * big)[..., None]
+    return canvas, hmap, 0.93 + 0.05 * noise2(n, 40, 40, seed), np.zeros((n, n))
+
+
+def p_leaf(n, seed=37):
+    """Overlapping leaf clusters, darker inside and lighter on top."""
+    rng = np.random.default_rng(seed)
+    canvas = np.tile(C(0.12, 0.24, 0.08), (n, n, 1))
+    hmap = np.zeros((n, n))
+    pal = [C(0.20, 0.38, 0.12), C(0.26, 0.44, 0.14), C(0.15, 0.31, 0.10),
+           C(0.31, 0.47, 0.16), C(0.22, 0.40, 0.11), C(0.37, 0.48, 0.17),
+           C(0.13, 0.28, 0.10), C(0.42, 0.47, 0.15)]
+    total = int(n * n / 260)
+    for i in range(total):
+        cx = rng.random() * n
+        cy = rng.random() * n
+        ang = rng.random() * 2 * math.pi
+        L = (0.055 + rng.random() * 0.045) * n
+        depth = i / total
+        col1 = pal[rng.integers(len(pal))] * (0.78 + 0.34 * depth + rng.random() * 0.12)
+        col0 = col1 * 0.82
+        paint_stroke(canvas, hmap, n, cx, cy, ang, L, L * 0.55, col0, col1,
+                     depth * 0.9 + 0.05, leaf=True, rib=0.2)
+    # rare turning leaves
+    m = sstep(0.72, 0.86, fbm(n, 5, 3, seed + 2))
+    canvas = mixc(canvas, canvas * np.array([1.5, 1.05, 0.55]), m * 0.5)
+    return canvas, hmap, 0.90 + 0.06 * noise2(n, 30, 30, seed), np.zeros((n, n))
+
+
+def p_dirt(n, seed=61):
+    lumps = fbm(n, 9, 5, seed)
+    fine = noise2(n, 160, 160, seed + 1)
+    w = worley(n, 30, seed + 3, 1.0)
+    peb = sstep(0.0, 0.32, 0.5 - w["f1"]) * (w["id"] > 0.72)
+    pal = [C(0.42, 0.30, 0.20), C(0.36, 0.26, 0.17), C(0.47, 0.34, 0.22), C(0.33, 0.25, 0.18)]
+    base = pick(pal, fbm(n, 12, 3, seed + 5))
+    alb = base * (0.72 + 0.44 * lumps + 0.16 * fine)[..., None]
+    pebc = mixc(C(0.50, 0.44, 0.36), C(0.36, 0.34, 0.32), w["id"])
+    alb = mixc(alb, pebc * (0.8 + 0.3 * fine)[..., None], peb)
+    damp = sstep(0.55, 0.8, fbm(n, 5, 4, seed + 9))
+    alb = alb * (1 - 0.25 * damp)[..., None]
+    h = lumps * 0.5 + fine * 0.15 + peb * 0.5
+    return alb, h, 0.96 + fine * 0.04, np.zeros((n, n))
+
+
+def p_gravel(n, seed=83):
+    w = worley(n, 20, seed, 1.0, 0.25)
+    e = w["f2"] - w["f1"]
+    dome = sstep(0.03, 0.30, e)
+    pal = [C(0.46, 0.44, 0.40), C(0.58, 0.55, 0.48), C(0.38, 0.37, 0.36),
+           C(0.55, 0.47, 0.36), C(0.64, 0.62, 0.58), C(0.42, 0.40, 0.44),
+           C(0.50, 0.42, 0.32)]
+    base = pick(pal, w["id"])
+    tone = 0.75 + 0.5 * _hash2(w["id"] * 555, 4, seed)
+    fine = noise2(n, 200, 200, seed + 4)
+    alb = base * (tone * (0.55 + 0.45 * dome) * (0.9 + 0.2 * fine))[..., None]
+    gap = C(0.16, 0.13, 0.10)
+    alb = mixc(gap[None, None, :] * (0.8 + 0.4 * fine)[..., None], alb, sstep(0.0, 0.10, e))
+    h = dome * 0.85 + fine * 0.05
+    return alb, h, 0.90 + fine * 0.06, np.zeros((n, n))
+
+
+def p_sand(n, seed=131):
+    dune = fbm(n, 4, 4, seed)
+    ripple = 0.5 + 0.5 * np.sin((np.arange(n)[:, None] / n * 14 + dune * 3.0) * math.pi * 2)
+    grain = noise2(n, 256, 256, seed + 1)
+    dark = sstep(0.82, 0.95, noise2(n, 200, 200, seed + 2))
+    pal = [C(0.66, 0.55, 0.38), C(0.62, 0.51, 0.35), C(0.70, 0.59, 0.42)]
+    base = pick(pal, fbm(n, 5, 3, seed + 3))
+    alb = base * (0.86 + 0.12 * dune + 0.025 * ripple + 0.10 * grain)[..., None]
+    alb = alb * (1 - 0.35 * dark)[..., None]
+    h = dune * 0.2 + ripple * 0.10 + grain * 0.10
+    return alb, h, 0.97 + grain * 0.03, np.zeros((n, n))
+
+
+def p_farm(n, wet=False, seed=127):
+    y = np.arange(n)[:, None].astype(np.float64)
+    furrows = 6
+    furrow = 0.5 + 0.5 * np.sin(y / n * furrows * 2 * math.pi + fbm(n, 3, 3, seed) * 1.2)
+    furrow = np.broadcast_to(furrow, (n, n))
+    clod = fbm(n, 24, 5, seed + 1)
+    fine = noise2(n, 180, 180, seed + 2)
+    pal = [C(0.34, 0.23, 0.14), C(0.30, 0.21, 0.13), C(0.38, 0.26, 0.16)]
+    base = pick(pal, fbm(n, 7, 3, seed + 3))
+    alb = base * (0.55 + 0.35 * furrow + 0.35 * clod + 0.1 * fine)[..., None]
+    if wet:
+        alb = alb * 0.62
+    h = furrow * 0.7 + clod * 0.35 + fine * 0.05
+    r = 0.96 if not wet else 0.55
+    return alb, h, r - clod * 0.08, np.zeros((n, n))
+
+
+def p_clay(n, seed=45):
+    w = worley(n, 5, seed, 1.0, 0.6)
+    crack = 1.0 - sstep(0.0, 0.05, w["f2"] - w["f1"])
+    mott = fbm(n, 7, 5, seed + 1)
+    fine = noise2(n, 150, 150, seed + 2)
+    pal = [C(0.62, 0.40, 0.28), C(0.56, 0.36, 0.26), C(0.68, 0.45, 0.31)]
+    base = pick(pal, fbm(n, 4, 3, seed + 4))
+    alb = base * (0.80 + 0.28 * mott + 0.06 * fine)[..., None]
+    alb = alb * (1 - 0.6 * crack)[..., None]
+    h = mott * 0.25 - crack * 0.6 + fine * 0.04
+    return alb, h, 0.88 + mott * 0.08, np.zeros((n, n))
+
+
+def p_asphalt(n, seed=331):
+    binder = fbm(n, 12, 5, seed)
+    w = worley(n, 60, seed + 1, 1.0)
+    chip = sstep(0.05, 0.25, 0.5 - w["f1"]) * (w["id"] > 0.5)
+    pal = [C(0.42, 0.42, 0.42), C(0.34, 0.34, 0.35), C(0.50, 0.48, 0.46), C(0.28, 0.28, 0.30)]
+    chipc = pick(pal, _hash2(w["id"] * 700, 9, seed))
+    fine = noise2(n, 220, 220, seed + 2)
+    alb = C(0.17, 0.17, 0.18)[None, None, :] * (0.7 + 0.6 * binder + 0.2 * fine)[..., None]
+    alb = mixc(alb, chipc * (0.8 + 0.4 * fine)[..., None], chip * 0.85)
+    wear = sstep(0.55, 0.8, fbm(n, 4, 4, seed + 4))
+    alb = alb * (1 + 0.3 * wear)[..., None]
+    crack = 1.0 - sstep(0.0, 0.015, np.abs(fbm(n, 5, 5, seed + 6) - 0.5))
+    alb = alb * (1 - 0.6 * crack)[..., None]
+    h = binder * 0.2 + chip * 0.5 + fine * 0.05 - crack * 0.5
+    return alb, h, 0.90 + fine * 0.05, np.zeros((n, n))
+
+
+def p_plaster(n, base, seed=41, stain_amt=0.3):
+    """Poured concrete: soft mottle, form marks, pores, water stains."""
+    mott = fbm(n, 6, 5, seed)
+    fine = noise2(n, 200, 200, seed + 1)
+    stain = fbm(n, 3, 4, seed + 3)
+    streak = noise2(n, 16, 2, seed + 5)
+    alb = base[None, None, :] * (0.86 + 0.24 * mott + 0.06 * fine + 0.08 * streak * stain)[..., None]
+    p = norm01(noise2(n, 140, 140, seed + 7))
+    pits = sstep(0.88, 0.97, p)
+    alb = alb * (1 - 0.35 * pits)[..., None]
+    alb = alb * np.stack([1 + (stain - 0.5) * stain_amt, 1 + (stain - 0.5) * stain_amt * 0.4,
+                          1 - (stain - 0.5) * stain_amt * 0.5], axis=-1)
+    h = mott * 0.25 + fine * 0.08 - pits * 0.6
+    return alb, h, 0.90 + fine * 0.06, np.zeros((n, n))
+
+
+def p_rebar(n, base, seed=115):
+    alb, h, r, m = p_plaster(n, base, seed, 0.2)
+    y = np.arange(n)[:, None] / n
+    bar = np.clip(1.0 - np.abs(np.sin(y * math.pi * 4)) * 5.0, 0, 1)
+    bar = np.broadcast_to(bar, (n, n))
+    rust = fbm(n, 16, 4, seed + 1)
+    alb = mixc(alb, C(0.36, 0.22, 0.14) * (0.7 + 0.6 * rust)[..., None], bar)
+    bleed = sstep(0.5, 0.75, fbm(n, 6, 4, seed + 3)) * (1 - bar)
+    alb = alb * np.stack([1 + bleed * 0.3, 1 + bleed * 0.05, 1 - bleed * 0.25], axis=-1)
+    return alb, h + bar * 0.5, np.where(bar > 0.5, 0.6, r), bar * 0.4
+
+
+def p_slab(n, base, seed=119):
+    alb, h, r, m = p_plaster(n, base, seed, 0.25)
+    y = np.arange(n)[:, None].astype(np.float64)
+    x = np.arange(n)[None, :].astype(np.float64)
+    half = n / 2
+    dj = np.minimum(np.minimum(y % half, half - y % half), np.minimum(x % half, half - x % half))
+    joint = 1.0 - sstep(1.0, 4.5, dj)
+    alb = alb * (1 - 0.62 * joint)[..., None]
+    tone = 0.88 + 0.2 * _hash2((y // half).astype(np.int64), (x // half).astype(np.int64), seed)
+    return alb * tone[..., None], h - joint * 0.5, r, m
+
+
+def p_metal(n, base, seed, rough, metal, brushed=True, rivets=False, grid=0, oxide_amt=0.25):
+    brush = noise2(n, 4, 220, seed) * 0.6 + noise2(n, 3, 340, seed + 1) * 0.4
+    patina = fbm(n, 8, 4, seed + 2)
+    oxide = sstep(0.55, 0.8, fbm(n, 7, 5, seed + 3))
+    alb = base[None, None, :] * (0.78 + 0.30 * brush + 0.14 * patina)[..., None]
+    alb = mixc(alb, C(0.42, 0.24, 0.13) * (0.7 + 0.5 * patina)[..., None], oxide * oxide_amt)
+    h = brush * 0.25
+    if grid:
+        y = np.arange(n)[:, None].astype(np.float64)
+        x = np.arange(n)[None, :].astype(np.float64)
+        cell = n / grid
+        dj = np.minimum(np.minimum(y % cell, cell - y % cell), np.minimum(x % cell, cell - x % cell))
+        seam = 1.0 - sstep(0.8, 3.5, dj)
+        alb = alb * (1 - 0.5 * seam)[..., None]
+        h = h - seam * 0.5
     if rivets:
-        rx = np.arange(n)[:, None] / n * 4
-        ry = np.arange(n)[None, :] / n * 4
-        fx = (rx % 1) - 0.12
-        fy = (ry % 1) - 0.12
-        d = np.sqrt(fx * fx + fy * fy)
-        riv = np.clip(1.0 - d / 0.045, 0, 1)
-        h = h + riv * 0.9
-        shade = shade + riv * 0.14
-    alb = tint(base, np.clip(shade, 0, 1.5)[..., None])
-    # Powder coat chalks and yellows at different rates across a panel, and
-    # this material had almost no colour spread at all.
-    fade = fbm(n, 4, 4, 277)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (fade - 0.5) * 0.22
-    hue[..., 1] = 1.0 + (fade - 0.5) * 0.10
-    hue[..., 2] = 1.0 - (fade - 0.5) * 0.20 + (brush - 0.5) * 0.08
-    alb = alb * hue
-    return alb, np.clip(h, 0, 1.4), np.full((n, n), rough) + brush * 0.08, np.full((n, n), metal)
+        c = n / max(grid, 1) if grid else n / 4
+        yy = np.arange(n)[:, None] % c
+        xx = np.arange(n)[None, :] % c
+        d = np.sqrt((yy - c * 0.12) ** 2 + (xx - c * 0.12) ** 2)
+        riv = np.clip(1.0 - d / (n / 90.0), 0, 1)
+        h = h + riv * 0.8
+        alb = alb * (1 + 0.25 * riv)[..., None]
+    return alb, h, rough + brush * 0.14 + oxide * 0.3, np.full((n, n), metal) * (1 - oxide * 0.5)
 
 
-def p_painted(n, base, rough=0.55):
-    orange = fbm(n, 30, 4, 87)      # paint peel / uneven coat
-    fine = fbm(n, 120, 2, 89)
-    under = (orange > 0.62).astype(np.float64)
-    shade = 0.90 + orange * 0.16 + fine * 0.08
-    alb = tint(base, shade[..., None])
-    alb = alb * (1 - under[..., None] * 0.55) + np.array([0.35, 0.33, 0.31]) * under[..., None]
-    h = orange * 0.35 + fine * 0.15
-    r = rough + fine * 0.1 + under * 0.3
-    return alb, h, r, np.zeros((n, n))
+def p_corrugated(n, base, seed=73, period=6):
+    a = np.arange(n)[:, None] / n
+    wave = np.broadcast_to(0.5 + 0.5 * np.sin(a * math.pi * 2 * period), (n, n))
+    dirt = fbm(n, 18, 4, seed)
+    rust = sstep(0.55, 0.78, fbm(n, 6, 5, seed + 2))
+    spangle = fbm(n, 5, 4, seed + 1)
+    alb = base[None, None, :] * (0.62 + 0.42 * wave)[..., None] * (0.86 + 0.24 * spangle)[..., None]
+    alb = alb * (1 - 0.25 * dirt)[..., None]
+    alb = mixc(alb, C(0.48, 0.26, 0.14) * (0.7 + 0.6 * dirt)[..., None], rust * 0.55)
+    h = wave * 0.95 + dirt * 0.1
+    return alb, h, 0.50 + dirt * 0.18 + rust * 0.4, np.full((n, n), 0.75) * (1 - rust * 0.7)
 
 
-def p_glass(n, base, rough=0.06, metal=0.0):
-    smear = fbm(n, 4, 3, 93)
-    streak = fbm(n, 120, 2, 97)
-    shade = 0.94 + smear * 0.12 + streak * 0.06
-    h = smear * 0.2 + streak * 0.1
-    alb = tint(base, shade[..., None])
-    # Glass seen through picks up whatever is behind it, so the pane itself is
-    # very slightly green in transmission and warmer at the surface.
-    pane = fbm(n, 6, 3, 251)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 - (pane - 0.5) * 0.10
-    hue[..., 1] = 1.0 + (pane - 0.5) * 0.08
-    hue[..., 2] = 1.0 + (pane - 0.5) * 0.12
-    alb = alb * hue
-    return alb, h, np.full((n, n), rough) + smear * 0.06, np.full((n, n), metal)
+def p_panel(n, base, seed, rough, metal, rivets=True, oxide_amt=0.0):
+    return p_metal(n, base, seed, rough, metal, True, rivets, 4, oxide_amt)
 
 
-def p_carbon(n, base):
+def p_painted(n, base, seed, rough=0.6):
+    brush = noise2(n, 3, 60, seed) * 0.5 + noise2(n, 90, 5, seed + 1) * 0.5
+    fine = noise2(n, 160, 160, seed + 2)
+    chip = sstep(0.80, 0.92, fbm(n, 30, 4, seed + 3))
+    alb = base[None, None, :] * (0.92 + 0.10 * brush + 0.06 * fine)[..., None]
+    alb = mixc(alb, C(0.32, 0.28, 0.24) * (0.8 + 0.4 * fine)[..., None], chip * 0.3)
+    h = brush * 0.15 + fine * 0.05 - chip * 0.15
+    return alb, h, rough + fine * 0.08 + chip * 0.25, np.zeros((n, n))
+
+
+def p_carbon(n, base, seed=101):
     x = np.arange(n)[:, None]
     y = np.arange(n)[None, :]
-    w = ((x // 6 + y // 6) % 2).astype(np.float64)
-    fine = fbm(n, 200, 2, 101)
-    shade = 0.80 + w * 0.22 + fine * 0.14
-    h = w * 0.5 + fine * 0.2
-    alb = tint(base, shade[..., None])
-    # The clear-coat resin over carbon weave is what stops it reading as grey
-    # graphitic paper: it picks up a faint warm sheen along the tow direction.
-    tow = fbm(n, 9, 3, 197)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (tow - 0.5) * 0.26
-    hue[..., 1] = 1.0 + (tow - 0.5) * 0.10
-    hue[..., 2] = 1.0 - (tow - 0.5) * 0.14
-    alb = alb * hue
+    c = 12
+    cx = (x // c) % 2
+    cy = (y // c) % 2
+    tow = np.where((cx + cy) % 2 == 0, (x % c) / c, (y % c) / c)
+    fine = noise2(n, 240, 240, seed)
+    alb = base[None, None, :] * (0.6 + 0.6 * np.abs(tow - 0.5) + 0.3 * fine)[..., None]
+    h = np.abs(tow - 0.5) * 0.6 + fine * 0.1
     return alb, h, 0.30 + fine * 0.10, np.full((n, n), 0.35)
 
 
-def p_solar(n, base):
+def p_solar(n, base, seed=103):
     c = n // 3
     x = np.arange(n)[:, None]
     y = np.arange(n)[None, :]
-    grid = (np.minimum(x % c, c - 1 - x % c) < 2) | (np.minimum(y % c, c - 1 - y % c) < 2)
-    fine = fbm(n, 180, 2, 103)
-    shade = np.where(grid, 1.0, 0.82 + fine * 0.2)
-    h = np.where(grid, 0.0, fine * 0.3)
-    alb = tint(base, shade[..., None])
-    # Silver busbars and the anti-reflective coating's blue cast. Without it
-    # the whole panel is one colour at a colorfulness of 0.051.
-    bus = norm01(value_noise(n, 48, 211))
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 - (bus - 0.5) * 0.10
-    hue[..., 1] = 1.0 + (bus - 0.5) * 0.16
-    hue[..., 2] = 1.0 + (bus - 0.5) * 0.30
-    alb = alb * hue
-    return alb, h, np.where(grid, 0.55, 0.10), np.where(grid, 0.0, 0.45)
+    gx = np.minimum(x % c, c - 1 - x % c)
+    gy = np.minimum(y % c, c - 1 - y % c)
+    gridm = (gx < 3) | (gy < 3)
+    bus = ((y % (c // 4)) < 1) & ~gridm
+    fine = noise2(n, 180, 180, seed)
+    cell = base[None, None, :] * (0.8 + 0.4 * fine)[..., None] * 1.3
+    alb = np.where(gridm[..., None], C(0.62, 0.64, 0.70), cell)
+    alb = np.where(bus[..., None], C(0.55, 0.55, 0.60), alb)
+    h = np.where(gridm, 0.0, 0.3 + fine * 0.05)
+    return alb, h, np.where(gridm, 0.55, 0.12), np.where(gridm, 0.0, 0.45)
 
 
-def p_ore(n, base):
-    f1, cid, f2 = worley(n, 11, 109, 1.0)
-    dome = np.sqrt(np.clip(1.0 - (f1 * 11) ** 2, 0, 1))
-    rust = fbm(n, 20, 4, 111)
-    stone = fbm(n, 60, 3, 113)
-    # ore blobs: warm metallic against grey host rock
-    ore = np.clip((dome - 0.55) * 3.0, 0, 1)
-    # The host rock is cold grey-blue, the ore is iron-red; that hue
-    # opposition is what makes a vein read as a vein. Brightness alone left
-    # the whole material at a colorfulness of 0.019.
-    host = tint(np.array([0.40, 0.40, 0.42]), (0.8 + stone * 0.35)[..., None])
-    metal_part = tint(np.array([0.62, 0.30, 0.14]), (0.7 + rust * 0.6)[..., None])
-    alb = host * (1 - ore[..., None]) + metal_part * ore[..., None]
-    band = fbm(n, 9, 4, 311)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (band - 0.5) * 0.34
-    hue[..., 1] = 1.0 + (band - 0.5) * 0.12
-    hue[..., 2] = 1.0 - (band - 0.5) * 0.30
-    alb = alb * hue
-    h = dome * 0.7 + stone * 0.25
-    return alb, h, 0.80 - ore * 0.30 + stone * 0.1, ore * 0.55
+def p_ore(n, seed=109):
+    host = p_stones(n, [C(0.36, 0.36, 0.37), C(0.42, 0.40, 0.39), C(0.32, 0.32, 0.34)], 6, seed, 0.8, 0.5)
+    alb, h, r, m = host
+    w = worley(n, 9, seed + 5, 1.0, 0.5)
+    ore = sstep(0.1, 0.45, 0.5 - w["f1"]) * (w["id"] > 0.45)
+    rust = fbm(n, 20, 4, seed + 7)
+    oc = C(0.64, 0.34, 0.16)[None, None, :] * (0.7 + 0.6 * rust)[..., None]
+    alb = mixc(alb, oc, ore)
+    return alb, h + ore * 0.15, r - ore * 0.35, ore * 0.55
 
 
-def p_flat(n, base, rough, metal=0.0, amp=0.06):
-    """Matte trim / emissive / water: low relief, but never one flat colour.
+def p_emit(n, base, seed, rough, lava=False):
+    f = fbm(n, 6, 4, seed)
+    fine = noise2(n, 90, 90, seed + 1)
+    if lava:
+        w = worley(n, 7, seed + 2, 1.0, 0.6)
+        crack = 1.0 - sstep(0.0, 0.22, w["f2"] - w["f1"])
+        crust = C(0.14, 0.09, 0.07)[None, None, :] * (0.7 + 0.6 * fine)[..., None]
+        glow = base[None, None, :] * (0.7 + 0.5 * f)[..., None]
+        alb = mixc(crust, glow, crack)
+        return alb, (1 - crack) * 0.6 + fine * 0.1, np.full((n, n), rough) - crack * 0.3, np.zeros((n, n))
+    y = np.arange(n)[:, None] / n
+    band = np.broadcast_to(0.85 + 0.15 * np.cos((y - 0.5) * math.pi * 2), (n, n))
+    alb = base[None, None, :] * (band * (0.92 + 0.14 * f))[..., None]
+    return alb, fine * 0.05, np.full((n, n), rough), np.zeros((n, n))
 
-    A brightness-only ramp on a single hue is what made water measure 10
-    distinct colours and look like painted plastic. Even a surface this smooth
-    picks up a slow colour drift across it — water reads as depth, an emissive
-    strip as a gradient along its length, trim as whatever light falls on it.
-    """
-    f = fine_rand(n, amp, 107)
-    m = fbm(n, 6, 3, 109)
-    slow = fbm(n, 3, 3, 263)
-    alb = tint(base, (0.95 + m * 0.1 + f)[..., None])
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (slow - 0.5) * 0.34
-    hue[..., 1] = 1.0 + (slow - 0.5) * 0.16
-    hue[..., 2] = 1.0 + (m - 0.5) * 0.20 + (0.5 - slow) * 0.18
-    alb = alb * hue
-    h = f * 0.4 + m * 0.2
-    return alb, h, np.full((n, n), rough) + m * 0.05, np.full((n, n), metal)
+
+def p_matte(n, base, seed=107):
+    f = fbm(n, 6, 3, seed)
+    fine = noise2(n, 140, 140, seed + 1)
+    alb = base[None, None, :] * (0.85 + 0.3 * f + 0.15 * fine)[..., None]
+    return alb, f * 0.2 + fine * 0.1, 0.80 + fine * 0.1, np.full((n, n), 0.08)
+
+
+def p_glass(n, base, rough, seed=93):
+    smear = fbm(n, 4, 3, seed)
+    streak = noise2(n, 3, 200, seed + 1)
+    alb = base[None, None, :] * (0.92 + 0.12 * smear + 0.06 * streak)[..., None]
+    return alb, smear * 0.1, np.full((n, n), rough) + smear * 0.05, np.zeros((n, n))
+
+
+def p_water(n, seed=53):
+    f = fbm(n, 6, 4, seed)
+    alb = C(0.13, 0.36, 0.44)[None, None, :] * (0.9 + 0.2 * f)[..., None]
+    return alb, f * 0.05, np.full((n, n), 0.04), np.zeros((n, n))
 
 
 # ---------------------------------------------------------------- table
-# name -> (builder, base colour, bump strength)
-# Colours mirror VoxelTypes.PROPS exactly.
 
 def build_all(n, out_dir):
     os.makedirs(out_dir, exist_ok=True)
-    S = lambda h: hexcol(h)
+    S = hexcol
+    cobble_pal = [C(0.47, 0.45, 0.42), C(0.43, 0.42, 0.40), C(0.50, 0.47, 0.42),
+                  C(0.40, 0.39, 0.38), C(0.49, 0.45, 0.39), C(0.45, 0.44, 0.42)]
+    stone_pal = [C(0.40, 0.39, 0.38), C(0.44, 0.43, 0.42), C(0.36, 0.36, 0.37), C(0.47, 0.44, 0.40)]
+    rock_pal = [C(0.44, 0.42, 0.40), C(0.38, 0.37, 0.36), C(0.50, 0.46, 0.41), C(0.35, 0.35, 0.36)]
+    granite_pal = [C(0.46, 0.43, 0.41), C(0.40, 0.38, 0.38), C(0.52, 0.47, 0.44)]
+    wood_light = [C(0.60, 0.44, 0.27), C(0.56, 0.40, 0.25), C(0.64, 0.48, 0.30), C(0.52, 0.38, 0.24)]
+    wood_mid = [C(0.44, 0.31, 0.19), C(0.40, 0.28, 0.17), C(0.48, 0.34, 0.21), C(0.36, 0.26, 0.17)]
+    wood_dark = [C(0.24, 0.17, 0.11), C(0.21, 0.15, 0.10), C(0.27, 0.19, 0.12)]
+    brick_pal = [C(0.58, 0.29, 0.21), C(0.64, 0.33, 0.24), C(0.52, 0.26, 0.20),
+                 C(0.69, 0.39, 0.28), C(0.56, 0.30, 0.24)]
+    sand_pal = [C(0.66, 0.57, 0.43), C(0.62, 0.53, 0.40), C(0.70, 0.60, 0.46)]
+    # name -> (builder, bump strength)
     SPECS = {
-        "timber":           (lambda: p_wood(n, S("#7d5a3c"), 4), 0.7),
-        "plank":            (lambda: p_wood(n, S("#a8804f"), 5), 0.7),
-        "dark_oak":         (lambda: p_wood(n, S("#4a3524"), 4), 0.7),
-        "bark":             (lambda: p_wood(n, S("#4f3b28"), 3), 1.0),
-        "brick":            (lambda: p_brick(n, S("#98462f")), 1.0),
-        "sandstone":        (lambda: p_stone(n, S("#c9ac7c"), 7, 0.92), 0.9),
-        "granite":          (lambda: p_stone(n, S("#5e5b58"), 13, 0.72), 0.9),
-        "cobble":           (lambda: p_stone(n, S("#66625c"), 8, 0.88), 1.1),
-        "stone":            (lambda: p_stone(n, S("#55524f"), 10, 0.93), 0.9),
-        "rock":             (lambda: p_stone(n, S("#6a6560"), 5, 0.95), 1.2),
-        "concrete":         (lambda: p_plaster(n, S("#9d9c98")), 0.6),
-        "rebar_concrete":   (lambda: p_rebar(n, S("#88898a")), 0.8),
-        "concrete_slab":    (lambda: p_slab(n, S("#807f79")), 0.6),
-        "steel_frame":      (lambda: p_metal(n, S("#5a6068"), True, 0.45, 0.85), 0.6),
-        "corrugated_steel": (lambda: p_corrugated(n, S("#7e878e"), 6), 1.3),
-        "sheet_metal":      (lambda: p_panel(n, S("#8b949b"), False, 0.40, 0.80), 0.6),
-        "plastic_panel":    (lambda: p_panel(n, S("#d8d4c8"), True, 0.55, 0.0), 0.6),
-        "carbon_composite": (lambda: p_carbon(n, S("#2c2f34")), 0.7),
-        "solar_panel":      (lambda: p_solar(n, S("#1a2a4a")), 0.5),
-        "thatch":           (lambda: p_thatch(n, S("#b39152")), 1.4),
-        "clay_tile":        (lambda: p_tiles(n, S("#8f4630"), 9), 1.1),
-        "asphalt_shingle":  (lambda: p_shingle(n, S("#40403f"), 10), 1.0),
-        "dirt":             (lambda: p_soil(n, S("#6b533a"), 0.6), 0.8),
-        "gravel":           (lambda: p_soil(n, S("#736e63"), 0.4, True), 1.1),
-        "farmland":         (lambda: p_farm(n, S("#6a4c2f")), 0.9),
-        "wet_farmland":     (lambda: p_farm(n, S("#43301d"), wet=True), 0.8),
-        "asphalt":          (lambda: p_asphalt(n, S("#37393c")), 0.6),
-        "grass":            (lambda: p_grass(n, S("#496f38")), 1.2),
-        "sand":             (lambda: p_sand(n, S("#c0aa7d")), 0.7),
-        "leaf":             (lambda: p_leaf(n, S("#3f6b30")), 1.3),
-        "clay":             (lambda: p_soil(n, S("#9c6a4e"), 0.45), 0.7),
-        "iron_ore":         (lambda: p_ore(n, S("#8a6a52")), 1.0),
-        "painted_white":    (lambda: p_painted(n, S("#e6e3da"), 0.72), 0.5),
-        "painted_red":      (lambda: p_painted(n, S("#a3352c"), 0.72), 0.5),
-        "chrome":           (lambda: p_metal(n, S("#c6cbd0"), True, 0.12, 1.0), 0.5),
-        "matte_black":      (lambda: p_flat(n, S("#1f2124"), 0.86, 0.10, 0.30), 0.4),
-        "neon_strip":       (lambda: p_flat(n, S("#63e8ff"), 0.30, 0.0, 0.03), 0.3),
-        "ember":            (lambda: p_flat(n, S("#ff7a2a"), 0.90, 0.0, 0.25), 0.8),
-        "glass":            (lambda: p_glass(n, S("#a9d4de"), 0.06), 0.3),
-        "reinforced_glass": (lambda: p_glass(n, S("#9ec4d0"), 0.10), 0.3),
-        "water":            (lambda: p_flat(n, S("#27536b"), 0.04, 0.0, 0.10), 0.5),
+        "timber":           (lambda: p_planks(n, 4, wood_mid, 4, 1.1, True, 0.05, 0.84, 0.3), 0.9),
+        "plank":            (lambda: p_planks(n, 5, wood_light, 5, 1.0, True, 0.05, 0.80), 0.9),
+        "dark_oak":         (lambda: p_planks(n, 4, wood_dark, 6, 1.0, True, 0.05, 0.80), 0.9),
+        "bark":             (lambda: p_bark(n), 1.5),
+        "brick":            (lambda: p_coursed(n, brick_pal, 16, 6, 42, C(0.62, 0.58, 0.50),
+                                               0.055, 0.22, 0.22, 0.0, 0.14), 1.3),
+        "sandstone":        (lambda: p_coursed(n, sand_pal, 6, 3, 44, C(0.62, 0.55, 0.42),
+                                               0.035, 0.14, 0.06, 0.05, 0.08, 0.5, 0.12), 1.0),
+        "granite":          (lambda: p_stones(n, granite_pal, 9, 71, 0.8, 0.5, C(0.20, 0.19, 0.18), 0.03, 0.2, 0.14), 1.0),
+        "cobble":           (lambda: p_stones(n, cobble_pal, 7, 73, 0.82, 0.45, C(0.30, 0.27, 0.22), 0.08, 0.34, 0.08, 0.25), 1.6),
+        "stone":            (lambda: p_stones(n, stone_pal, 5, 79, 0.85, 0.5, C(0.18, 0.17, 0.16), 0.05, 0.28, 0.10, 0.12), 1.4),
+        "rock":             (lambda: p_stones(n, rock_pal, 3, 83, 0.9, 0.5, C(0.20, 0.19, 0.18), 0.04, 0.4, 0.16, 0.08, 0.16), 1.6),
+        "concrete":         (lambda: p_plaster(n, C(0.56, 0.55, 0.53)), 0.7),
+        "rebar_concrete":   (lambda: p_rebar(n, C(0.50, 0.50, 0.50)), 0.9),
+        "concrete_slab":    (lambda: p_slab(n, C(0.50, 0.49, 0.47)), 0.7),
+        "steel_frame":      (lambda: p_metal(n, C(0.34, 0.37, 0.41), 21, 0.45, 0.85, True, True, 2), 0.7),
+        "corrugated_steel": (lambda: p_corrugated(n, C(0.58, 0.62, 0.65)), 1.4),
+        "sheet_metal":      (lambda: p_panel(n, C(0.60, 0.63, 0.66), 23, 0.40, 0.80, False), 0.7),
+        "plastic_panel":    (lambda: p_panel(n, C(0.78, 0.76, 0.70), 25, 0.55, 0.0), 0.7),
+        "carbon_composite": (lambda: p_carbon(n, C(0.15, 0.16, 0.18)), 0.7),
+        "solar_panel":      (lambda: p_solar(n, C(0.08, 0.14, 0.28)), 0.5),
+        "thatch":           (lambda: p_thatch(n), 1.6),
+        "clay_tile":        (lambda: p_tiles(n, None, 8), 0.8),
+        "asphalt_shingle":  (lambda: p_shingle(n), 1.1),
+        "dirt":             (lambda: p_dirt(n), 1.0),
+        "gravel":           (lambda: p_gravel(n), 1.4),
+        "farmland":         (lambda: p_farm(n), 1.1),
+        "wet_farmland":     (lambda: p_farm(n, True), 0.9),
+        "asphalt":          (lambda: p_asphalt(n), 0.7),
+        "grass":            (lambda: p_grass(n), 1.4),
+        "sand":             (lambda: p_sand(n), 0.8),
+        "leaf":             (lambda: p_leaf(n), 1.6),
+        "clay":             (lambda: p_clay(n), 0.9),
+        "iron_ore":         (lambda: p_ore(n), 1.2),
+        "painted_white":    (lambda: p_painted(n, C(0.82, 0.80, 0.75), 27, 0.65), 0.5),
+        "painted_red":      (lambda: p_painted(n, C(0.62, 0.20, 0.17), 29, 0.65), 0.5),
+        "chrome":           (lambda: p_metal(n, C(0.78, 0.80, 0.82), 31, 0.12, 1.0, True, False, 0, 0.0), 0.4),
+        "matte_black":      (lambda: p_matte(n, C(0.13, 0.13, 0.15)), 0.4),
+        "neon_strip":       (lambda: p_emit(n, C(0.39, 0.91, 1.0), 33, 0.30), 0.3),
+        "ember":            (lambda: p_emit(n, C(1.0, 0.48, 0.16), 35, 0.9, True), 1.0),
+        "glass":            (lambda: p_glass(n, C(0.66, 0.83, 0.87), 0.05), 0.3),
+        "reinforced_glass": (lambda: p_glass(n, C(0.62, 0.77, 0.82), 0.10, 95), 0.3),
+        "water":            (lambda: p_water(n), 0.5),
     }
     names = []
     for name, (fn, bump) in SPECS.items():
         alb, h, rough, metal = fn()
-        # Builders work in whatever broadcast shape is convenient (many use
-        # (n,1)/(1,n) rows and columns); everything downstream wants (n,n).
         h = np.broadcast_to(np.asarray(h, dtype=np.float64), (n, n))
         rough = np.broadcast_to(np.asarray(rough, dtype=np.float64), (n, n))
         metal = np.broadcast_to(np.asarray(metal, dtype=np.float64), (n, n))
         alb = np.broadcast_to(np.asarray(alb, dtype=np.float64), (n, n, 3))
         ao = cavity_ao(h)
-        nrm = height_to_normal(h, bump)
+        # a light blur before differentiation removes the single-pixel stair
+        # steps that otherwise catch the sun as sparkle at distance
+        nrm = height_to_normal(_boxblur(h, 1) * 0.5 + h * 0.5, bump)
         orm = np.stack([ao, np.clip(rough, 0.02, 1.0), np.clip(metal, 0.0, 1.0)], axis=-1)
-        # albedo carries the material's own AO so crevices read dark even before
-        # the light does
-        alb = np.clip(alb * (0.55 + 0.45 * ao[..., None]), 0, 1)
+        alb = np.clip(alb * (0.82 + 0.18 * ao[..., None]), 0, 1)
         for suffix, arr in (("a", alb), ("n", nrm), ("o", orm)):
-            img = Image.fromarray((np.clip(arr, 0, 1) * 255).astype(np.uint8), "RGB")
+            img = Image.fromarray((np.clip(arr, 0, 1) * 255 + 0.5).astype(np.uint8), "RGB")
             img.save(os.path.join(out_dir, f"{name}_{suffix}.png"), optimize=True)
         names.append(name)
         print(f"  {name}", flush=True)
 
-    # layer order == the table order, so the shader can use one index per
-    # material and never consult a map at runtime
     with open(os.path.join(out_dir, "layers.txt"), "w", encoding="utf-8") as fh:
-        for i, n in enumerate(names):
-            fh.write(f"{i} {n}\n")
+        for i, nm in enumerate(names):
+            fh.write(f"{i} {nm}\n")
     print(f"baked {len(names)} materials -> {out_dir}")
-
-
-# ---------------------------------------------------------------- late binds
-def p_rebar(n, base):
-    f1, cid, f2 = worley(n, 6, 55, 0.0)
-    x = np.arange(n)[:, None] / n
-    y = np.arange(n)[None, :] / n
-    bar = np.clip(1.0 - np.abs(np.sin(y * math.pi * 6)) * 6.0, 0, 1)
-    rust = fbm(n, 16, 4, 115)
-    grit = fbm(n, 110, 3, 117)
-    shade = 0.86 + grit * 0.18 + rust * 0.16
-    alb = tint(base, shade[..., None])
-    steel = np.array([0.45, 0.36, 0.30])
-    alb = np.where(bar[..., None] > 0.5, steel * (0.7 + rust[..., None] * 0.6), alb)
-    # The pour around the rebar is stained orange where the rust has run down
-    # it, which is the only colour the material has and it was being lost.
-    bleed = np.clip((fbm(n, 8, 4, 269) - 0.45) * 2.4, 0, 1) * (1.0 - bar)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + bleed * 0.42
-    hue[..., 1] = 1.0 + bleed * 0.18
-    hue[..., 2] = 1.0 - bleed * 0.24
-    alb = alb * hue
-    h = bar * 0.8 + grit * 0.25
-    return alb, np.clip(h, 0, 1.2), 0.86 + grit * 0.1, bar * 0.45
-
-
-def p_slab(n, base):
-    bh = n / 2
-    y = np.arange(n)[:, None]
-    x = np.arange(n)[None, :]
-    fy = y % bh
-    # build out of place: y is (n,1) and x is (1,n), so *= cannot broadcast back
-    jy = np.clip((fy - 0.02) / 0.05, 0, 1) * np.clip((bh - fy - 0.02) / 0.05, 0, 1)
-    jx = np.clip((x - 0.02) / 0.05, 0, 1) * np.clip((n - x - 0.02) / 0.05, 0, 1)
-    joint = jy * jx
-    mottle = fbm(n, 9, 4, 119)
-    grit = fbm(n, 120, 3, 121)
-    pits = norm01(value_noise(n, 140, 123))
-    shade = 0.84 + mottle * 0.22 + grit * 0.14
-    shade = shade * (1 - np.clip((pits - 0.88) * 9, 0, 1) * 0.3)
-    alb = tint(base, (shade * (0.55 + 0.45 * (1 - joint)))[..., None])
-    stain = fbm(n, 3, 4, 239)
-    damp = fbm(n, 6, 3, 241)
-    # Same luminance-relative trick as asphalt: a mid-grey base means a
-    # multiplicative shift around 1.0 is too small to register, and the slab was
-    # the second-least colourful material in the set at 0.012.
-    luma = alb.mean(axis=2)          # (n,n) — mean over channels, not keepdims
-    target = np.empty((n, n, 3))
-    warm = (stain - 0.5) * 2.0
-    cool = (damp - 0.5) * 2.0
-    target[..., 0] = luma + warm * 0.16 + cool * 0.05
-    target[..., 1] = luma + warm * 0.07 + cool * 0.05
-    target[..., 2] = luma - warm * 0.12 - cool * 0.07
-    alb = np.clip(alb + (target - luma[..., None]) * 0.9, 0.0, 1.0)
-    h = (1 - joint) * 0.5 + mottle * 0.3 + grit * 0.2
-    return alb, h, 0.90 + grit * 0.08, np.zeros((n, n))
-
-
-def p_farm(n, base, wet=False):
-    bh = n / 7
-    y = np.arange(n)[:, None]
-    furrow = np.sin(y / bh * math.pi) * 0.5 + 0.5
-    soil = fbm(n, 22, 5, 127)
-    clod = fbm(n, 70, 3, 129)
-    shade = 0.50 + furrow * 0.42 + clod * 0.24
-    alb = tint(base, shade[..., None])
-    # Ploughed earth is redder in the furrow where the subsoil is turned up and
-    # greyer on the crust, and it was measuring 13 distinct colours.
-    turned = fbm(n, 5, 4, 283)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + (turned - 0.5) * 0.36
-    hue[..., 1] = 1.0 + (turned - 0.5) * 0.12
-    hue[..., 2] = 1.0 - (turned - 0.5) * 0.30
-    alb = alb * hue
-    h = furrow * 0.7 + clod * 0.4
-    r = 0.94 if not wet else 0.62
-    if wet:
-        alb = alb * 0.9
-    return alb, h, np.full((n, n), r) - clod * 0.06, np.zeros((n, n))
-
-
-def p_sand(n, base):
-    dune = fbm(n, 6, 4, 131)
-    ripple = np.abs(np.sin((np.arange(n)[:, None] / n * 22 + dune * 2.4) * math.pi))
-    grain = fbm(n, 180, 3, 133)
-    # Sand is not one colour: heavy minerals make the dark grains, and the
-    # pale ones are almost quartz. Both are hue shifts, not brightness shifts.
-    dark = norm01(value_noise(n, 240, 137))
-    shade = 0.74 + dune * 0.28 + ripple * 0.16 + grain * 0.12
-    alb = tint(base, np.clip(shade, 0, 1.4)[..., None])
-    hue = np.empty((n, n, 3))
-    tint_amt = (dune - 0.5) * 0.30
-    hue[..., 0] = 1.0 + tint_amt + (dark - 0.5) * 0.18
-    hue[..., 1] = 1.0 + tint_amt * 0.5 + (dark - 0.5) * 0.10
-    hue[..., 2] = 1.0 - tint_amt * 0.8 + (dark - 0.5) * 0.22
-    alb = alb * hue
-    h = ripple * 0.5 + dune * 0.3 + grain * 0.2
-    return alb, h, 0.98 + grain * 0.02, np.zeros((n, n))
-
-
-def p_leaf(n, base):
-    f1, cid, f2 = worley(n, 14, 137, 1.0)
-    dome = np.sqrt(np.clip(1.0 - (f1 * 14) ** 2, 0, 1))
-    tone = 0.62 + _hash2(cid // 1000, cid, 139) * 0.7
-    vein = fbm(n, 70, 3, 141)
-    shade = tone * (0.7 + vein * 0.45) * (0.5 + 0.5 * dome)
-    alb = tint(base, shade[..., None])
-    # Foliage has the widest hue range of anything in the world: new growth is
-    # yellow-green, shaded interior leaves go blue-green, and stressed leaves
-    # turn ochre. All three in one texture is what stops a canopy reading as
-    # a single green mass.
-    age = _hash2(cid // 1000, cid, 313) * 2.0 - 1.0
-    light = fbm(n, 8, 3, 317)
-    hue = np.empty((n, n, 3))
-    hue[..., 0] = 1.0 + age * 0.30 + (light - 0.5) * 0.18
-    hue[..., 1] = 1.0 + age * 0.12 + (light - 0.5) * 0.22
-    hue[..., 2] = 1.0 - age * 0.26 - (light - 0.5) * 0.20
-    alb = alb * hue
-    h = dome * 0.7 + vein * 0.4
-    return alb, h, 0.95 + vein * 0.05, np.zeros((n, n))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--size", type=int, default=512)
-    ap.add_argument("--out", default="assets/tex")
+    ap.add_argument("--out", default="assets/tex_web")
     a = ap.parse_args()
     build_all(a.size, a.out)

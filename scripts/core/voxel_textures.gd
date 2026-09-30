@@ -86,8 +86,11 @@ static var _res := 1024
 ## which was preferring the smaller set merely because it was on disk, so a
 ## desktop run that had both directories quietly used the 512px one.
 static func _pick_dir() -> String:
-	var web := OS.has_feature("web")
-	if web and ResourceLoader.exists(TEX_DIR_WEB + "brick_a.png"):
+	# The 512px set is the maintained one: its tiles are authored at natural
+	# world sizes (cobble 1 m, brick 1.33 m) and tex_scale in VoxelMaterials is
+	# repeats per metre for exactly these maps. The old 1024px set has different
+	# layouts, so it is only a fallback when the 512px set is missing.
+	if ResourceLoader.exists(TEX_DIR_WEB + "brick_a.png"):
 		return TEX_DIR_WEB
 	if ResourceLoader.exists(TEX_DIR_DESKTOP + "brick_a.png"):
 		return TEX_DIR_DESKTOP
@@ -148,7 +151,9 @@ static func load_all() -> bool:
 ## web as on the desktop. Scaling the repeat by 0.5 puts the same number of
 ## bricks on the same wall.
 static func res_scale() -> float:
-	return float(_res) / 1024.0
+	# Tiles are authored in metres now, so resolution no longer changes how many
+	# repeats a wall needs. Kept as a hook in case a higher-res set is baked.
+	return 1.0
 
 
 ## Reads one baked map, normalising it to the exact format and mipmap setting

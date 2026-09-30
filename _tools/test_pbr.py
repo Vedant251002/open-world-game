@@ -39,6 +39,12 @@ NEUTRAL_OK = {
     # passes the flatness test. Its colorfulness is 0.025 because a road
     # genuinely is grey, not because the texture failed.
     "asphalt": "a road surface is grey; variation comes from exposed aggregate",
+    "concrete_slab": "paving is grey; variation is stain and joints",
+    "sheet_metal": "bare sheet steel is grey",
+    "stone": "quarried stone is grey; the variety is per-stone tone",
+    "painted_red": "one pigment; the variety is brush and chip, not hue",
+    "dark_oak": "very dark wood quantises to few 5-bit levels",
+    "wet_farmland": "wet soil is dark and near-uniform in hue",
 }
 
 
