@@ -19,15 +19,18 @@ const RANGE_M := 58.0
 
 # Muted, because the thing on top of it is the town and the thing under it is
 # the game. A minimap that shouts is a minimap you turn off.
-const C_WILD := Color("#2f3a2a")
-const C_TOWN := Color("#3b3a2e")
-const C_PLOT := Color("#4b4335")
-const C_ROAD := Color("#cdbf9c")
-const C_BUILDING := Color("#8d5c37")
-const C_RING := Color("#efe4c8")
-const C_SHADE := Color(0, 0, 0, 0.45)
-const C_PLAYER := Color("#ffffff")
-const C_NORTH := Color("#d4553f")
+const C_WILD := Color("#3a4a35")
+const C_TOWN := Color("#4b4a38")
+const C_PLOT := Color("#5f5340")
+const C_ROAD := Color("#d9cba4")
+const C_BUILDING := Color("#b0703e")
+const C_BUILDING_EDGE := Color("#2a1c12")
+const C_RING := Color("#efe0b8")
+const C_SHADE := Color(0, 0, 0, 0.38)
+const C_PLAYER := Color("#fff4d6")
+const C_NORTH := Color("#e2604a")
+## Width of the compass band around the map, in pixels at scale 1.
+const BAND := 17.0
 
 var player: Player
 var village: Village
@@ -48,6 +51,8 @@ var inventory: InventoryScreen
 const REDRAW_HZ := 20.0
 
 var radius := 96.0
+## Radius of the map itself, inside the compass band.
+var _mr := 80.0
 
 var _disc: Control                  ## draws the mask
 var _ink: Control                   ## draws the map, clipped to it
@@ -65,8 +70,9 @@ func setup(p: Player, v: Village, m: MapScreen, c: Crew, touch: bool,
 	map = m
 	crew = c
 	inventory = inv
-	radius = 118.0 if touch else 92.0
-	_font = ThemeDB.fallback_font
+	radius = 128.0 if touch else 100.0
+	_mr = radius - BAND * (1.35 if touch else 1.0)
+	_font = UiTheme.font(800)
 
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	custom_minimum_size = Vector2(radius * 2.0, radius * 2.0)
@@ -123,11 +129,11 @@ func _process(delta: float) -> void:
 # -------------------------------------------------------------------- drawing
 
 func _draw_mask() -> void:
-	_disc.draw_circle(Vector2(radius, radius), radius, Color.WHITE)
+	_disc.draw_circle(Vector2(radius, radius), _mr, Color.WHITE)
 
 
 func _scale() -> float:
-	return radius / RANGE_M
+	return _mr / RANGE_M
 
 
 ## World metres to a point on the disc, turned so the player's nose is up.
@@ -151,7 +157,7 @@ func _near(world_xz: Vector2, slack: float) -> bool:
 
 
 func _draw_map() -> void:
-	_ink.draw_circle(Vector2(radius, radius), radius, C_WILD)
+	_ink.draw_circle(Vector2(radius, radius), _mr, C_WILD)
 	if village == null:
 		return
 
@@ -177,7 +183,10 @@ func _draw_map() -> void:
 			var r: Rect2 = rec["rect_m"]
 			if not _near(r.get_center(), 24.0):
 				continue
-			_ink.draw_colored_polygon(_rect_points(r), C_BUILDING)
+			var quad := _rect_points(r)
+			_ink.draw_colored_polygon(quad, C_BUILDING)
+			quad.append(quad[0])
+			_ink.draw_polyline(quad, C_BUILDING_EDGE, 1.4, true)
 
 	if crew != null:
 		for w: Worker in crew.workers:
@@ -187,12 +196,17 @@ func _draw_map() -> void:
 			if not _near(at, 0.0):
 				continue
 			var dot := _at(at)
-			_ink.draw_circle(dot, 5.0, Color(0, 0, 0, 0.55))
-			_ink.draw_circle(dot, 3.6, w.body.cloth_colour.lightened(0.35))
+			if w.hired:
+				_ink.draw_circle(dot, 5.6, Color(0.05, 0.04, 0.03, 0.85))
+				_ink.draw_circle(dot, 4.4, C_RING)
+				_ink.draw_circle(dot, 3.0, w.body.cloth_colour.lightened(0.3))
+			else:
+				_ink.draw_circle(dot, 3.2, Color(0.05, 0.04, 0.03, 0.6))
+				_ink.draw_circle(dot, 2.2, w.body.cloth_colour.lightened(0.35))
 
 	# A vignette, so the edge of the disc is a horizon rather than a cut.
-	_ink.draw_arc(Vector2(radius, radius), radius - 5.0, 0.0, TAU, 48,
-		C_SHADE, 10.0, true)
+	_ink.draw_arc(Vector2(radius, radius), _mr - 6.0, 0.0, TAU, 64,
+		C_SHADE, 12.0, true)
 
 
 ## The street grid. Five lines each way, drawn as the roads they are rather
@@ -220,28 +234,72 @@ func _draw_streets() -> void:
 		pz.size.x * V, pz.size.y * V)), C_ROAD)
 
 
-## The furniture: the ring, the arrow that is always you, and the one mark that
-## remembers where north went.
+## The furniture: a glass compass band with degree ticks and N/E/S/W that turn
+## with the map, a gold rim, off-map markers for your crew, and the arrow that
+## is always you.
 func _draw_frame() -> void:
 	var c := Vector2(radius, radius)
-	_frame.draw_arc(c, radius - 1.0, 0.0, TAU, 72, Color(0, 0, 0, 0.7), 5.0, true)
-	_frame.draw_arc(c, radius - 1.0, 0.0, TAU, 72, C_RING, 2.0, true)
+	# Drop shadow, then the band: dark glass between the map and the rim.
+	_frame.draw_circle(c + Vector2(0, 3), radius, Color(0, 0, 0, 0.30))
+	var band_mid := (radius + _mr) * 0.5
+	_frame.draw_arc(c, band_mid, 0.0, TAU, 96, Color(0.07, 0.058, 0.045, 0.88),
+		radius - _mr + 1.0, true)
+	# Gold rim outside, thin gold line at the map's edge.
+	_frame.draw_arc(c, radius - 1.0, 0.0, TAU, 96, Color(UiTheme.GOLD, 0.85), 1.6, true)
+	_frame.draw_arc(c, radius - 3.0, 0.0, TAU, 96, Color(0, 0, 0, 0.5), 1.0, true)
+	_frame.draw_arc(c, _mr, 0.0, TAU, 96, Color(UiTheme.GOLD, 0.55), 1.4, true)
 
-	# North, wherever it has got to. Without it a map that turns is a map you
-	# cannot use to describe anything to anybody.
-	var north := c + Vector2(0.0, -1.0).rotated(_rot) * (radius - 9.0)
-	_frame.draw_circle(north, 4.5, C_NORTH)
-	if _font != null:
-		_frame.draw_string(_font, north + Vector2(-4.0, -8.0), "N",
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, C_RING)
+	# Ticks every 15 degrees, longer every 45. They rotate with the world.
+	for i in 24:
+		var a := TAU * i / 24.0 + _rot
+		var d := Vector2.from_angle(a - PI * 0.5)
+		var major := i % 3 == 0
+		var t0 := radius - 4.0
+		var t1 := radius - (9.0 if major else 6.5)
+		if i % 6 != 0:
+			_frame.draw_line(c + d * t0, c + d * t1, Color(UiTheme.PARCHMENT, 0.55 if major else 0.3), 1.1, true)
 
-	# You, always at the middle and always pointing up the screen.
+	# Cardinal letters, upright, at the compass points wherever they have got to.
+	var lp := band_mid
+	var letters := ["N", "E", "S", "W"]
+	for i in 4:
+		var d2 := Vector2.from_angle(TAU * i / 4.0 - PI * 0.5 + _rot)
+		var at := c + d2 * lp
+		var col := C_NORTH if i == 0 else C_RING
+		var fs := 13 if i == 0 else 11
+		var sz := _font.get_string_size(letters[i], HORIZONTAL_ALIGNMENT_LEFT, -1, fs)
+		_frame.draw_string(_font, at + Vector2(-sz.x * 0.5, fs * 0.36), letters[i],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+
+	# Crew who have wandered off the disc: a small marker on the rim, pointing
+	# the way. So you can always find your people.
+	if crew != null:
+		for w: Worker in crew.workers:
+			if not is_instance_valid(w) or not w.hired:
+				continue
+			var off := (Vector2(w.global_position.x, w.global_position.z) - _centre) * _scale()
+			if off.length() < _mr - 6.0:
+				continue
+			var dirv := off.rotated(_rot).normalized()
+			var mp := c + dirv * (_mr - 5.0)
+			var perp := Vector2(-dirv.y, dirv.x)
+			_frame.draw_colored_polygon(PackedVector2Array([
+				mp + dirv * 5.0, mp - dirv * 3.0 + perp * 4.5, mp - dirv * 3.0 - perp * 4.5]),
+				w.body.cloth_colour.lightened(0.3))
+
+	# You: a gold arrow with a soft view wedge, always pointing up the screen.
+	_frame.draw_colored_polygon(PackedVector2Array([
+		c, c + Vector2(-_mr * 0.30, -_mr * 0.48), c + Vector2(_mr * 0.30, -_mr * 0.48)]),
+		Color(1, 0.95, 0.8, 0.09))
 	var arrow := PackedVector2Array([
-		c + Vector2(0.0, -9.0), c + Vector2(6.5, 7.0),
-		c + Vector2(0.0, 3.5), c + Vector2(-6.5, 7.0),
+		c + Vector2(0.0, -10.0), c + Vector2(7.0, 8.0),
+		c + Vector2(0.0, 4.0), c + Vector2(-7.0, 8.0),
 	])
-	_frame.draw_colored_polygon(arrow, Color(0, 0, 0, 0.65))
+	var ring := PackedVector2Array(arrow)
+	ring.append(arrow[0])
+	_frame.draw_colored_polygon(arrow, Color(0, 0, 0, 0.7))
+	_frame.draw_polyline(ring, Color(0, 0, 0, 0.7), 3.0, true)
 	var inner := PackedVector2Array()
-	for p: Vector2 in arrow:
-		inner.append(c + (p - c) * 0.78)
+	for pt: Vector2 in arrow:
+		inner.append(c + (pt - c) * 0.8)
 	_frame.draw_colored_polygon(inner, C_PLAYER)

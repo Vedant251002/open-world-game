@@ -43,6 +43,7 @@ var _pending := false
 var _mutex := Mutex.new()
 var _result: Array = []
 var _dragging := false
+var _vignette: TextureRect
 var _font: Font
 
 # --- palette: muted, so the ink layer on top stays legible ---
@@ -69,7 +70,7 @@ func setup(w: VoxelWorld, g: WorldGen, v: Village, p: Player) -> void:
 	village = v
 	player = p
 	centre = Vector2(v.well_pos.x, v.well_pos.z)
-	_font = ThemeDB.fallback_font
+	_font = UiTheme.font(600)
 	layer = 20
 	_build_ui()
 	visible = false
@@ -81,34 +82,54 @@ func _build_ui() -> void:
 	_root = Control.new()
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP
+	UiTheme.apply(_root)
 	add_child(_root)
 
 	var backdrop := ColorRect.new()
 	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
-	backdrop.color = Color(0.05, 0.04, 0.03, 0.82)
+	backdrop.color = Color(0.045, 0.035, 0.025, 0.86)
 	_root.add_child(backdrop)
 
 	# The map sits in a framed panel rather than filling the screen, so it reads
 	# as a thing you are holding.
 	var frame := PanelContainer.new()
 	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
-	frame.offset_left = 56
-	frame.offset_top = 44
-	frame.offset_right = -56
-	frame.offset_bottom = -44
+	frame.offset_left = 48
+	frame.offset_top = 36
+	frame.offset_right = -48
+	frame.offset_bottom = -36
 	var style := StyleBoxFlat.new()
 	style.bg_color = C_PAPER
-	style.border_color = Color("#3a2c1e")
-	style.set_border_width_all(3)
-	style.set_corner_radius_all(4)
-	style.shadow_color = Color(0, 0, 0, 0.55)
-	style.shadow_size = 18
+	style.border_color = UiTheme.GOLD.darkened(0.15)
+	style.set_border_width_all(4)
+	style.set_corner_radius_all(14)
+	style.shadow_color = Color(0, 0, 0, 0.6)
+	style.shadow_size = 28
+	style.anti_aliasing = true
 	frame.add_theme_stylebox_override("panel", style)
 	_root.add_child(frame)
 
 	var clip := Control.new()
 	clip.clip_contents = true
 	frame.add_child(clip)
+	# A warm vignette over the land so the edges fall away like old paper.
+	var vig := TextureRect.new()
+	vig.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vig.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vig.stretch_mode = TextureRect.STRETCH_SCALE
+	var gr := Gradient.new()
+	gr.set_color(0, Color(0, 0, 0, 0))
+	gr.set_color(1, Color(0.24, 0.15, 0.06, 0.38))
+	gr.set_offset(0, 0.62)
+	var gt := GradientTexture2D.new()
+	gt.gradient = gr
+	gt.fill = GradientTexture2D.FILL_RADIAL
+	gt.fill_from = Vector2(0.5, 0.5)
+	gt.fill_to = Vector2(1.05, 0.5)
+	gt.width = 256
+	gt.height = 256
+	vig.texture = gt
+	_vignette = vig
 
 	_land = TextureRect.new()
 	_land.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -118,9 +139,10 @@ func _build_ui() -> void:
 
 	var wash := ColorRect.new()
 	wash.set_anchors_preset(Control.PRESET_FULL_RECT)
-	wash.color = Color(C_PAPER.r, C_PAPER.g, C_PAPER.b, 0.13)
+	wash.color = Color(C_PAPER.r, C_PAPER.g, C_PAPER.b, 0.20)
 	wash.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip.add_child(wash)
+	clip.add_child(_vignette)
 
 	_overlay = Control.new()
 	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -496,21 +518,93 @@ func _draw_player() -> void:
 
 func _draw_hud() -> void:
 	var size := _hud.size
-	var title := "THE TOWN"
-	_hud.draw_string(_font, Vector2(18, 30), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 20, C_INK)
+	# Title plate: parchment card, engraved title, one line of numbers.
+	var plate := StyleBoxFlat.new()
+	plate.bg_color = Color(C_PAPER, 0.94)
+	plate.border_color = Color(C_INK, 0.45)
+	plate.set_border_width_all(1)
+	plate.set_corner_radius_all(10)
+	plate.shadow_color = Color(0, 0, 0, 0.25)
+	plate.shadow_size = 8
+	plate.anti_aliasing = true
+	_hud.draw_style_box(plate, Rect2(16, 16, 268, 66))
+	_hud.draw_string(UiTheme.display(800), Vector2(32, 47), "THE TOWN",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 24, C_INK)
+	var sub := "%d buildings   -   %d plots free" % [buildings.size(), _free_plots()]
+	_hud.draw_string(_font, Vector2(32, 68), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 13,
+		Color(C_INK, 0.72))
 
-	var sub := "%d buildings   %d plots free" % [buildings.size(), _free_plots()]
-	_hud.draw_string(_font, Vector2(18, 50), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 12,
-		Color(C_INK, 0.7))
-
-	_draw_scale_bar(Vector2(18, size.y - 22))
-	_draw_compass(Vector2(size.x - 44, 46))
+	_draw_scale_bar(Vector2(30, size.y - 26))
+	_draw_compass(Vector2(size.x - DIR_W - 78, 60))
+	_draw_legend(Vector2(16, size.y - 76))
 	_draw_directory(size)
 
-	var help := "drag to pan    wheel to zoom    SPACE you    HOME the well    M close"
-	var w := _font.get_string_size(help, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
-	_hud.draw_string(_font, Vector2(size.x - w - 18, size.y - 22), help,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(C_INK, 0.75))
+	# Controls, as key caps along the bottom.
+	var items := [["drag", "pan"], ["wheel", "zoom"], ["Space", "you"], ["Home", "the well"], ["M", "close"]]
+	var x := size.x - DIR_W - 42.0
+	var y := size.y - 24.0
+	var total := 0.0
+	var widths: Array[float] = []
+	for it: Array in items:
+		var kw := _font.get_string_size(it[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 14.0
+		var tw := _font.get_string_size(it[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+		widths.append(kw + 6.0 + tw + 16.0)
+		total += widths[-1]
+	x -= total
+	for i in items.size():
+		var it2: Array = items[i]
+		var kw2 := _font.get_string_size(it2[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 14.0
+		var cap := StyleBoxFlat.new()
+		cap.bg_color = Color(C_INK, 0.08)
+		cap.border_color = Color(C_INK, 0.45)
+		cap.set_border_width_all(1)
+		cap.border_width_bottom = 2
+		cap.set_corner_radius_all(4)
+		_hud.draw_style_box(cap, Rect2(x, y - 14, kw2, 19))
+		_hud.draw_string(_font, Vector2(x + 7, y), it2[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_INK)
+		_hud.draw_string(_font, Vector2(x + kw2 + 6, y), it2[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 12,
+			Color(C_INK, 0.75))
+		x += widths[i]
+
+
+## What the marks on the map mean, on a small parchment strip.
+func _draw_legend(at: Vector2) -> void:
+	var entries := [
+		["home", C_HOME, "dot"], ["workplace", C_WORK, "dot"], ["you", Color("#f2f0e6"), "arrow"],
+		["crew", Color("#c46a3a"), "dot"], ["townsfolk", Color(C_INK, 0.55), "small"],
+		["free plot", C_PLOT, "plot"],
+	]
+	var w := 16.0
+	for e: Array in entries:
+		w += 22.0 + _font.get_string_size(e[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 14.0
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(C_PAPER, 0.94)
+	sb.border_color = Color(C_INK, 0.4)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(9)
+	sb.anti_aliasing = true
+	_hud.draw_style_box(sb, Rect2(at, Vector2(w, 32)))
+	var x := at.x + 14.0
+	var cy := at.y + 16.0
+	for e2: Array in entries:
+		var c: Color = e2[1]
+		match str(e2[2]):
+			"dot":
+				_hud.draw_circle(Vector2(x + 6, cy), 7.0, C_PAPER)
+				_hud.draw_circle(Vector2(x + 6, cy), 5.6, c)
+			"small":
+				_hud.draw_circle(Vector2(x + 6, cy), 3.0, c)
+			"plot":
+				_hud.draw_rect(Rect2(x, cy - 5, 12, 10), Color(c, 0.25), true)
+				_hud.draw_rect(Rect2(x, cy - 5, 12, 10), Color(c, 0.8), false, 1.0)
+			"arrow":
+				var pc := Vector2(x + 6, cy)
+				var poly := PackedVector2Array([pc + Vector2(0, -7), pc + Vector2(6, 6), pc + Vector2(0, 3), pc + Vector2(-6, 6)])
+				_hud.draw_colored_polygon(poly, c)
+				poly.append(poly[0])
+				_hud.draw_polyline(poly, C_INK, 1.2, true)
+		_hud.draw_string(_font, Vector2(x + 18, cy + 4), str(e2[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_INK)
+		x += 22.0 + _font.get_string_size(e2[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 14.0
 
 
 ## The list down the right: every building by number, what it is for, who
@@ -526,30 +620,41 @@ func _draw_directory(size: Vector2) -> void:
 	var x := size.x - DIR_W - 18.0
 	var top := 80.0
 	var bottom := size.y - 44.0
-	_hud.draw_rect(Rect2(x - 12, top - 20, DIR_W + 12, bottom - top + 20),
-		Color(C_PAPER, 0.93), true)
-	_hud.draw_rect(Rect2(x - 12, top - 20, DIR_W + 12, bottom - top + 20),
-		Color(C_INK, 0.5), false, 1.0)
+	var dsb := StyleBoxFlat.new()
+	dsb.bg_color = Color(C_PAPER, 0.95)
+	dsb.border_color = Color(C_INK, 0.45)
+	dsb.set_border_width_all(1)
+	dsb.set_corner_radius_all(12)
+	dsb.shadow_color = Color(0, 0, 0, 0.28)
+	dsb.shadow_size = 10
+	dsb.anti_aliasing = true
+
 
 	var y := top
 	var rows: Array = []                  ## [text, size, colour, indent]
-	rows.append(["PLACES", 13, C_INK, 0.0])
+	rows.append(["PLACES", 14, C_INK, 0.0])
 	for i in _dir.size():
 		var e: Dictionary = _dir[i]
 		var head := "%d. %s" % [i + 1, e["name"]]
 		if str(e["street"]) != "":
 			head += " — " + str(e["street"])
-		rows.append([head, 12, C_HOME if bool(e["private"]) else C_INK, 0.0])
+		rows.append([head, 13, C_HOME if bool(e["private"]) else C_INK, 0.0])
 		for line: String in e["lines"]:
-			rows.append([line, 11, Color(C_INK, 0.75), 16.0])
+			rows.append([line, 12, Color(C_INK, 0.75), 16.0])
 	if _dir.is_empty():
 		rows.append(["Nothing built yet but the well.", 11, Color(C_INK, 0.75), 0.0])
 	rows.append(["", 6, C_INK, 0.0])
-	rows.append(["YOUR PEOPLE", 13, C_INK, 0.0])
+	rows.append(["YOUR PEOPLE", 14, C_INK, 0.0])
 	for line: String in people:
-		rows.append([line, 11, Color(C_INK, 0.8), 0.0])
+		rows.append([line, 12, Color(C_INK, 0.8), 0.0])
 	rows.append(["", 6, C_INK, 0.0])
 	rows.append(["red = somebody's home. Keep out.", 11, C_HOME, 0.0])
+
+	var content := 0.0
+	for r0: Array in rows:
+		content += int(r0[1]) + 5.0 + (6.0 if int(r0[1]) == 14 else 0.0)
+	_hud.draw_style_box(dsb, Rect2(x - 16, top - 24,
+		DIR_W + 20, minf(bottom - top + 28.0, content + 40.0)))
 
 	for i in rows.size():
 		var r: Array = rows[i]
@@ -559,8 +664,16 @@ func _draw_directory(size: Vector2) -> void:
 				HORIZONTAL_ALIGNMENT_LEFT, DIR_W - 8, 11, Color(C_INK, 0.6))
 			break
 		y += fs + 5
-		_hud.draw_string(_font, Vector2(x + float(r[3]), y), str(r[0]),
-			HORIZONTAL_ALIGNMENT_LEFT, DIR_W - 8 - float(r[3]), fs, r[2])
+		var head_row := fs >= 13
+		var section := fs == 14
+		if section:
+			_hud.draw_string(UiTheme.display(800), Vector2(x, y), str(r[0]),
+				HORIZONTAL_ALIGNMENT_LEFT, DIR_W - 8, fs, UiTheme.SEPIA)
+			_hud.draw_line(Vector2(x, y + 5), Vector2(x + DIR_W - 20, y + 5), Color(C_INK, 0.3), 1.0)
+			y += 6.0
+		else:
+			_hud.draw_string(UiTheme.font(800 if head_row else 500), Vector2(x + float(r[3]), y), str(r[0]),
+				HORIZONTAL_ALIGNMENT_LEFT, DIR_W - 8 - float(r[3]), fs, r[2])
 
 
 func _free_plots() -> int:
@@ -592,15 +705,24 @@ func _draw_scale_bar(at: Vector2) -> void:
 
 
 func _draw_compass(at: Vector2) -> void:
-	_hud.draw_circle(at, 20.0, Color(C_PAPER, 0.85))
-	_hud.draw_arc(at, 20.0, 0.0, TAU, 32, C_INK, 1.5, true)
+	var r := 26.0
+	_hud.draw_circle(at, r + 4.0, Color(C_PAPER, 0.92))
+	_hud.draw_arc(at, r + 4.0, 0.0, TAU, 48, Color(C_INK, 0.55), 1.2, true)
+	_hud.draw_arc(at, r - 4.0, 0.0, TAU, 48, Color(C_INK, 0.25), 1.0, true)
+	for i in 16:
+		var d := Vector2.from_angle(TAU * i / 16.0)
+		_hud.draw_line(at + d * (r - 4.0), at + d * (r - (0.0 if i % 4 == 0 else 2.0)), Color(C_INK, 0.6), 1.0)
+	# The needle: dark north, pale south, a red tip for north.
 	_hud.draw_colored_polygon(PackedVector2Array([
-		at + Vector2(0, -16), at + Vector2(5, 3), at + Vector2(-5, 3)]), C_INK)
+		at + Vector2(0, -19), at + Vector2(5, 0), at + Vector2(-5, 0)]), Color("#b5402e"))
 	_hud.draw_colored_polygon(PackedVector2Array([
-		at + Vector2(0, 16), at + Vector2(5, -3), at + Vector2(-5, -3)]),
-		Color(C_INK, 0.35))
-	_hud.draw_string(_font, at + Vector2(-4, -24), "N", HORIZONTAL_ALIGNMENT_CENTER,
-		12, 11, C_INK)
+		at + Vector2(0, 19), at + Vector2(5, 0), at + Vector2(-5, 0)]), Color(C_INK, 0.55))
+	_hud.draw_circle(at, 2.0, C_PAPER)
+	var f := UiTheme.display(800)
+	_hud.draw_string(f, at + Vector2(-5, -r - 8.0), "N", HORIZONTAL_ALIGNMENT_CENTER, 10, 13, C_INK)
+	_hud.draw_string(f, at + Vector2(r + 8.0, 5), "E", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(C_INK, 0.7))
+	_hud.draw_string(f, at + Vector2(-5, r + 19.0), "S", HORIZONTAL_ALIGNMENT_CENTER, 10, 11, Color(C_INK, 0.7))
+	_hud.draw_string(f, at + Vector2(-r - 17.0, 5), "W", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(C_INK, 0.7))
 
 
 # --------------------------------------------------------------------- debug

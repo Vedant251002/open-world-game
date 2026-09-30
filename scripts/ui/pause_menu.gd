@@ -12,7 +12,7 @@ class_name PauseMenu
 ## Also the one place that owns the window: fullscreen on boot, F11 to
 ## switch, and Cmd+Q honoured even while the pointer is captured.
 
-const C_SHADE := Color(0.03, 0.03, 0.04, 0.72)
+const C_SHADE := Color(0.03, 0.02, 0.02, 0.66)
 const C_PANEL := Color(0.11, 0.10, 0.09, 0.97)
 const C_EDGE := Color(1, 1, 1, 0.16)
 const C_INK := Color(0.94, 0.92, 0.87)
@@ -66,6 +66,7 @@ func _build() -> void:
 	_root = Control.new()
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP
+	UiTheme.apply(_root)
 	add_child(_root)
 
 	var backdrop := ColorRect.new()
@@ -79,41 +80,62 @@ func _build() -> void:
 	_root.add_child(centre)
 
 	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = C_PANEL
-	sb.border_color = C_EDGE
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(6)
-	sb.set_content_margin_all(24)
-	panel.add_theme_stylebox_override("panel", sb)
+	panel.add_theme_stylebox_override("panel", UiTheme.panel_menu())
 	centre.add_child(panel)
 
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 10)
-	col.custom_minimum_size = Vector2(260, 0)
+	col.add_theme_constant_override("separation", int(UiTheme.px(10)))
+	col.custom_minimum_size = Vector2(UiTheme.px(340), 0)
 	panel.add_child(col)
 
-	var title := Label.new()
-	title.text = "Paused"
+	var title := UiTheme.title("PAUSED", 30, UiTheme.ACCENT)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_color_override("font_color", C_INK)
-	title.add_theme_font_size_override("font_size", 26)
 	col.add_child(title)
+	var sub := UiTheme.label("The village waits for you", 14, UiTheme.DIM, 500)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(sub)
+	col.add_child(_rule())
 
-	col.add_child(_button("Resume", set_open.bind(false)))
+	col.add_child(_button("Resume", set_open.bind(false), true))
 	if not Platform.is_web():
 		_screen_button = _button("", func() -> void:
 			toggle_fullscreen()
 			_label_screen_button())
 		col.add_child(_screen_button)
+
+	col.add_child(_rule())
+	# A quick reminder of the controls, since this is where a player goes when
+	# they are stuck.
+	var keys := GridContainer.new()
+	keys.columns = 2
+	keys.add_theme_constant_override("h_separation", int(UiTheme.px(14)))
+	keys.add_theme_constant_override("v_separation", int(UiTheme.px(6)))
+	col.add_child(keys)
+	for pair: Array in [["WASD", "move"], ["E", "speak"], ["M", "map"], ["I", "stores"], ["C", "chat"], ["Esc", "pause"]]:
+		var cap := UiTheme.key_cap(pair[0])
+		cap.size_flags_horizontal = Control.SIZE_SHRINK_END
+		keys.add_child(cap)
+		keys.add_child(UiTheme.label(pair[1], 14, UiTheme.DIM, 600))
+
+	if not Platform.is_web():
+		col.add_child(_rule())
 		col.add_child(_button("Save and quit", quit_game))
 
 
-func _button(text: String, pressed: Callable) -> Button:
+func _rule() -> Control:
+	var r := ColorRect.new()
+	r.color = UiTheme.EDGE
+	r.custom_minimum_size = Vector2(0, 1)
+	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return r
+
+
+func _button(text: String, pressed: Callable, primary: bool = false) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(0, 42)
+	b.custom_minimum_size = Vector2(0, UiTheme.px(46))
 	b.focus_mode = Control.FOCUS_ALL
+	UiTheme.style_button(b, 17, primary)
 	b.pressed.connect(pressed)
 	return b
 
