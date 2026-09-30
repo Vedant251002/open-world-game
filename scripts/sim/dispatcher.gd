@@ -115,6 +115,11 @@ const GOAL_RETRY_WAIT := 6.0
 ## finish finds its way back into the log the next round is planned from.
 var _goal_orders: Dictionary = {}
 
+## Questions a step asked the player after the plan was accepted ("where would
+## you like the field?"): worker id -> the order it belongs to, so the answer
+## can re-run it as answer() does for a question the planner asked.
+var _asked: Dictionary = {}
+
 
 func _set_crew(c: Crew) -> void:
 	crew = c
@@ -199,7 +204,7 @@ func instruct(worker: Worker, instruction: String) -> void:
 	# not, and answered by them rather than by the planner, which used to try
 	# to turn a greeting into a building.
 	if _is_small_talk(instruction):
-		converse(worker, instruction)
+		converse(worker, instruction, "", "", _small_talk_fallback(instruction))
 		return
 
 	# "Save" and "start over" are said to whoever is nearest. They are about
@@ -251,6 +256,7 @@ func instruct(worker: Worker, instruction: String) -> void:
 
 	# A new order replaces whatever this one was still holding out for.
 	_forget_held(worker)
+	_asked.erase(worker.memory.worker_id)
 
 	# "Go and get some stone" does not need a model to understand it, and the
 	# model costs the better part of a minute. This is the one keyword route
@@ -462,14 +468,16 @@ const SMALL_TALK := ["hi", "hey", "hello", "hiya", "yo", "howdy", "oi", "morning
 	"how are you", "how are things", "how is it going", "how's it going",
 	"how are you doing", "how you doing", "what's up", "whats up", "sup",
 	"thanks", "thank you", "cheers", "ta", "bye", "goodbye", "see you",
-	"see ya", "well done", "sorry", "nice to meet you",
+	"see ya", "what is up", "well done", "sorry", "nice to meet you",
 	"pleased to meet you", "you there", "excuse me"]
 
 
 ## Whether this is chat rather than an order: a greeting or a pleasantry, on
 ## its own or with a name or a few words after it.
 static func _is_small_talk(text: String) -> bool:
-	var t := text.to_lower().strip_edges()
+	# Curly apostrophes are what a phone keyboard types, and "what’s up" is not
+	# in the list until it is the straight one.
+	var t := text.to_lower().strip_edges().replace("\u2019", "'").replace("\u2018", "'")
 	for ch in [",", ".", "!", "?", ";", ":"]:
 		t = t.replace(ch, " ")
 	t = " ".join(t.split(" ", false))
@@ -484,6 +492,26 @@ static func _is_small_talk(text: String) -> bool:
 		if t.begins_with(p + " ") and t.substr(p.length() + 1).split(" ", false).size() <= 2:
 			return true
 	return false
+
+
+## What somebody says back to a pleasantry when there is no model to say it in
+## their own words. "Mm." to "good morning" reads as being ignored.
+static func _small_talk_fallback(text: String) -> String:
+	var t := text.to_lower()
+	for w: String in ["thank", "cheers", "well done"]:
+		if t.find(w) >= 0:
+			return "Any time."
+	for w2: String in ["bye", "see you", "see ya", "good night"]:
+		if t.find(w2) >= 0:
+			return "Goodbye, then."
+	if t.find("sorry") >= 0:
+		return "No harm done."
+	for w3: String in ["how are", "how is", "how's", "how you", "what's up", "whats up", "what is up"]:
+		if t.find(w3) >= 0:
+			return "Well enough, thank you."
+	if t.find("excuse me") >= 0 or t.find("you there") >= 0:
+		return "Yes?"
+	return "Hello."
 
 
 ## Somebody saying something in their own words: an answer to the player, or
@@ -512,6 +540,10 @@ func converse(worker: Worker, heard: String, situation: String = "",
 func _on_line_ready(worker_id: String, text: String, tag: String) -> void:
 	var ctx: Dictionary = _talk_ctx.get(tag, {})
 	_talk_ctx.erase(tag)
+	# Swept as superseded by a newer line for the same person: not theirs to
+	# say any more, and it would go on the record with nothing they heard.
+	if ctx.is_empty():
+		return
 	# Anything older for the same person was superseded while they thought.
 	for k: String in _talk_ctx.keys():
 		var c: Dictionary = _talk_ctx[k]
@@ -706,6 +738,9 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 	# need ground, and this one does not.
 	if str(plan.get("kind", "")) == "talk":
 		_open.erase(worker_id)
+		_from_morning.erase(worker_id)
+		# Not a job, so nothing will ever report back into the goal's log.
+		_goal_outcome(worker, "refused")
 		if plot != null:
 			plot.reserved = false
 		worker.stop_thinking()
@@ -1432,7 +1467,10 @@ func _resolve_place(name: String, worker: Worker) -> Dictionary:
 		"gate", "edge", "town edge":
 			# The end of the last street: as far out as the town goes.
 			var far := village.well_pos + Vector3(0, 0, 40)
-			return {"pos": nav.nearest_walkable_world(far, 20), "where": "the edge of town"}
+			var edge := nav.nearest_walkable_world(far, 20)
+			if edge == Vector3.ZERO:
+				return {}                   # no way out, not a walk to the origin
+			return {"pos": edge, "where": "the edge of town"}
 		"square", "plaza", "middle", "centre", "center":
 			return {"pos": village.well_pos, "where": "the square"}
 
@@ -1586,12 +1624,14 @@ func _step_build(run: Dictionary, step: Dictionary) -> String:
 		"spec": spec, "patch": patch, "assumptions": run["assumptions"],
 		"line": "",
 	}
-	if not _begin(ready):
-		_held.append(ready)
-		return "held"
+	# Before _begin, not after: a plan held for material returns "held" from
+	# there, and a later "into" / "near" would never find where this went.
 	_remember_site(run, step, {
 		"centre": plot.centre_m(), "spread": 4.0, "where": plot.street_name,
 	})
+	if not _begin(ready):
+		_held.append(ready)
+		return "held"
 	return "started"
 
 
@@ -1612,6 +1652,7 @@ func _step_enclose(run: Dictionary, step: Dictionary) -> String:
 	if not res["ok"]:
 		worker.ask_player(str((res["error"] as Dictionary).get("question",
 			"I could not put a fence there.")))
+		_note_asked(run, worker)
 		refused.emit(worker, res["error"])
 		return "failed"
 
@@ -1622,14 +1663,21 @@ func _step_enclose(run: Dictionary, step: Dictionary) -> String:
 		"patch": patch, "assumptions": run["assumptions"],
 		"where": "out past the town", "line": "",
 	}
-	if not _begin(ready):
-		_held.append(ready)
-		return "held"
 	_remember_site(run, step, {
 		"centre": inside["centre"], "spread": inside["spread"],
 		"where": "in the pen", "rect": site,
 	})
+	if not _begin(ready):
+		_held.append(ready)
+		return "held"
 	return "started"
+
+
+## Remember what a step's question was about, if nothing of the order has been
+## done yet — re-running a half-carried-out plan would do its first steps twice.
+func _note_asked(run: Dictionary, worker: Worker) -> void:
+	if int(run["at"]) == 0 and str(run.get("instruction", "")) != "":
+		_asked[worker.memory.worker_id] = str(run["instruction"])
 
 
 func _step_stock(run: Dictionary, step: Dictionary) -> String:
@@ -1675,6 +1723,7 @@ func _step_sow(run: Dictionary, step: Dictionary) -> String:
 	if found.is_empty():
 		worker.ask_player("There is no flat open ground near here for a field. "
 			+ "Where would you like it?")
+		_note_asked(run, worker)
 		return "failed"
 
 	var rect: Rect2i = found["rect"]
@@ -1942,9 +1991,13 @@ func _on_llm_failed(_worker_id: String, reason: String) -> void:
 
 func _refuse(worker: Worker, plot: Plot, err: Dictionary) -> void:
 	_open.erase(worker.memory.worker_id)
+	# A refused morning order must not leave the next thing the player says
+	# marked as routine, with its plan panel suppressed.
+	_from_morning.erase(worker.memory.worker_id)
 	_goal_outcome(worker, "refused")
 	worker.stop_thinking()
-	plot.reserved = false
+	if plot != null:
+		plot.reserved = false
 	# A typed error is a question, not a stack trace. This is the moment the
 	# design is built around: the worker turns "MODULE_WONT_FIT" into a sentence.
 	worker.ask_player(str(err.get("question", "I am not sure how to do that.")))
@@ -1965,6 +2018,12 @@ func answer(worker: Worker, reply: String) -> void:
 		worker.memory.learn_about(str(learned["about"]), str(learned["value"]),
 			str(learned["text"]), 0.35, worker.current_order)
 	if job.is_empty():
+		# A question a step asked rather than the planner: the order it came
+		# from is re-run with the answer, or the reply would go nowhere.
+		var asked := str(_asked.get(worker.memory.worker_id, ""))
+		_asked.erase(worker.memory.worker_id)
+		if asked != "":
+			instruct(worker, "%s (%s)" % [asked, reply])
 		return
 	_open.erase(worker.memory.worker_id)
 	# Before instruct(), not after: a worker still marked as thinking counts as
@@ -1975,6 +2034,75 @@ func answer(worker: Worker, reply: String) -> void:
 	plot.reserved = false
 	instruct(worker, "%s (%s)" % [str(job["instruction"]), reply])
 
+
+
+# ------------------------------------------------------------------- test hooks
+
+## Hand a plan to a worker exactly as the planner's reply would arrive: with the
+## job open and a plot held, the way instruct() leaves them, then through
+## _on_plan_ready. For the harness, which has no model to wait on.
+func accept_plan_for_test(worker: Worker, instruction: String, plot: Plot,
+		plan: Dictionary) -> void:
+	_open[worker.memory.worker_id] = {
+		"worker": worker, "instruction": instruction, "plot": plot,
+	}
+	_on_plan_ready(worker.memory.worker_id, plan)
+
+
+## An order as the player would give it, with the plan already decided: the
+## same guards as instruct() (nobody takes orders they are not employed to),
+## then the same path as the planner's reply. Hiring, dismissing, standing
+## orders, corrections and goals are sentences that instruct() answers itself
+## and never sends to the planner, so a step naming one is said as the sentence.
+func take_plan_for_test(worker: Worker, instruction: String, steps: Array,
+		assumptions: Array = []) -> void:
+	if steps.size() == 1:
+		var only: Dictionary = steps[0]
+		var verb := str(only.get("do", ""))
+		if verb == "hire":
+			_hire_as(worker, str(only.get("role", "")), str(only.get("description", "")), worker)
+			return
+		if verb in ["dismiss", "standing", "learn", "goal"]:
+			instruct(worker, instruction)
+			return
+	if not worker.hired:
+		converse(worker, instruction, "", "", "I do not work for you. Take me on and I might.")
+		return
+	_forget_held(worker)
+	# Only a building wants a plot; a walk or a delivery must not need one.
+	var plot: Plot = null
+	for s: Variant in steps:
+		if str((s as Dictionary).get("do", "")) == "build":
+			plot = _choose_plot(worker)
+			if plot == null:
+				spoke.emit(worker, "There is nowhere left to put it. Clear a plot first.", "refuse")
+				return
+			plot.reserved = true
+			break
+	# A build with only a brief is what the planner would have written a spec
+	# for; the offline library does that here.
+	var filled: Array = []
+	for s: Variant in steps:
+		var st: Dictionary = (s as Dictionary).duplicate(true)
+		if str(st.get("do", "")) == "build" and not st.has("spec"):
+			var lib := ArchetypeLibrary.fallback(str(st.get("brief", instruction)),
+				worker.memory, plot, town.tier)
+			if lib.get("spec", null) is Dictionary:
+				st["spec"] = lib["spec"]
+				# What the library assumed goes up with the plan, as the planner's would.
+				if assumptions.is_empty():
+					assumptions = lib.get("assumptions", [])
+		filled.append(st)
+	accept_plan_for_test(worker, instruction, plot, {
+		"kind": "plan", "steps": filled, "assumptions": assumptions, "worker_line": "",
+	})
+
+
+## Run one step for a worker with no plan around it. True if it was taken.
+func run_step_for_test(worker: Worker, step: Dictionary) -> bool:
+	var run := {"worker": worker, "steps": [step], "at": 0, "sites": {},
+		"assumptions": [], "plot": null, "instruction": ""}
+	return _run_step(run, step) != "failed"
 
 
 # ------------------------------------------------------------- corrections
@@ -2063,6 +2191,10 @@ func _tick_morning(delta: float) -> void:
 	_from_morning[w.memory.worker_id] = true
 	status.emit("Morning: %s — %s." % [w.display_name(), task])
 	instruct(w, task)
+	# Answered on the spot — a question, an errand, a refusal that never opened
+	# a job — so no plan is coming to consume the flag.
+	if not _open.has(w.memory.worker_id):
+		_from_morning.erase(w.memory.worker_id)
 
 
 ## "Every morning, bring in the harvest" and its opposite. Sets the task on
@@ -2140,6 +2272,11 @@ func _try_goal(worker: Worker, instruction: String) -> bool:
 		spoke.emit(worker, "I do not work for you.", "talk")
 		return true
 	if worker.role == null or not worker.role.can("delegate"):
+		# "Set up a market stall" and "organise the wall" are ordinary orders to
+		# somebody who cannot hold a goal; only an explicit goal is refused.
+		if t.begins_with("set up") or t.begins_with("organise") or t.begins_with("organize") \
+				or t.begins_with("get "):
+			return false
 		spoke.emit(worker, "That wants somebody who can give orders — a foreman, or the mayor. I only do my own work.", "talk")
 		return true
 	var g := Goal.new()
@@ -2247,6 +2384,11 @@ func _tick_goals(delta: float) -> void:
 	_goal_orders[target.memory.worker_id] = foreman.memory.worker_id
 	foreman.speak("%s — %s." % [target.display_name(), order], "talk")
 	instruct(target, order)
+	# Answered without becoming a job (a question, a keyword errand): nothing
+	# will report an outcome, and a stale entry would file the next refusal
+	# from this person under the wrong goal.
+	if not _open.has(target.memory.worker_id) and not _running.has(target.memory.worker_id):
+		_goal_orders.erase(target.memory.worker_id)
 
 
 ## Who an order in a round goes to. A name; "new:<job>", which takes somebody
@@ -2399,7 +2541,13 @@ func _try_roles(worker: Worker, instruction: String) -> bool:
 		else:
 			# Whatever plan they were in the middle of goes with them.
 			_forget_held(worker)
+			# A plan still being written holds a plot; nobody will come for it.
+			var pending: Dictionary = _open.get(worker.memory.worker_id, {})
+			if not pending.is_empty() and pending.get("plot", null) != null:
+				(pending["plot"] as Plot).reserved = false
 			_open.erase(worker.memory.worker_id)
+			_from_morning.erase(worker.memory.worker_id)
+			conversation.call("forget", worker.memory.worker_id)
 			crew.dismiss(worker)
 			worker.memory.remember(clock.day, "Let go.", -0.3)
 			converse(worker, "", "The person you worked for has just let you go. You are back to being an ordinary resident of the town.",
@@ -2470,7 +2618,9 @@ func _define_role(asked: Worker, role_name: String, desc: String, then_hire: Wor
 		return
 	if not _pending_hires.has(id):
 		_pending_hires[id] = []
-	if then_hire != null:
+	# The same person asked for again while the job is still being written (a
+	# goal's retry) is one hire, not one per ask.
+	if then_hire != null and then_hire not in (_pending_hires[id] as Array):
 		(_pending_hires[id] as Array).append(then_hire)
 	spoke.emit(asked, "%s — let me think what that comes to." % role_name.capitalize(), "talk")
 	llm.compose_role(id, role_name, desc.strip_edges(), _ctx(asked))
@@ -2537,7 +2687,7 @@ func _any_hired() -> Worker:
 
 
 const STAY_WORDS := ["wait", "stay", "stop", "hold"]
-const COME_WORDS := ["follow", "come", "with"]
+const COME_WORDS := ["follow", "come"]
 
 
 ## Posting a worker: stand there, or come along. Returns true if that is what
@@ -2549,7 +2699,9 @@ func _try_posting(worker: Worker, instruction: String) -> bool:
 		worker.home = worker.global_position
 		worker.speak("I will wait here, then.", "talk")
 		return true
-	if _has_word(text, COME_WORDS) and text.length() < 40:
+	# "with" alone is "build a bakery with a chimney"; only "with me" is a summons.
+	if (_has_word(text, COME_WORDS) or text.find("with me") >= 0
+			or text.find("with us") >= 0) and text.length() < 40:
 		if player != null:
 			worker.employer = player
 		worker.speak("Right behind you.", "talk")
