@@ -83,6 +83,21 @@ const SIMPLE := ["go", "follow", "wait", "rest", "station", "harvest", "collect"
 const SPLITS := [" and ", " then ", " after that", " once you", " when you",
 	";", ",", " also ", " plus ", " & "]
 
+## Wording the classifier cannot carry into a one-verb step. A refusal ("don't
+## go to the well") comes back as the verb it refuses, and a condition ("wait
+## until noon") loses its condition; both would be carried out as the opposite
+## of the order.
+const HOLDS := [" not ", " dont ", " never ", " stop ", " no ", " cancel ", " nevermind ",
+	" if ", " unless ", " until ", " till ", " instead ", " without ", " except ",
+	" before ", " while ", " because "]
+
+## Amounts and durations. The steps this can produce carry no count, no hours
+## and no distance, so "sell 50 timber" would sell the default, not 50.
+const AMOUNTS := ["one", "two", "three", "four", "five", "six", "seven", "eight",
+	"nine", "ten", "eleven", "twelve", "dozen", "twenty", "thirty", "forty", "fifty",
+	"hundred", "half", "couple", "few", "several", "all", "every", "everything",
+	"hour", "hours", "minute", "minutes", "day", "days", "metres", "meters", "more"]
+
 ## Where the questions go. Overridable for the same reason the proxy URL is:
 ## the only honest way to test this whole path is to stand something in front
 ## of it that answers on demand, and a test that can only run against a live
@@ -141,6 +156,19 @@ func submit(instruction: String, worker_id: String, labels: Dictionary) -> bool:
 	var low := " %s " % text.to_lower()
 	for s: String in SPLITS:
 		if low.find(s) >= 0:
+			return false
+
+	# Words that change what the order means, or that ask for an amount this
+	# cannot carry. Digits count as amounts.
+	var plain := low
+	for ch: String in [".", "!", "?", "\"", "'", "\u2019"]:
+		plain = plain.replace(ch, "")
+	plain = plain.replace("-", " ")
+	for h: String in HOLDS:
+		if plain.find(h) >= 0:
+			return false
+	for word: String in plain.split(" ", false):
+		if word in AMOUNTS or word.to_int() != 0 or word.contains("0"):
 			return false
 
 	var dims := _dimensions(labels)
@@ -269,7 +297,7 @@ func _read(raw: String, labels: Dictionary) -> Dictionary:
 		return {}
 
 	var step := {"do": verb}
-	if not _fill(step, verb, d):
+	if not _fill(step, verb, d, labels):
 		return {}
 	return {
 		"kind": "plan",
@@ -285,46 +313,52 @@ func _read(raw: String, labels: Dictionary) -> Dictionary:
 ## The fields for one verb, from the answers already in hand. False when a
 ## required one did not come back well enough to use — the model has it then,
 ## which is better than a confident guess at the wrong animal.
-func _fill(step: Dictionary, verb: String, d: Dictionary) -> bool:
+func _fill(step: Dictionary, verb: String, d: Dictionary, labels: Dictionary) -> bool:
 	match verb:
 		"go", "station", "demolish", "decorate":
-			var place := _pick(d, "place", FIELD_ACCEPT)
+			var place := _pick(d, "place", FIELD_ACCEPT, labels.get("places", []))
 			if place == "" or place == NONE:
 				return false
 			step["place"] = place
 		"gather":
-			var m := _pick(d, "material", FIELD_ACCEPT)
+			var m := _pick(d, "material", FIELD_ACCEPT, labels.get("materials", []))
 			if m == "" or m == NONE:
 				return false
 			step["material"] = m
 		"stock":
-			var sp := _pick(d, "species", FIELD_ACCEPT)
+			var sp := _pick(d, "species", FIELD_ACCEPT, labels.get("species", []))
 			if sp == "" or sp == NONE:
 				return false
 			step["species"] = sp
 		"scout":
-			var dir := _pick(d, "direction", FIELD_ACCEPT)
+			var dir := _pick(d, "direction", FIELD_ACCEPT, labels.get("directions", []))
 			if dir == "" or dir == NONE:
 				return false
 			step["direction"] = dir
 		"trade":
-			var act := _pick(d, "trade_action", FIELD_ACCEPT)
-			var kind := _pick(d, "goods", FIELD_ACCEPT)
+			var act := _pick(d, "trade_action", FIELD_ACCEPT, labels.get("trade_actions", []))
+			var kind := _pick(d, "goods", FIELD_ACCEPT, labels.get("goods", []))
 			if act == "" or act == NONE or kind == "" or kind == NONE:
 				return false
 			step["action"] = act
 			step["kind"] = kind
 		"teach":
-			var who := _pick(d, "who", FIELD_ACCEPT)
-			var skill := _pick(d, "skill", FIELD_ACCEPT)
+			var who := _pick(d, "who", FIELD_ACCEPT, labels.get("who", []))
+			var skill := _pick(d, "skill", FIELD_ACCEPT, labels.get("skills", []))
 			if who == "" or who == NONE or skill == "" or skill == NONE:
 				return false
 			step["who"] = who
 			step["skill"] = skill
+		"wait", "plant_tree", "level", "cook", "craft":
+			# A place is optional on these, and this step carries none: taking
+			# "wait at the bakery" would have them wait where they stand.
+			var at := _pick(d, "place", FIELD_ACCEPT, labels.get("places", []))
+			if at != "" and at != NONE:
+				return false
 		"sow":
 			# The only optional field taken. A crop nobody named is the
 			# dispatcher's default, which is what the model would have sent.
-			var crop := _pick(d, "crop", FIELD_ACCEPT)
+			var crop := _pick(d, "crop", FIELD_ACCEPT, labels.get("crops", []))
 			if crop != "" and crop != NONE:
 				step["crop"] = crop
 	return true
@@ -332,7 +366,7 @@ func _fill(step: Dictionary, verb: String, d: Dictionary) -> bool:
 
 ## One answer, if it came back at or above the bar. "" for everything else,
 ## including a dimension the service did not answer at all.
-func _pick(d: Dictionary, name: String, floor_at: float) -> String:
+func _pick(d: Dictionary, name: String, floor_at: float, options: Array = []) -> String:
 	var got: Variant = d.get(name, null)
 	if not (got is Dictionary):
 		return ""
@@ -340,6 +374,10 @@ func _pick(d: Dictionary, name: String, floor_at: float) -> String:
 	var label := str(g.get("label", ""))
 	var conf := float(g.get("confidence", 0.0))
 	if label == "" or conf < floor_at:
+		return ""
+	# A label that was never on offer is the service making something up; it
+	# would reach the validator as a refusal instead of going to the model.
+	if not options.is_empty() and label != NONE and label not in options:
 		return ""
 	return label
 

@@ -409,6 +409,11 @@ static func _character(mem: WorkerMemory) -> String:
 	if float(d["confidence"]) > 0.7:
 		out.append("You are confident to the point of not really listening.")
 
+	# A middling person triggers none of the above, and an empty bullet under
+	# YOUR CHARACTER tells the model nothing.
+	if out.is_empty():
+		out.append("You are an ordinary, even-tempered sort: you work at a steady pace and take instructions as they come.")
+
 	return "- " + "\n- ".join(out)
 
 

@@ -22,10 +22,24 @@ class_name Conversation
 const HISTORY := 12
 
 var _history: Dictionary = {}          ## worker_id -> Array of {role, content}
+## worker_id -> what the player has said that no reply has come back for yet.
+## The model is asked one line at a time per person, so a second thing said
+## before the first is answered is built without it unless it is kept here.
+var _asked: Dictionary = {}
 
 
 func forget(worker_id: String) -> void:
 	_history.erase(worker_id)
+	_asked.erase(worker_id)
+
+
+## What goes on the record for one moment: their words, or the event in
+## brackets. "" when there was neither.
+static func _said(heard: String, situation: String) -> String:
+	var said := heard.strip_edges()
+	if said == "" and situation != "":
+		said = "(%s)" % situation
+	return said
 
 
 ## Everything a request needs: the system prompt describing this person and
@@ -37,16 +51,30 @@ func forget(worker_id: String) -> void:
 ## records say about what was asked, to be put in their own words.
 func build(w: Worker, heard: String, situation: String, facts: String,
 		town: Town, clock: GameClock, realm: Node) -> Dictionary:
-	var msgs: Array = (_history.get(w.memory.worker_id, []) as Array).duplicate()
+	var id := w.memory.worker_id
+	var msgs: Array = (_history.get(id, []) as Array).duplicate()
+	# Whatever was said since the last reply that came back is still part of
+	# the conversation, answered or not.
+	for q: String in _asked.get(id, []):
+		msgs.append({"role": "user", "content": q})
 	var now: Array[String] = []
 	if situation != "":
 		now.append("(What is happening: %s)" % situation)
 	if facts != "":
 		now.append("(What you know that bears on this: %s)" % facts)
-	if heard != "":
-		now.append(heard.strip_edges())
+	var said := _said(heard, "")
+	if said != "":
+		now.append(said)
 	else:
 		now.append("(Nobody has spoken. Say what you would say right now.)")
+	var pending: Array = _asked.get(id, [])
+	var mine := _said(heard, situation)
+	if mine != "":
+		pending.append(mine)
+		# A reply that never comes back must not keep piling up.
+		while pending.size() > 4:
+			pending.pop_front()
+		_asked[id] = pending
 	msgs.append({"role": "user", "content": "\n".join(now)})
 	return {"system": system_for(w, town, clock, realm), "messages": msgs}
 
@@ -56,9 +84,16 @@ func build(w: Worker, heard: String, situation: String, facts: String,
 func record(w: Worker, heard: String, situation: String, reply: String) -> void:
 	var id := w.memory.worker_id
 	var h: Array = _history.get(id, [])
-	var said := heard.strip_edges()
-	if said == "" and situation != "":
-		said = "(%s)" % situation
+	var said := _said(heard, situation)
+	# Anything asked before this that never got its own reply (it was replaced
+	# by a newer question while they thought) still happened.
+	var pending: Array = _asked.get(id, [])
+	var at := pending.find(said)
+	if at >= 0:
+		for i in at:
+			h.append({"role": "user", "content": pending[i]})
+		pending = pending.slice(at + 1)
+		_asked[id] = pending
 	if said != "":
 		h.append({"role": "user", "content": said})
 	h.append({"role": "assistant", "content": reply})
