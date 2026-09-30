@@ -98,7 +98,7 @@ static func _trim_desktop(viewport: Viewport) -> void:
 	viewport.use_taa = false
 	viewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 	RenderingServer.directional_soft_shadow_filter_set_quality(
-		RenderingServer.SHADOW_QUALITY_SOFT_LOW)
+		RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM)
 	RenderingServer.positional_soft_shadow_filter_set_quality(
-		RenderingServer.SHADOW_QUALITY_SOFT_LOW)
+		RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM)
 	print("[delegate] desktop web profile: FXAA, no MSAA, cheap shadows")
