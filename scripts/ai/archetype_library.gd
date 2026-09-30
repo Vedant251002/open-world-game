@@ -951,6 +951,12 @@ static func fallback(instruction: String, mem: WorkerMemory, plot: Plot,
 	# No named building means there is no offline plan. Guessing a hut here is
 	# how "what do you want" and "hi" turned into a house.
 	var arch := named_archetype(instruction)
+	# "a ten floor building" names no kind of building but is plainly one, and
+	# the height is the thing to answer: the smallest house carries it, so the
+	# validator can say how many floors this town can raise.
+	if arch == "" and floors_in(instruction) > 0 \
+			and (" %s " % instruction.to_lower()).contains(" building "):
+		arch = "hut"
 	if arch == "":
 		return {}
 	var spec := (BASE.get(arch, BASE["hut"]) as Dictionary).duplicate(true)
