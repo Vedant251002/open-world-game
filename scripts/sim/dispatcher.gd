@@ -125,6 +125,8 @@ func _set_crew(c: Crew) -> void:
 	crew = c
 	if crew == null:
 		return
+	if not crew.left.is_connected(_on_worker_left):
+		crew.left.connect(_on_worker_left)
 	for w: Worker in crew.workers:
 		if not w.step_done.is_connected(_on_step_done):
 			w.step_done.connect(_on_step_done)
@@ -134,6 +136,25 @@ func _set_crew(c: Crew) -> void:
 		# cannot arrive, and the rest of the order is neither done nor refused.
 		if not w.job_failed.is_connected(_on_step_failed):
 			w.job_failed.connect(_on_step_failed)
+
+
+## Somebody has died. Whatever they were thinking about, holding out for or in
+## the middle of goes with them; left, a plan coming back for them would be
+## handed to a freed body, and the plot it held would stay reserved for good.
+func _on_worker_left(w: Worker) -> void:
+	var id := w.memory.worker_id
+	_forget_held(w)
+	var job: Dictionary = _open.get(id, {})
+	if not job.is_empty() and job.get("plot", null) != null:
+		(job["plot"] as Plot).reserved = false
+	_open.erase(id)
+	_from_morning.erase(id)
+	_goal_orders.erase(id)
+	_asked.erase(id)
+	_morning_queue.erase(w)
+	for k: Variant in _pending_hires:
+		(_pending_hires[k] as Array).erase(w)
+	conversation.call("forget", id)
 
 
 func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
@@ -278,12 +299,18 @@ func instruct(worker: Worker, instruction: String) -> void:
 		return
 
 	var plot := _choose_plot(worker)
-	if plot == null:
-		spoke.emit(worker, "There is nowhere left to put it. Clear a plot first.",
-			"refuse")
-		return
-
-	plot.reserved = true
+	if plot != null:
+		plot.reserved = true
+	else:
+		# Every plot is built on. Only a building needs one, and refusing here
+		# turned "go to the well" and "bring in the harvest" into "there is
+		# nowhere left to put it" for the rest of the game. The nearest built
+		# plot stands in for the planner, and a build step on it is refused.
+		plot = _nearest_plot(worker)
+		if plot == null:
+			spoke.emit(worker, "There is nowhere left to put it. Clear a plot first.",
+				"refuse")
+			return
 	_open[worker.memory.worker_id] = {
 		"worker": worker, "instruction": instruction, "plot": plot,
 	}
@@ -706,6 +733,19 @@ func _choose_plot(worker: Worker) -> Plot:
 	for p: Plot in village.plots:
 		if p.occupied_by >= 0 or p.reserved:
 			continue
+		var d := p.centre_m().distance_squared_to(worker.global_position)
+		if d < best_d:
+			best_d = d
+			best = p
+	return best
+
+
+## Any plot at all, free or not: the reference an order is planned against
+## when the town has no free ground left.
+func _nearest_plot(worker: Worker) -> Plot:
+	var best: Plot = null
+	var best_d := INF
+	for p: Plot in village.plots:
 		var d := p.centre_m().distance_squared_to(worker.global_position)
 		if d < best_d:
 			best_d = d
@@ -1611,6 +1651,12 @@ func _on_step_failed(worker: Worker, _err: Dictionary) -> void:
 func _step_build(run: Dictionary, step: Dictionary) -> String:
 	var worker: Worker = run["worker"]
 	var plot: Plot = run["plot"]
+	# Planned against a plot somebody has built on since, or that was only
+	# ever a stand-in because every plot was taken.
+	if plot == null or plot.occupied_by >= 0:
+		_refuse(worker, plot, {"code": "no_free_plot",
+			"question": "There is nowhere left to put it. Clear a plot first."})
+		return "failed"
 	var spec: Dictionary = step.get("spec", {})
 	var res := BuildingGenerator.build(spec,
 		hash(worker.memory.worker_id) & 0x7FFFFFFF, plot, _ctx())
@@ -2714,6 +2760,14 @@ func _try_posting(worker: Worker, instruction: String) -> bool:
 const DIG_WORDS := ["dig", "fetch", "mine", "quarry", "gather", "collect",
 	"get", "bring", "chop", "fell", "cut"]
 
+## Words that mean the dig shortcut should stand aside for the planner.
+const GATHER_DECLINE := ["not", "dont", "never", "stop", "no", "unless", "until",
+	"if", "hen", "hens", "chicken", "chickens", "sheep", "cow", "cows", "pig",
+	"pigs", "goat", "goats", "horse", "horses", "animals", "flock", "build"]
+## A material after one of these is where, not what.
+const GATHER_PLACE_WORDS := ["to", "near", "by", "into", "beside", "behind",
+	"under", "round", "around", "past", "toward", "towards", "at", "next", "on"]
+
 ## What a player calls a material, mapped to what the stores call it. The left
 ## side is the vocabulary of somebody standing in a field; the right side is a
 ## key in Town.stock.
@@ -2737,14 +2791,29 @@ const MATERIAL_WORDS := {
 ## required: "build a stone wall" has the material and no errand, and "get on
 ## with it" has the errand and no material.
 func _try_gather(worker: Worker, instruction: String) -> bool:
-	var text := instruction.to_lower()
+	var text := instruction.to_lower().replace("\u2019", "").replace("'", "")
 	if not _has_word(text, DIG_WORDS):
 		return false
+	# A refusal, or a second job riding along ("gather stone and build a
+	# wall"): a dig would do the opposite, or only half of it.
+	if _has_word(text, GATHER_DECLINE):
+		return false
+	for sep: String in [" and ", " then ", ";", " after "]:
+		if text.find(sep) >= 0:
+			return false
 	var mat := ""
-	for word: String in MATERIAL_WORDS:
-		if _has_word(text, [word]):
-			mat = str(MATERIAL_WORDS[word])
-			break
+	var tokens := text.replace(",", " ").replace(".", " ").split(" ", false)
+	for i in tokens.size():
+		if not MATERIAL_WORDS.has(tokens[i]):
+			continue
+		# "Bring the hens to the tree" names a place, not what to fetch.
+		var j := i - 1
+		if j >= 0 and tokens[j] in ["the", "a", "an", "that", "this", "those", "some"]:
+			j -= 1
+		if j >= 0 and tokens[j] in GATHER_PLACE_WORDS:
+			continue
+		mat = str(MATERIAL_WORDS[tokens[i]])
+		break
 	if mat == "":
 		return false
 

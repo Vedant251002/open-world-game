@@ -32,6 +32,8 @@ signal job_done(worker: Worker, patch: VoxelPatch)
 signal job_failed(worker: Worker, err: Dictionary)
 ## Somebody joined the crew, or left it.
 signal roster_changed()
+## Somebody gone for good (died), after they have been taken off every list.
+signal left(worker: Worker)
 
 const ROSTER := [
 	{
@@ -216,6 +218,17 @@ func _raise(mem: WorkerMemory, home: Vector3) -> Worker:
 
 func get_worker(id: String) -> Worker:
 	return by_id.get(id)
+
+
+## Somebody gone for good. Off every list before they are freed: kept, a dead
+## body stayed in `workers`, and every pass over the crew after that (who is
+## hired, who stands where, who is free for a job) read a freed instance.
+func remove(w: Worker) -> void:
+	workers.erase(w)
+	if by_id.get(w.memory.worker_id) == w:
+		by_id.erase(w.memory.worker_id)
+	left.emit(w)
+	roster_changed.emit()
 
 
 ## The people who work for you, in the order they were taken on.
