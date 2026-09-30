@@ -66,6 +66,10 @@ func _init() -> void:
 		"trade_action": ["sell", 0.95]}), labels)
 	_pass("an animal nobody named", q, _reply({"action": ["stock", 0.99],
 		"species": [QuickIntent.NONE, 0.99]}), labels)
+	_pass("a label that was never offered", q, _reply({"action": ["go", 0.99],
+		"place": ["castle", 0.99]}), labels)
+	_pass("a place this step cannot carry", q, _reply({"action": ["wait", 0.99],
+		"place": ["bakery", 0.99]}), {"verbs": ["wait"], "places": ["bakery"]})
 	_pass("nonsense", q, "not json at all", labels)
 	_pass("an empty reply", q, "{}", labels)
 	_pass("no results", q, '{"results": []}', labels)
@@ -77,7 +81,9 @@ func _init() -> void:
 	# about the whole sentence and would drop half of it with confidence.
 	for s: String in ["fence the top field and put the hens in it",
 			"go to the well, then come back",
-			"chop timber and bring it here"]:
+			"chop timber and bring it here",
+			"don't go to the well", "sell 50 timber", "wait until noon",
+			"stock twelve hens", "rest for 3 hours"]:
 		if q.submit(s, "w1", labels):
 			_fail("took a two-part order: \"%s\"" % s)
 		else:

@@ -198,9 +198,14 @@ func start_wall(worker: Worker, side: String, palisade: bool) -> bool:
 	wall_job = {"worker_id": worker.memory.worker_id, "cells": cells, "i": 0, "mat": mat,
 		"kind": "palisade" if palisade else "wall", "rect": b, "laid": 0}
 	var hours := float(cells.size()) / float(WALL_VOXELS_PER_HOUR)
-	worker.take_errand_job("station", stand, hours + 1.0,
-		"A %s round the %s. About %d hours of it." % [wall_job["kind"], "town" if side == "" else side + " side", int(hours)],
-		{"where": "the walls", "doing": "lay"})
+	if not worker.take_errand_job("station", stand, hours + 1.0,
+			"A %s round the %s. About %d hours of it." % [wall_job["kind"], "town" if side == "" else side + " side", int(hours)],
+			{"where": "the walls", "doing": "lay"}):
+		# They could not get out to the site and have said so. A job with
+		# nobody on it would go on laying stone, and stop the next wall order
+		# with "a wall going up already".
+		wall_job = {}
+		return true
 	realm.note("walls", "%s started a %s %s." % [worker.display_name(), wall_job["kind"],
 		"round the town" if side == "" else "on the %s side" % side])
 	return true
@@ -263,7 +268,8 @@ func _finish_wall(done: bool) -> void:
 		realm.note("walls", "The %s was finished: %d stones laid." % [wall_job["kind"], int(wall_job["laid"])])
 		realm.say("The %s is finished." % wall_job["kind"])
 	var w: Worker = realm.crew.get_worker(str(wall_job["worker_id"]))
-	if w != null and not w.job_errand.is_empty():
+	# Only their wall shift: by now they may have been given something else.
+	if w != null and not w.job_errand.is_empty() and w.job_where == "the walls":
 		w.drop_everything()
 	wall_job = {}
 
@@ -328,7 +334,10 @@ func start_siege(enemy: Dictionary = {}) -> void:
 func _tick_siege(_hour: float, _day: int) -> void:
 	var now := realm.clock.day * 24.0 + realm.clock.hour
 	var wf := realm.warfare
-	var engine: Fighter = siege["engine"]
+	# A dead engine is freed a few seconds after it falls; assigning the freed
+	# reference to a typed variable is a script error, which ended this tick
+	# before the waves or the end of the siege were ever reached.
+	var engine: Fighter = siege["engine"] if is_instance_valid(siege["engine"]) else null
 	var engine_alive := engine != null and is_instance_valid(engine) and not engine.is_dead()
 	if int(siege["waves_left"]) > 0 and now >= float(siege["next_wave"]):
 		siege["waves_left"] = int(siege["waves_left"]) - 1
@@ -359,8 +368,8 @@ func _tick_siege(_hour: float, _day: int) -> void:
 
 func _end_siege(won: bool) -> void:
 	var enemy: String = siege["enemy"]
-	var engine: Fighter = siege["engine"]
-	if engine != null and is_instance_valid(engine) and not engine.is_dead():
+	var engine: Fighter = siege["engine"] if is_instance_valid(siege["engine"]) else null
+	if engine != null and not engine.is_dead():
 		engine.take_hit(9999.0, engine.global_position, null)
 	siege = {}
 	var nb := _enemies()
@@ -382,7 +391,7 @@ func _end_siege(won: bool) -> void:
 		realm.say("The siege is broken. %s fell back, and left %d coins and their tools behind." % [enemy, loot])
 		realm.note("siege", "The siege by %s was broken; %d coins taken." % [enemy, loot])
 	else:
-		var tribute := 200 + int(strength())
+		var tribute := mini(200 + int(strength()), maxi(realm.town.coins, 0))
 		realm.town.coins -= tribute
 		morale = maxf(morale - 0.2, 0.0)
 		realm.say("The town bought %s off with %d coins. They will be back." % [enemy, tribute])

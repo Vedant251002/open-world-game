@@ -48,7 +48,8 @@ enum { STEP_SITE = 1, STEP_ENVELOPE, STEP_PARTITION, STEP_CIRCULATION, STEP_ROOF
 
 
 ## ctx: {"world": VoxelWorld, "village": Village, "worldgen": WorldGen, "tier": int}
-static func build(spec: Dictionary, world_seed: int, plot: Plot, ctx: Dictionary) -> Dictionary:
+static func build(raw_spec: Dictionary, world_seed: int, plot: Plot, ctx: Dictionary) -> Dictionary:
+	var spec := Validator.scrub(raw_spec)
 	var err := Validator.check_spec(spec, plot, ctx)
 	if not err.is_empty():
 		return {"ok": false, "error": err}
@@ -391,7 +392,9 @@ func _stage_partition() -> Dictionary:
 
 func _story_of(m: Dictionary) -> int:
 	var v: Variant = m.get("story", "ground")
-	if v is int:
+	# JSON numbers arrive as floats, so `is int` alone sent every numeric story
+	# to the ground floor.
+	if v is int or v is float:
 		return clampi(int(v), 0, stories - 1)
 	match str(v):
 		"top": return stories - 1

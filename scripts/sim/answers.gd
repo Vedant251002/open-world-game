@@ -27,7 +27,19 @@ const ASKING := ["what", "where", "when", "who", "whose", "how", "which", "why",
 	"have we", "tell me", "remind me", "do you remember", "do you know",
 	"any idea", "status"]
 const ORDERING := ["what about", "how about", "can you", "could you",
-	"would you", "will you", "why not", "why don't", "how are you"]
+	"would you", "will you", "why not", "why dont", "how are you",
+	"do you mind", "would you mind", "any chance", "is it possible", "would it be possible"]
+## Greetings that open like a question and are not one: "what's up".
+const GREETINGS := ["what is up", "how are things", "how you doing"]
+## Words that make a "can you" a question about the person rather than a request.
+const QUESTION_WORDS := ["what", "where", "when", "who", "whose", "how", "which", "why"]
+## Contractions that _clean would otherwise cut to a stump ("what's" -> "what").
+const CONTRACTIONS := {
+	"what's": "what is", "whats": "what is", "how's": "how is", "hows": "how is",
+	"where's": "where is", "wheres": "where is", "who's": "who is",
+	"there's": "there is", "that's": "that is", "it's": "it is",
+	"when's": "when is", "here's": "here is",
+}
 
 ## Words for buildings that are not archetype names.
 const BUILDING_WORDS := {
@@ -75,6 +87,20 @@ static func is_question(text: String) -> bool:
 	for o: String in ORDERING:
 		if t.begins_with(o):
 			return false
+	for g: String in GREETINGS:
+		if t == g or (t.begins_with(g + " ") and t.split(" ", false).size() <= g.split(" ").size() + 1):
+			return false
+	# "Mira, could you fetch some stone?" — a name or a "please" in front does
+	# not turn a request into a question, unless a question word came first
+	# ("what can you do").
+	var words := t.split(" ", false)
+	for i in range(1, mini(words.size(), 4)):
+		if words[i - 1] in QUESTION_WORDS:
+			break
+		var rest := " ".join(words.slice(i))
+		for o: String in ORDERING:
+			if rest.begins_with(o):
+				return false
 	if text.strip_edges().ends_with("?"):
 		return true
 	for a: String in ASKING:
@@ -225,14 +251,14 @@ static func _doing(w: Worker) -> String:
 		return "Building the %s on %s — about %d%% of the way through." % [
 			w.job_patch.archetype.replace("_", " "), w.job_where, pct]
 	if w.job_field != null:
-		return "Working the field. %s" % s.capitalize()
+		return "Working the field. %s" % _sentence(s)
 	if w.job_quarry != null:
-		return "Out fetching material. %s" % s.capitalize()
+		return "Out fetching material. %s" % _sentence(s)
 	if w.waiting_for != "":
 		return "Holding a plan until we have %s." % w.waiting_for
 	if s == "idle":
 		return "Nothing at the moment. Give me something."
-	return s.capitalize() + "."
+	return _sentence(s) + "."
 
 
 static func _orders(w: Worker, town: Town, clock: GameClock) -> String:
@@ -258,7 +284,7 @@ static func _fate(w: Worker, order: Dictionary, town: Town, clock: GameClock) ->
 	var day := int(order.get("day", clock.day))
 	var when := "today" if day == clock.day else ("yesterday" if day == clock.day - 1
 		else "on day %d" % day)
-	var done := w.memory.outcome_of(id)
+	var done := _outcome(w, id)
 	if not done.is_empty():
 		var kind := str(done.get("kind", ""))
 		if kind == "done":
@@ -287,6 +313,19 @@ static func _fate(w: Worker, order: Dictionary, town: Town, clock: GameClock) ->
 		if w.waiting_for != "":
 			return "and I am holding it until we have %s." % w.waiting_for
 	return "given %s." % when
+
+
+## What became of an order, latest word first. memory.outcome_of returns the
+## first entry that names the order, which is "Started on a cottage" for ever
+## after the cottage is finished, or the question that was answered long ago.
+static func _outcome(w: Worker, id: int) -> Dictionary:
+	if id < 0:
+		return {}
+	for i in range(w.memory.episodic.size() - 1, -1, -1):
+		var e: Dictionary = w.memory.episodic[i]
+		if int(e.get("order", -1)) == id and str(e.get("kind", "")) != "order":
+			return e
+	return {}
 
 
 static func _built(w: Worker, town: Town, here: Vector3, village: Village) -> String:
@@ -397,6 +436,8 @@ static func _material(mat: String, town: Town) -> String:
 		return "None, and nobody here could work %s if we had it — the town is not there yet." % noun
 	if n <= 0:
 		var src := Resources.source_of(mat)
+		if VoxelTypes.id_of(mat) < 0:
+			return "None in the larder at the moment. That is made, not dug — it comes off the field and the animals."
 		if src < 0:
 			return "None. There is nowhere to get %s either." % noun
 		return "None at all. It comes out of %s — say the word and somebody will go." % \
@@ -409,10 +450,13 @@ static func _material(mat: String, town: Town) -> String:
 static func _source(mat: String, town: Town) -> String:
 	var src := Resources.source_of(mat)
 	var noun := mat.replace("_", " ")
+	if VoxelTypes.id_of(mat) < 0:
+		return "%s is not dug — it comes off the field and the animals. We have %d in the larder." % [
+			_sentence(noun), town.units_of(mat)]
 	if src < 0:
 		return "There is nowhere to dig for %s. What the town has is all it will have." % noun
 	return "%s comes out of %s. A voxel of it is worth %d units, and we have %d in the yard." % [
-		noun.capitalize(), Resources.place_of(src), Resources.yield_of(src),
+		_sentence(noun), Resources.place_of(src), Resources.yield_of(src),
 		town.units_of(mat)]
 
 
@@ -475,7 +519,7 @@ static func _animals(species: String, livestock: Livestock, wildlife: Wildlife) 
 		if parts2.is_empty():
 			return "None about at the moment." if species == "birds" \
 				else "None that I can see — try the water's edge."
-		return "%s." % _join(parts2).capitalize()
+		return "%s." % _sentence(_join(parts2))
 	var n := livestock.count_of(species)
 	var wild_n := wildlife.count_of(species) if wildlife != null else 0
 	if species in Steps.SPECIES:
@@ -536,7 +580,12 @@ static func _where_is(who: Vector3, other: Vector3, village: Village,
 # --------------------------------------------------------------- helpers
 
 static func _clean(text: String) -> String:
-	var t := text.strip_edges().to_lower()
+	var t := text.strip_edges().to_lower().replace("\u2019", "'")
+	# "what's the time" must stay "what is the time", not become "what the time".
+	var spoken: Array[String] = []
+	for w: String in t.split(" ", false):
+		spoken.append(str(CONTRACTIONS.get(w.trim_suffix("?").trim_suffix("!"), w)))
+	t = " ".join(spoken)
 	# Possessives before apostrophes, so "the store's" becomes "the store"
 	# rather than "the stores", which is a different word here.
 	for ch: String in ["?", "!", ".", ",", "'s", "'", "\""]:
@@ -544,6 +593,12 @@ static func _clean(text: String) -> String:
 	while t.find("  ") >= 0:
 		t = t.replace("  ", " ")
 	return t.strip_edges()
+
+
+## First letter up, the rest as it was. String.capitalize() title-cases every
+## word ("Off To Fetch Stone"), which is not how anyone speaks.
+static func _sentence(s: String) -> String:
+	return s.substr(0, 1).to_upper() + s.substr(1)
 
 
 static func _any(t: String, phrases: Array) -> bool:

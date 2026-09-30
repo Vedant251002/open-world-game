@@ -318,6 +318,8 @@ func _die(c: Citizen, how: String) -> void:
 	var w := c.worker(realm.crew)
 	if w != null and realm.crew.has_method("dismiss"):
 		realm.crew.dismiss(w)
+		if realm.crew.has_method("remove"):
+			realm.crew.remove(w)
 		w.queue_free()
 
 

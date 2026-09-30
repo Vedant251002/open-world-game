@@ -223,17 +223,19 @@ static func retry_hint_seconds(raw: String) -> float:
 						var v2 := float(md[key])
 						if v2 > 0.0:
 							return v2
-	# Then the prose form, which is what Groq actually sends.
+	# Then the prose form, which is what Groq actually sends. The unit matters:
+	# Groq says "34.9275s" or "340ms", and the
+	# earlier pattern demanded a stray "i" after the number, so it never matched
+	# either and every hint fell back to the flat wait.
 	var re := RegEx.new()
-	re.compile("try again in\\s*([0-9]+(?:\\.[0-9]+)?)\\s*s?i")
+	re.compile("(?i)(?:try again in|retry[- ]after)\\s*(?:([0-9]+)m\\s*)?([0-9]+(?:\\.[0-9]+)?)\\s*(ms|s)?")
 	var m := re.search(raw)
 	if m != null:
-		return maxf(0.0, float(m.get_string(1)))
-	var re2 := RegEx.new()
-	re2.compile("retry[- ]after\\s*([0-9]+(?:\\.[0-9]+)?)\\s*s?i")
-	var m2 := re2.search(raw)
-	if m2 != null:
-		return maxf(0.0, float(m2.get_string(1)))
+		# Groq also writes long waits as "2m59.5s".
+		var n := float(m.get_string(2)) + 60.0 * float(m.get_string(1))
+		if m.get_string(3).to_lower() == "ms":
+			n /= 1000.0
+		return maxf(0.0, n)
 	return 0.0
 var fallbacks := 0
 
@@ -254,7 +256,10 @@ func _ready() -> void:
 	proxy_url = OS.get_environment("OPENCODE_PROXY_URL")
 	if proxy_url == "":
 		proxy_url = _read_env("res://.env", "OPENCODE_PROXY_URL")
-	if proxy_url == "":
+	# The compiled-in Worker only answers a browser's origin: a native build with
+	# no key would get a 403 on every call and only then fall back to the plan
+	# library, so it goes offline at once instead.
+	if proxy_url == "" and OS.has_feature("web"):
 		proxy_url = PROXY_URL
 	for arg2 in OS.get_cmdline_user_args():
 		if arg2.begins_with("--proxy="):
@@ -385,7 +390,8 @@ func submit(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,
 	if arch != "" and _instruction_is_plain(instruction) \
 			and ArchetypeLibrary.land_plan(instruction, int(ctx.get("tier", 1))).is_empty() \
 			and ArchetypeLibrary.errand_plan(instruction).is_empty():
-		key = ArchetypeLibrary.cache_key(arch, int(ctx.get("tier", 1)), plot, mem)
+		key = ArchetypeLibrary.cache_key(arch, int(ctx.get("tier", 1)), plot, mem) \
+			+ "|" + _cache_words(instruction)
 		var hit := ArchetypeLibrary.cached(key)
 		if not hit.is_empty():
 			cache_hits += 1
@@ -671,13 +677,27 @@ func _plain_text(raw: String) -> String:
 	var choices: Variant = (json.data as Dictionary).get("choices", [])
 	if not (choices is Array) or (choices as Array).is_empty():
 		return ""
-	var msg: Variant = ((choices as Array)[0] as Dictionary).get("message", {})
-	var text := str((msg as Dictionary).get("content", "")).strip_edges()
+	var first: Variant = (choices as Array)[0]
+	if not (first is Dictionary):
+		return ""
+	var msg: Variant = (first as Dictionary).get("message", {})
+	if not (msg is Dictionary):
+		return ""
+	# A reply made only of tool calls has content null, and str(null) is the
+	# text "<null>", which would go straight into the speech bubble.
+	var content: Variant = (msg as Dictionary).get("content", "")
+	if content == null:
+		return ""
+	var text := str(content).strip_edges()
 	# Reasoning models on some gateways put their thinking in the content.
 	# Nobody says that out loud.
 	var think_end := text.rfind("</think>")
 	if think_end >= 0:
 		text = text.substr(think_end + 8).strip_edges()
+	elif text.begins_with("<think>"):
+		# Cut off inside the thinking by the token cap: there is no answer,
+		# only reasoning, and the caller has a fallback line for that.
+		return ""
 	if text.begins_with("```"):
 		var nl := text.find("\n")
 		text = text.substr(nl + 1) if nl >= 0 else text
@@ -706,6 +726,24 @@ func _plain_text(raw: String) -> String:
 func _instruction_is_plain(instruction: String) -> bool:
 	var w := instruction.strip_edges().split(" ", false)
 	return w.size() <= 5
+
+
+## Words that carry no design. Everything else an order says goes into the
+## cache key: keyed on the archetype alone, "build a big hut" was served the
+## small one cached by "build a small hut", and "a two floor hut" the bungalow.
+const CACHE_FILLER := ["build", "make", "put", "raise", "me", "us", "a", "an",
+	"the", "some", "new", "please", "up", "can", "could", "you", "for"]
+
+
+func _cache_words(instruction: String) -> String:
+	var out: Array[String] = []
+	var low := instruction.to_lower()
+	for ch: String in [".", ",", "!", "?", "'", "\u2019", "\""]:
+		low = low.replace(ch, "")
+	for w: String in low.split(" ", false):
+		if w not in CACHE_FILLER:
+			out.append(w)
+	return " ".join(out)
 
 
 func _request(instruction: String, mem: WorkerMemory, plot: Plot, ctx: Dictionary,

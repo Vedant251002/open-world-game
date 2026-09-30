@@ -519,7 +519,7 @@ func _process(delta: float) -> void:
 			# taken on for it, or already on the crew from earlier and reused,
 			# which is the right call and is why this counts orders, not hires.
 			var hired_now := crew.hired().size()
-			if _foreman.goal.log.size() >= 2 and hired_now > _hired_before_goal:
+			if _foreman.goal.log.size() >= 2:
 				print("[role] round one: %d taken on, orders to %s" % [
 					hired_now - _hired_before_goal,
 					", ".join(_foreman.goal.recent_lines(2))])

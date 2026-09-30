@@ -216,10 +216,12 @@ static func def(module: String) -> Dictionary:
 ## Implied needs plus the ones the model stated.
 static func needs_of(module_spec: Dictionary) -> Array:
 	var out: Array = []
-	for n: String in def(module_spec.get("type", "")).get("needs", []):
+	for n: String in def(str(module_spec.get("type", ""))).get("needs", []):
 		if n not in out:
 			out.append(n)
-	for n: Variant in module_spec.get("needs", []):
+	# "needs": null is the model saying it has none, and iterating it is an error.
+	var stated: Variant = module_spec.get("needs", [])
+	for n: Variant in (stated as Array) if stated is Array else []:
 		if n is String and n not in out:
 			out.append(n)
 	return out

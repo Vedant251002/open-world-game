@@ -51,7 +51,7 @@ static func read(instruction: String) -> Dictionary:
 	var t := " " + instruction.strip_edges().to_lower().replace(",", " , ") \
 		.replace(".", " ").replace("!", " ").replace("?", " ") + " "
 	t = t.replace("  ", " ")
-	var correcting := _starts_or_has(t, CORRECTING)
+	var correcting := _has(t, CORRECTING)
 	var standing := _has(t, STANDING)
 	if not correcting and not standing:
 		return {}
@@ -75,7 +75,9 @@ static func read(instruction: String) -> Dictionary:
 		or t.find(" no %ss" % spoken) >= 0
 	if negated and about in ["walls", "roof_material", "roof", "module"]:
 		value = "not:" + value
-	if negated and about == "size":
+	# "too big" already says which way it is wrong; "don't make it too big" is
+	# not a request for bigger.
+	if negated and about == "size" and not _word(t, "too"):
 		value = "bigger" if value == "smaller" else "smaller"
 
 	return {
@@ -150,6 +152,10 @@ static func _topic(t: String) -> Dictionary:
 	if _word(t, "shop") or _word(t, "counter"):
 		return {"about": "module", "value": "counter"}
 
+	# "too small" is a complaint about being small, and "small" alone is in
+	# SMALLER: checked in list order it was read as a request for smaller.
+	if _has(t, ["too small", "too little", "too cramped"]):
+		return {"about": "size", "value": "bigger"}
 	if _has(t, SMALLER):
 		return {"about": "size", "value": "smaller"}
 	if _has(t, BIGGER):
@@ -266,14 +272,6 @@ static func _word(t: String, w: String) -> bool:
 static func _has(t: String, words: Array) -> bool:
 	for w: String in words:
 		if t.find(" " + w.strip_edges() + " ") >= 0:
-			return true
-	return false
-
-
-static func _starts_or_has(t: String, words: Array) -> bool:
-	var s := t.strip_edges()
-	for w: String in words:
-		if s.begins_with(w.strip_edges()) or t.find(" " + w) >= 0:
 			return true
 	return false
 

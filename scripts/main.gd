@@ -662,7 +662,8 @@ func _raise_crew() -> void:
 		hud.show_assumptions(w, lines))
 	crew.job_done.connect(_on_job_done)
 	crew.job_failed.connect(func(w: Worker, e: Dictionary) -> void:
-		hud.toast("%s: %s" % [w.display_name(), str(e.get("code", "refused"))], 5.0))
+		hud.toast("%s: %s" % [w.display_name(),
+			str(e.get("question", e.get("code", "refused")))], 5.0))
 
 	print("[delegate] crew: %s   (AI: %s)" % [", ".join(crew.by_id.keys()),
 		dispatch.describe_ai()])

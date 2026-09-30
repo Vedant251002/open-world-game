@@ -75,6 +75,9 @@ func _run() -> void:
 func _case_short() -> void:
 	print("[econ] --- an order the stores cannot cover ---")
 	var mira: Worker = crew.workers[0]
+	# Mira keeps the store in the game, and a shopkeeper is right to refuse a
+	# cottage. This case is about the stores, so she is a builder for it.
+	mira.role = crew.roles.get_role("builder")
 	var plot := dispatch._choose_plot(mira)
 	var plan := ArchetypeLibrary.fallback("build a cottage", mira.memory, plot,
 		town.tier)
@@ -203,6 +206,9 @@ func _case_afford() -> void:
 func _case_direct() -> void:
 	print("[econ] --- told to go and fetch ---")
 	var ren: Worker = crew.workers[2]
+	# Ren farms, and digging stone is not farming. The case is about where a
+	# gather step ends up, so he is given a trade that gathers.
+	ren.role = crew.roles.get_role("wrecker")
 	# The gather step the router returns for "go and dig up some stone". What
 	# this case is about is the other end of it: that the step ends in a
 	# quarry job and not in a building.
