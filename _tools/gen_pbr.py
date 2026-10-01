@@ -338,39 +338,39 @@ def p_planks(n, boards, palette, seed, grain_contrast=1.0, knots=True,
     dj = np.minimum(dj, np.minimum(np.abs(x - sp - n), np.abs(x - sp + n)))
     joint = 1.0 - sstep(0.5, 3.0, dj) * 1.0
     bid = rowb * 2 + seg
-    tone = 0.82 + 0.36 * _hash2(bid, np.zeros_like(bid), seed + 5)
+    tone = 0.90 + 0.20 * _hash2(bid, np.zeros_like(bid), seed + 5)
     base = pick(palette, _hash2(bid, np.ones_like(bid), seed + 6))
-    # growth rings drawn as stretched sinusoids bent by low-frequency noise;
-    # the local coordinate across the board is what runs them
-    bend = fbm(n, 5, 3, seed + 8) * 2.4 + noise2(n, 3, boards * 3, seed + 12) * 3.0
-    cross = fy * 5.0 + bend + _hash2(bid, 7, seed + 14) * 10
+    # Long soft grain lines running along the board: the rings are a gentle
+    # sinusoid bent by stretched noise, so a board shows a few flowing lines
+    # rather than a bullseye, and fine fibres add the close-up texture.
+    bend = noise2(n, 2, boards * 2, seed + 8) * 1.6 + noise2(n, 4, boards * 6, seed + 12) * 0.5
+    cross = fy * 2.0 + bend + _hash2(bid, 7, seed + 14) * 10
     rings = 0.5 + 0.5 * np.sin(cross * math.pi * 2)
-    rings = rings ** 1.5
-    streak = noise2(n, 6, n // 3, seed + 16)
+    rings = rings ** 2.0
+    streak = noise2(n, 5, n // 5, seed + 16)
     fibre = noise2(n, 3, n // 2, seed + 18)
-    shade = tone * (0.80 + (0.16 * rings + 0.14 * streak + 0.06 * fibre) * grain_contrast)
+    shade = tone * (0.90 + (0.08 * rings + 0.07 * streak + 0.03 * fibre) * grain_contrast)
     alb = base * shade[..., None]
     if knots:
         kn = np.zeros((n, n))
         for k in range(boards * 1):
             r = np.random.default_rng(seed * 31 + k)
-            if r.random() < 0.6:
+            if r.random() < 0.25:
                 kx = r.random() * n
                 ky = (k + 0.3 + r.random() * 0.4) * bh
                 dxk = np.minimum(np.abs(x - kx), n - np.abs(x - kx))
                 dyk = np.minimum(np.abs(y - ky), n - np.abs(y - ky))
-                d = np.sqrt((dxk / 2.6) ** 2 + (dyk / 1.2) ** 2) / (n / 90.0)
+                d = np.sqrt((dxk / 2.0) ** 2 + (dyk / 1.2) ** 2) / (n / 220.0)
                 kn = np.maximum(kn, np.clip(1 - d / 6.0, 0, 1))
-                kn = np.maximum(kn, 0.0)
-        ringk = 0.5 + 0.5 * np.sin(kn * 22.0)
-        alb = alb * (1 - 0.35 * (kn > 0.02) * (0.5 + 0.5 * ringk))[..., None]
+        ringk = 0.5 + 0.5 * np.sin(kn * 18.0)
+        alb = alb * (1 - 0.18 * (kn > 0.02) * (0.5 + 0.5 * ringk))[..., None]
     seam = np.clip(1.0 - sstep(gap * 0.4, gap + 0.08, np.minimum(fy, 1 - fy)), 0, 1)
-    alb = alb * (1 - 0.68 * seam)[..., None]
-    alb = alb * (1 - 0.55 * joint)[..., None]
+    alb = alb * (1 - 0.45 * seam)[..., None]
+    alb = alb * (1 - 0.40 * joint)[..., None]
     if weather:
         gr = fbm(n, 7, 4, seed + 40)
         alb = mixc(alb, np.mean(alb, axis=2, keepdims=True) * C(1.0, 0.98, 0.92), weather * gr)
-    h = (1 - seam) * 0.55 + (1 - joint) * 0.2 + rings * 0.10 * grain_contrast + streak * 0.08
+    h = (1 - seam) * 0.55 + (1 - joint) * 0.2 + rings * 0.05 * grain_contrast + streak * 0.06
     rough = rough_base + streak * 0.10
     return alb, h, rough, np.zeros((n, n))
 
@@ -812,17 +812,17 @@ def build_all(n, out_dir):
     stone_pal = [C(0.40, 0.39, 0.38), C(0.44, 0.43, 0.42), C(0.36, 0.36, 0.37), C(0.47, 0.44, 0.40)]
     rock_pal = [C(0.44, 0.42, 0.40), C(0.38, 0.37, 0.36), C(0.50, 0.46, 0.41), C(0.35, 0.35, 0.36)]
     granite_pal = [C(0.46, 0.43, 0.41), C(0.40, 0.38, 0.38), C(0.52, 0.47, 0.44)]
-    wood_light = [C(0.60, 0.44, 0.27), C(0.56, 0.40, 0.25), C(0.64, 0.48, 0.30), C(0.52, 0.38, 0.24)]
-    wood_mid = [C(0.44, 0.31, 0.19), C(0.40, 0.28, 0.17), C(0.48, 0.34, 0.21), C(0.36, 0.26, 0.17)]
-    wood_dark = [C(0.24, 0.17, 0.11), C(0.21, 0.15, 0.10), C(0.27, 0.19, 0.12)]
+    wood_light = [C(0.60, 0.47, 0.33), C(0.57, 0.45, 0.32), C(0.63, 0.50, 0.36), C(0.54, 0.43, 0.31)]
+    wood_mid = [C(0.46, 0.34, 0.24), C(0.43, 0.32, 0.23), C(0.49, 0.37, 0.26), C(0.40, 0.30, 0.22)]
+    wood_dark = [C(0.35, 0.25, 0.17), C(0.32, 0.23, 0.16), C(0.38, 0.27, 0.19)]
     brick_pal = [C(0.58, 0.29, 0.21), C(0.64, 0.33, 0.24), C(0.52, 0.26, 0.20),
                  C(0.69, 0.39, 0.28), C(0.56, 0.30, 0.24)]
     sand_pal = [C(0.66, 0.57, 0.43), C(0.62, 0.53, 0.40), C(0.70, 0.60, 0.46)]
     # name -> (builder, bump strength)
     SPECS = {
-        "timber":           (lambda: p_planks(n, 4, wood_mid, 4, 1.1, True, 0.05, 0.84, 0.3), 0.9),
-        "plank":            (lambda: p_planks(n, 5, wood_light, 5, 1.0, True, 0.05, 0.80), 0.9),
-        "dark_oak":         (lambda: p_planks(n, 4, wood_dark, 6, 1.0, True, 0.05, 0.80), 0.9),
+        "timber":           (lambda: p_planks(n, 6, wood_mid, 4, 1.0, True, 0.05, 0.84, 0.3), 0.9),
+        "plank":            (lambda: p_planks(n, 6, wood_light, 5, 1.0, True, 0.05, 0.80), 0.9),
+        "dark_oak":         (lambda: p_planks(n, 5, wood_dark, 6, 1.0, True, 0.05, 0.80), 0.9),
         "bark":             (lambda: p_bark(n), 1.5),
         "brick":            (lambda: p_coursed(n, brick_pal, 16, 6, 42, C(0.62, 0.58, 0.50),
                                                0.055, 0.22, 0.22, 0.0, 0.14), 1.3),
