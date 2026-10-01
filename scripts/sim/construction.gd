@@ -17,6 +17,14 @@ var finished := false
 var props_spawned := false
 var spawned_nodes: Array[Node3D] = []
 
+## The show: outline, scaffold, flag, dust, piles of material, confetti. Made
+## lazily on the first hour of real work (a building put up by complete_now(),
+## which is a save loading or a test, never gets one) and removes itself.
+var fx: SiteFx = null
+var show_fx := true
+const NO_FX := ["road", "levelled ground", "tree", "grove", "demolition", "pen"]
+const POPS_PER_BATCH := 6
+
 ## Voxels laid per in-game hour. A worker of speed 1.0 puts up a small hut in
 ## about six hours, which is the loop timing target in §3.
 var voxels_per_hour := 3000.0
@@ -48,28 +56,85 @@ func advance(hours: float) -> void:
 	if n <= 0:
 		return
 	_carry -= n
-	_lay(n)
+	_ensure_fx()
+	_lay(n, true)
 
 
 ## Puts the whole thing up at once. Used by the debug harness and by save
 ## loading, never by a worker.
 func complete_now() -> void:
-	_lay(total())
+	_lay(total(), false)
 
 
-func _lay(n: int) -> void:
+func _lay(n: int, visual: bool = false) -> void:
 	var order := patch.build_order
 	var end := mini(cursor + n, order.size())
+	# A dust puff for a handful of the voxels in this batch, evenly spread, so
+	# the cost is the same whether a frame laid ten or ten thousand.
+	var stride := maxi(1, n / POPS_PER_BATCH)
+	var top_y := -1000000
+	var track := visual and fx != null
+	var k := 0
 	while cursor < end:
 		var i := order[cursor]
 		cursor += 1
 		var mat := patch.data[i]
 		if mat == VoxelPatch.UNTOUCHED:
 			continue
-		world.set_voxel(patch.world_of(i), mat)
+		var v := patch.world_of(i)
+		world.set_voxel(v, mat)
+		if track:
+			if v.y > top_y:
+				top_y = v.y
+			if k % stride == 0 and mat != VoxelTypes.AIR:
+				fx.pop(v, mat)
+			k += 1
+	if track and top_y > -1000000:
+		fx.progress(progress(), float(top_y + 1) * SiteFx.VOXEL_M - fx.ground_y())
 	if cursor >= order.size() and not finished:
 		finished = true
+		if fx != null:
+			fx.celebrate(_title())
+			fx = null
 		_spawn_props()
+
+
+## Dropped a job half way: the show goes, the walls stay as they are.
+func abandon_show() -> void:
+	if fx != null and is_instance_valid(fx):
+		fx.queue_free()
+	fx = null
+
+
+## The outline goes up when the builder arrives, before the first course.
+func begin_show() -> void:
+	_ensure_fx()
+
+
+func _ensure_fx() -> void:
+	if fx != null and is_instance_valid(fx):
+		return
+	if not show_fx or finished or prop_parent == null or not prop_parent.is_inside_tree():
+		return
+	if NO_FX.has(patch.archetype) or patch.footprint.size.x < 10 or patch.footprint.size.y < 10:
+		return
+	fx = SiteFx.new()
+	fx.name = "SiteFx"
+	prop_parent.add_child(fx)
+	fx.setup(patch, world)
+
+
+## A worker has walked a load over and put it down by the site.
+func drop_material(kind: String, at: Vector3) -> void:
+	_ensure_fx()
+	if fx != null:
+		fx.drop_pile(kind, at)
+
+
+func _title() -> String:
+	if patch.sign_text != "":
+		return patch.sign_text.capitalize()
+	return patch.archetype.replace("_", " ").capitalize()
 
 
 ## The furniture, for a building put back from a save: the voxels came back
@@ -91,6 +156,28 @@ func _spawn_props() -> void:
 		if not Props.exists(t):
 			continue
 		spawned_nodes.append(Props.spawn(t, p["pos"], float(p.get("yaw", 0.0)), prop_parent))
+		# Ambient life: sparks off a forge, embers in an oven.
+		var key := Props.resolve(t)
+		if key == "forge_block":
+			VillageAmbience.add_source(patch.get_instance_id(), "forge", Vector3(p["pos"]) + Vector3(0, 0.75, 0))
+		elif key == "oven_block":
+			VillageAmbience.add_source(patch.get_instance_id(), "oven", Vector3(p["pos"]) + Vector3(0, 0.5, 0))
+	_register_chimneys()
+
+
+## Smoke from every chimney the building has. Only the module's rectangle and
+## the building's height are recorded here: the stack itself is found later, by
+## Ambience, from the voxels once they are in the world (a restored save has no
+## patch data to read, and its chunks are not loaded yet at this point).
+func _register_chimneys() -> void:
+	for m: Dictionary in patch.modules:
+		var mdef := Vocabulary.def(str(m.get("type", "")))
+		if not ("chimney" in mdef.get("needs", [])):
+			continue
+		var kind := "steam" if str(m.get("type", "")) == "oven" else "smoke"
+		VillageAmbience.add_chimney(patch.get_instance_id(), kind, m["rect"],
+			patch.origin.y, patch.origin.y + patch.size.y - 1)
+
 
 
 ## The shop sign is the one place text belongs in the world: it is how the
@@ -117,6 +204,10 @@ func _spawn_sign(p: Dictionary) -> Node3D:
 ## Demolition: takes the building back out and refunds part of the materials,
 ## per game-design-doc.md §9. Wrong must be recoverable, and never free.
 func demolish() -> Dictionary:
+	VillageAmbience.remove_owner(patch.get_instance_id())
+	if fx != null and is_instance_valid(fx):
+		fx.queue_free()
+	fx = null
 	for i in patch.build_order:
 		var mat := patch.data[i]
 		if mat == VoxelPatch.UNTOUCHED or mat == VoxelTypes.AIR:

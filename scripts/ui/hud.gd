@@ -563,6 +563,13 @@ func _on_looked_at(node: Node) -> void:
 
 
 func _process(delta: float) -> void:
+	# The chat word in the key hints is a button only while the player is not
+	# steering (a menu, the bar or chat has the pointer). During play it lets
+	# clicks through, or a click that happened to land on it went to the
+	# button and not to the world.
+	if _chat_button != null and player != null:
+		_chat_button.mouse_filter = Control.MOUSE_FILTER_IGNORE \
+			if player.input_enabled else Control.MOUSE_FILTER_STOP
 	if clock != null:
 		var h := int(clock.hour)
 		var tt := "%02d:%02d" % [h, int((clock.hour - h) * 60.0)]

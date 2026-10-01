@@ -32,6 +32,13 @@ static var _disc: Texture2D = null
 ## Off while the title screen is up: the tags of whoever stands by the camera
 ## otherwise sit on top of the game's name.
 static var hidden := false
+## Every tag on screen this frame: screen position and distance. When two land
+## on top of each other ("MiraTobias") the nearer keeps its tag and the farther
+## steps back, unless it is the one being looked at.
+static var _placed: Dictionary = {}       ## instance id -> [Vector2, float], this frame
+static var _last: Dictionary = {}         ## the same, last frame
+static var _placed_frame := -1
+const OVERLAP_PX := Vector2(150.0, 34.0)
 
 
 func setup(w: Worker) -> void:
@@ -134,6 +141,7 @@ func _process(delta: float) -> void:
 	_alpha = maxf(_alpha, _focus * 0.9) if d < 40.0 else 0.0
 	# Close enough that the head is off the top of the screen: let it go.
 	_alpha *= smoothstep(0.7, 1.4, d)
+	_alpha *= _declutter(cam, d)
 	var shown := _alpha > 0.02 and not hidden
 	_name.visible = shown
 	_role.visible = shown and _role.text != ""
@@ -160,3 +168,32 @@ func _process(delta: float) -> void:
 		var gc := Color("#ffe08a") if _status == "?" else Color("#b9f0b0")
 		_glyph.modulate = Color(gc, a)
 		_glyph.text = _status
+
+
+## 1 if this tag has its own patch of screen, less if a nearer tag sits on it.
+## Tags register as they are drawn and compare against this frame's and last
+## frame's positions, so a tag processed before a nearer one still sees it
+## (one frame late), and the nearer of any overlapping pair wins either way.
+func _declutter(cam: Camera3D, d: float) -> float:
+	var f := Engine.get_process_frames()
+	if f != _placed_frame:
+		_placed_frame = f
+		_last = _placed
+		_placed = {}
+	if cam.is_position_behind(global_position):
+		return 1.0
+	var at := cam.unproject_position(global_position)
+	_placed[get_instance_id()] = [at, d]
+	if focused:
+		return 1.0
+	var keep := 1.0
+	var others := _last.duplicate()
+	others.merge(_placed, true)
+	for id: int in others:
+		if id == get_instance_id():
+			continue
+		var o: Array = others[id]
+		var gap: Vector2 = ((o[0] as Vector2) - at).abs()
+		if gap.x < OVERLAP_PX.x and gap.y < OVERLAP_PX.y and float(o[1]) < d:
+			keep = minf(keep, 0.12)
+	return keep

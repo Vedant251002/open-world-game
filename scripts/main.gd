@@ -126,6 +126,7 @@ func _ready() -> void:
 		# away from.
 		world.import_edits(_save.get("world", {}))
 
+	VillageAmbience.clear_sources()      # smoke/sparks registry is static; start clean
 	props_root = Node3D.new()
 	props_root.name = "Props"
 	add_child(props_root)
@@ -441,6 +442,19 @@ func _on_world_ready(t0: int) -> void:
 			if a.begins_with("--say="):
 				say3 = a.substr(6)
 		tt.begin(say3)
+		return
+	if "--sitefx" in args:
+		var sf := SiteFxShot.new()
+		sf.world = world
+		sf.player = player
+		sf.crew = crew
+		sf.dispatch = dispatch
+		sf.clock = clock
+		sf.town = town
+		sf.sky = sky
+		sf.village = village
+		add_child(sf)
+		sf.begin()
 		return
 	if "--gestures" in args:
 		var gt := GestureTest.new()
@@ -793,6 +807,13 @@ func _raise_crew() -> void:
 	# building site. One hub; every system of it plugs into that.
 	if "--norealm" not in OS.get_cmdline_user_args():
 		_raise_realm()
+	# --- village ambience: chimney smoke, forge sparks, fireflies, butterflies ---
+	if "--noambience" not in OS.get_cmdline_user_args():
+		var amb := VillageAmbience.new()
+		amb.name = "Ambience"
+		add_child(amb)
+		amb.setup(world, player, clock)
+		amb.realm = realm
 	_raise_village_life()
 	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
