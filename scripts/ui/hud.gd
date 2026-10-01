@@ -127,7 +127,10 @@ func _build() -> void:
 	_crosshair_dot.visible = false
 	_root.add_child(_crosshair_dot)
 
-	_k = 1.75 if _touch else 1.0
+	# Bigger on a phone, where the 1600x900 canvas is shown at under half size,
+	# but not so big the column covers a third of a landscape screen: at 1.75
+	# it did. 1.4 keeps the smallest line about 14 CSS px on a 390 px phone.
+	_k = 1.4 if _touch else 1.0
 	_build_topleft()
 
 	# One column at the bottom centre: what was said, what happened, and what
@@ -153,7 +156,7 @@ func _build() -> void:
 	var prow := HBoxContainer.new()
 	prow.add_theme_constant_override("separation", int(10 * _k))
 	_prompt_box.add_child(prow)
-	_prompt_key = UiTheme.key_cap("E", int(15 * _k))
+	_prompt_key = UiTheme.key_cap("TALK" if _touch else "E", int(15 * _k))
 	_prompt_key_label = _prompt_key.get_child(0) as Label
 	prow.add_child(_prompt_key)
 	_prompt_name = _label("", int(19 * _k), INK)

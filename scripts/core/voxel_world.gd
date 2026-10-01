@@ -969,8 +969,19 @@ func mesh_node_count() -> int:
 	return _nodes.size()
 
 
+## Whether there is meshing still to do. A dirty chunk at the edge of the
+## loaded disc waits for a neighbouring column that is outside the load radius
+## and will not come until the player walks that way; counted as work, it kept
+## this true for good on the phone profile's smaller radius (a showcase
+## building's edits reach past it), and everything that waits for the world to
+## settle waited for ever.
 func busy() -> bool:
-	return _loading or not _in_flight.is_empty() or not _dirty.is_empty()
+	if _loading or not _in_flight.is_empty():
+		return true
+	for cpos: Vector3i in _dirty:
+		if column_meshable(cpos.x, cpos.z):
+			return true
+	return false
 
 
 func pending() -> int:

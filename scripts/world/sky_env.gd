@@ -47,6 +47,10 @@ var _push_due := 0.0
 ## things simply are not there, and ambient light is the one that decides
 ## whether the game is playable.
 var _compat := false
+## A phone screen is smaller, dimmer and often looked at outdoors, so the same
+## frame that reads as moody on a monitor reads as murky there. Fill and
+## exposure are lifted on the phone profile, most of all at night.
+var _handheld := false
 
 const SKY_SHADER := preload("res://scripts/core/sky.gdshader")
 
@@ -162,6 +166,7 @@ func _ready() -> void:
 	_no_clouds = "--noclouds" in args
 	_no_shadow_moon = "--nomoonshadow" in args
 	_compat = RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	_handheld = Platform.is_handheld()
 	_build_environment()
 	_build_lights()
 	_build_vignette()
@@ -588,7 +593,8 @@ func _apply_time() -> void:
 	sky_fill = sky_fill.lerp(MOONLIGHT, night)
 	env.ambient_light_color = sky_fill
 	if _compat:
-		env.ambient_light_energy = ambient * lerpf(AMBIENT_COMPAT_DAY, AMBIENT_COMPAT_NIGHT, night)
+		env.ambient_light_energy = ambient * lerpf(AMBIENT_COMPAT_DAY, AMBIENT_COMPAT_NIGHT, night) \
+			* (lerpf(1.3, 2.2, night) if _handheld else 1.0)
 		env.ambient_light_sky_contribution = 0.0
 	else:
 		env.ambient_light_energy = ambient * lerpf(0.85, 1.6, night)
@@ -597,7 +603,7 @@ func _apply_time() -> void:
 	# Tonemap exposure follows the hour a little: brighter at night so the moon
 	# scene has something to work with, slightly lower at noon to hold highlights.
 	env.tonemap_exposure = (EXPOSURE_COMPAT if _compat else EXPOSURE_FPLUS) \
-		* lerpf(1.0, 1.25, night)
+		* lerpf(1.0, 1.25, night) * (lerpf(1.15, 1.35, night) if _handheld else 1.0)
 
 	# Colour grade per time of day: rich and slightly contrasty at noon, punchier
 	# and warmer at golden hour, desaturated toward blue at night.

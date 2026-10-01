@@ -93,13 +93,15 @@ func _buttons() -> Dictionary:
 		return {"map": out["map"]}
 	if _inventory_open():
 		return {"bag": out["bag"]}
-	out["menu"] = {
-		"centre": Vector2(56.0 * u, 56.0 * u), "radius": 28.0 * u,
-		"action": &"menu", "label": "ESC",
-	}
+	# Down the right edge under MAP and BAG. The top-left corner is the HUD's
+	# clock and crew cards, and buttons there sat underneath them.
 	out["chat"] = {
-		"centre": Vector2(56.0 * u, 122.0 * u), "radius": 28.0 * u,
+		"centre": Vector2(s.x - 56.0 * u, 188.0 * u), "radius": 28.0 * u,
 		"action": &"chat", "label": "CHAT",
+	}
+	out["menu"] = {
+		"centre": Vector2(s.x - 56.0 * u, 254.0 * u), "radius": 28.0 * u,
+		"action": &"menu", "label": "ESC",
 	}
 	out["talk"] = {
 		"centre": Vector2(s.x - 100.0 * u, s.y - 108.0 * u), "radius": 54.0 * u,
