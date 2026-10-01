@@ -60,6 +60,13 @@ func _frames(n: int) -> void:
 		await get_tree().process_frame
 
 
+func _burning_id(wx: Node, id: int) -> bool:
+	for f: Dictionary in wx.fires():
+		if int(f["id"]) == id:
+			return true
+	return false
+
+
 func _run() -> void:
 	var w: Worker = crew.workers[0]
 	var cr: Node = realm.system("Crisis")
@@ -146,11 +153,17 @@ func _fire(w: Worker, cr: Node, wx: Node) -> void:
 	var second_id := int(wx.fires()[0]["id"])
 	cr.scan()
 	hours = 0
-	while not wx.fires().is_empty() and hours < 30:
+	while _burning_id(wx, second_id) and hours < 30:
 		clock.advance(1.0)
 		hours += 1
+	_check(not _burning_id(wx, second_id), "an unfought fire burns itself out in %d hours" % hours)
+	# Whatever it set going next door (it may even jump back) burns out too.
+	var tail := 0
+	while not wx.fires().is_empty() and tail < 96:
+		clock.advance(1.0)
+		tail += 1
 	cr.scan()
-	_check(wx.fires().is_empty(), "an unfought fire burns itself out in %d hours" % hours)
+	_check(wx.fires().is_empty(), "the spread burnt out too, %d hours later" % tail)
 	var report2: Dictionary = (wx.fire_reports as Dictionary)[second_id]
 	_check(not bool(report2["by_hand"]) and float(report2["lost"]) > burnt_fought,
 		"unfought fire took more (%.0f%% vs %.0f%%)" % [float(report2["lost"]) * 100.0, burnt_fought * 100.0])
