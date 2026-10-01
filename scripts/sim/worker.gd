@@ -1625,7 +1625,7 @@ func _finish_craft() -> void:
 	back.y = world.ground_m(back.x, back.z)
 	if not walk_to(back, "report"):
 		state = State.REPORTING
-	_say("%s, in the stores." % job.summary().capitalize(), "done")
+	_say("%s, in the stores." % Answers._sentence(job.summary()), "done")
 	step_done.emit(self)
 
 
@@ -1854,12 +1854,12 @@ func _completion_line(patch: VoxelPatch, hours: float) -> String:
 	match memory.worker_id:
 		"mira":
 			if hours < job_eta_hours * 0.9:
-				return "%s is done, and early. Come and look." % what.capitalize()
-			return "%s is up. I did exactly what you said." % what.capitalize()
+				return "%s is done, and early. Come and look." % Answers._sentence(what)
+			return "%s is up. I did exactly what you said." % Answers._sentence(what)
 		"tobias":
 			return "The %s is finished. It took the time it needed to take." % what
 		"ren":
-			return "%s is done. I changed a couple of things — you will like it." % what.capitalize()
+			return "%s is done. I changed a couple of things — you will like it." % Answers._sentence(what)
 	return "The %s is finished." % what
 
 
@@ -1946,10 +1946,10 @@ func _criticism_reply() -> String:
 
 func _correction_reply(pref: String) -> String:
 	match memory.worker_id:
-		"mira": return "I will remember. %s." % pref.capitalize()
+		"mira": return "I will remember. %s." % Answers._sentence(pref)
 		"tobias": return "Good. Now I know for next time: %s." % pref
-		"ren": return "If you say so. %s." % pref.capitalize()
-	return pref.capitalize() + "."
+		"ren": return "If you say so. %s." % Answers._sentence(pref)
+	return Answers._sentence(pref) + "."
 
 
 func _demolish_reply() -> String:

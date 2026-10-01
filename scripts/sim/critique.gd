@@ -289,5 +289,5 @@ static func reaction(mem: WorkerMemory, learned: Dictionary) -> String:
 	if sens > 0.7:
 		return "Sorry. I will remember: %s."% text
 	if sens < 0.3:
-		return "Fair enough. %s, then." % text.capitalize()
+		return "Fair enough. %s, then." % Answers._sentence(text)
 	return "Right — %s. I have got it now." % text
