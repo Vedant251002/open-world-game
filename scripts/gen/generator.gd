@@ -1033,6 +1033,20 @@ static func _yaw_of(dir: Vector3i) -> float:
 
 # -------------------------------------------------------------- stage 8: props
 
+## What a room of each kind is dressed with beyond its vocabulary list, so a
+## bakery has bread on racks, a tavern a bar and bottles, a shop its shelves.
+## Placed after the essentials and dropped silently when the room is too small.
+const DRESSING := {
+	"hearth": [["table", 1], ["shelf", 1]],
+	"oven": [["bread_rack", 1], ["shelf", 1]],
+	"counter": [["shelf", 2], ["barrel", 1]],
+	"seating": [["counter_block", 1], ["shelf", 1], ["barrel", 2]],
+	"workbench": [["barrel", 1], ["shelf", 1]],
+	"bed_area": [["shelf", 1]],
+	"forge": [["barrel", 1], ["crate", 1]],
+}
+
+
 func _stage_props() -> void:
 	var rng := DetRng.new(seed_value, plot.id, STEP_PROPS)
 	for i in cells.size():
@@ -1051,7 +1065,9 @@ func _stage_props() -> void:
 			"flue": flue_spots.get(i, Vector2i(-1, -1)),
 		})
 
-		_furnish(r, base, mtype, d.get("props", []), rng)
+		var wanted: Array = (d.get("props", []) as Array).duplicate()
+		wanted.append_array(DRESSING.get(mtype, []))
+		_furnish(r, base, mtype, wanted, rng)
 
 	# Rooms the partitioner never assigned a module to are still rooms. Left
 	# bare they read as an unfinished house, and being unlit they read as a
