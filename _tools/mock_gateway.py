@@ -36,6 +36,7 @@ PAT = (r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}++|\p{N}{1,3}+|"""
        r""" ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s""")
 ENC: tiktoken.Encoding | None = None
 LOG = None
+MODE = "ok"
 
 
 def tokens(text: str) -> int:
@@ -151,6 +152,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.end_headers()
             return
+        if MODE != "ok":
+            LOG.write(json.dumps({"t": t0, "kind": "fail:" + MODE, "bytes": len(raw)}) + "\n")
+            LOG.flush()
+            if MODE == "429":
+                data = json.dumps({"error": {"message": "Rate limit reached. Please try again in 2.5s."}}).encode()
+                self.send_response(429)
+            elif MODE == "500":
+                data = b'{"error":{"message":"upstream exploded"}}'
+                self.send_response(500)
+            else:   # garbage: a 200 that is not a usable reply
+                data = b'{"choices":[{"message":{"content":"<think>hmm, the player wants'
+                self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         msg, kind = answer(body)
         sys_txt = "".join(str(m.get("content", "")) for m in body.get("messages", [])
                           if m.get("role") == "system")
@@ -196,12 +214,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    global ENC, LOG
+    global ENC, LOG, MODE
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--log", default="calls.jsonl")
     ap.add_argument("--bpe", default="", help="path to cl100k_base.tiktoken")
+    ap.add_argument("--mode", default="ok", choices=["ok", "429", "500", "garbage"],
+                    help="answer every call with this failure instead, to test the fallbacks")
     a = ap.parse_args()
+    MODE = a.mode
     if a.bpe:
         ENC = tiktoken.Encoding(name="cl100k_local", pat_str=PAT,
                                 mergeable_ranks=load_tiktoken_bpe(a.bpe), special_tokens={})

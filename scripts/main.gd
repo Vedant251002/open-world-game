@@ -323,6 +323,19 @@ func _on_world_ready(t0: int) -> void:
 				say2 = a.substr(6)
 		rt.begin(say2)
 		return
+	if "--uiflow" in args:
+		# The game driven through its interface: talk, type, tap a phrase,
+		# open and close every screen. See scripts/dev/ui_flow.gd.
+		var uf := UiFlow.new()
+		uf.hud = hud
+		uf.crew = crew
+		uf.player = player
+		uf.map = map
+		uf.inventory = inventory
+		uf.pause = pause_menu
+		add_child(uf)
+		uf.begin()
+		return
 	if "--costrun" in args:
 		# A scripted first session, for reading the cost of each thing a
 		# player does off the gateway's log. See scripts/dev/cost_run.gd.
