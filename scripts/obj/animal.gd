@@ -41,6 +41,12 @@ var _legs: Array = []
 var _head: Node3D
 var _torso: Node3D
 var _tail: Node3D
+var _neck: Node3D
+var _tail_axis := "z"
+var _head_rest := 0.0
+var _neck_rest := 0.0
+var _graze := 0.0
+var _torso_y := 0.0
 var _head_rest_y := 0.0
 var _hopping := false
 var _hop_t := 0.0
@@ -73,6 +79,13 @@ func setup(species: String, w: VoxelWorld, c: GameClock, at: Vector3) -> void:
 	_head = _parts.get("head", null)
 	_torso = _parts.get("torso", null)
 	_tail = _parts.get("tail", null)
+	_neck = _parts.get("neck", null)
+	if _torso != null:
+		_torso_y = _torso.position.y
+	_tail_axis = str(_parts.get("tail_axis", "z"))
+	_head_rest = float(_parts.get("head_rest", 0.0))
+	if _neck != null:
+		_neck_rest = _neck.rotation.x
 	if _head != null:
 		_head_rest_y = _head.position.y
 	floor_max_angle = deg_to_rad(58.0)
@@ -204,6 +217,7 @@ func _pick_target() -> void:
 
 func _animate(delta: float, speed: float) -> void:
 	var walking := speed > 0.05
+	var quad: bool = _spec["plan"] == "quadruped"
 	if walking:
 		_phase += delta * speed * (5.5 if _legs.size() > 2 else 7.0)
 		var swing := sin(_phase) * 0.7
@@ -218,30 +232,58 @@ func _animate(delta: float, speed: float) -> void:
 		if _head != null:
 			_head.position.y = _head_rest_y + sin(_phase * 2.0) * 0.02
 			_head.rotation.x = lerpf(_head.rotation.x, _head_rest_pitch(), delta * 6.0)
+		if _neck != null:
+			_neck.rotation.x = lerpf(_neck.rotation.x, _neck_rest, delta * 6.0)
 		if _torso != null:
 			_torso.rotation.z = sin(_phase) * 0.02
-		if _tail != null and _spec["plan"] == "quadruped":
-			_tail.rotation.y = sin(_phase * 0.5) * 0.25
+			_torso.position.y = _torso_rest_y() + absf(sin(_phase)) * 0.012
+			_torso.scale.y = 1.0
+		_graze = 0.0
+		_swish(sin(_phase * 0.5) * 0.25)
 	else:
 		for l: Node3D in _legs:
 			l.rotation.x = lerpf(l.rotation.x, 0.0, delta * 8.0)
 		if _torso != null:
 			_torso.rotation.z = lerpf(_torso.rotation.z, 0.0, delta * 8.0)
+			_torso.position.y = lerpf(_torso.position.y, _torso_rest_y(), delta * 8.0)
+			# Breathing: the barrel swells and settles, a little faster on
+			# something small.
+			_torso.scale.y = 1.0 + sin(_phase * 2.4) * 0.012
 		# Grazing, or pecking at the ground, while idle.
 		_phase += delta * 1.3
 		var peck := maxf(sin(_phase * 0.9), 0.0)
 		if _head != null:
-			_head.rotation.x = _head_rest_pitch() + (-peck * peck * 0.9
-				if _spec["plan"] == "bird" else peck * peck * 0.55)
-		if _tail != null and _spec["plan"] == "quadruped":
-			_tail.rotation.y = sin(_phase * 1.7) * 0.15
+			if quad:
+				# The neck drops and the head follows it down to the grass.
+				_graze = peck * peck
+				if _neck != null:
+					_neck.rotation.x = lerpf(_neck.rotation.x,
+						_neck_rest + _graze * (float(_spec["neck_up"]) + 0.5), delta * 6.0)
+				_head.rotation.x = lerpf(_head.rotation.x,
+					_head_rest_pitch() - _graze * 0.35, delta * 6.0)
+			else:
+				_head.rotation.x = _head_rest_pitch() - peck * peck * 0.9
+		_swish(sin(_phase * 1.7) * 0.15 + sin(_phase * 0.37) * 0.1)
 
 
-## Where the head sits when it is not doing anything: level for a bird,
-## most of the way back to level off a raised neck for a quadruped.
+func _swish(a: float) -> void:
+	if _tail == null or _spec["plan"] != "quadruped":
+		return
+	if _tail_axis == "y":
+		_tail.rotation.y = a
+	else:
+		_tail.rotation.z = a
+
+
+func _torso_rest_y() -> float:
+	return _torso_y
+
+
+## Where the head sits when it is not doing anything: level for a bird, and for
+## a quadruped however far the species lets it hang off the neck.
 func _head_rest_pitch() -> float:
 	if _spec["plan"] == "quadruped":
-		return float(_spec["neck_up"]) * 0.75
+		return _head_rest
 	return 0.0
 
 

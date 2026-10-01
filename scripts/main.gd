@@ -1106,20 +1106,30 @@ func _line_up_cast() -> void:
 			dispatch.instruct(crew.workers[0], a.substr(6))
 	var species := ["hen", "sheep", "cow"]
 	for i in species.size():
-		var spot := base + Vector3((i - 1) * 2.4, 0.0, -2.6)
+		var spot := base + Vector3((i - 1) * 1.9, 0.0, -3.0)
 		livestock.stock_area(str(species[i]), spot, 1, 0.1)
+	# Livestock._process turns physics back on for anything near the player,
+	# and on ground that has not streamed in yet the animal then falls through
+	# the world. So the cast is taken out of the flock's hands: pinned to the
+	# ground height, facing the camera, with physics off for good.
+	var posed: Array[Animal] = []
 	for a: Animal in livestock.animals:
 		if a.global_position.distance_to(base) < 6.0:
 			a.avoid = null
 			a.rotation.y = PI
 			a.set_physics_process(false)
+			a.global_position.y = world.ground_m(a.global_position.x, a.global_position.z)
+			a.visible = true
+			posed.append(a)
+	for a: Animal in posed:
+		livestock.animals.erase(a)
 	# A camera at yaw 0 looks toward -Z, so one standing behind the line at -Z
 	# has to be turned right round to see it. Livestock in front, crew behind,
 	# so one frame holds the entire population of the game.
 	showcase_views = [
-		{"pos": base + Vector3(0, 1.35, -8.5), "yaw": PI, "pitch": -0.10,
+		{"pos": base + Vector3(0, 1.35, -9.5), "yaw": PI, "pitch": -0.10,
 			"hour": 11.0, "name": "cast"},
-		{"pos": base + Vector3(0, 0.75, -5.0), "yaw": PI, "pitch": -0.05,
+		{"pos": base + Vector3(0, 0.75, -6.4), "yaw": PI, "pitch": -0.05,
 			"hour": 11.0, "name": "cast_close"},
 	]
 
