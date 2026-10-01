@@ -12,8 +12,8 @@ class_name MapScreen
 ## it about a thousand square metres of land the player has never walked to
 ## while the game carries on.
 
-const SAMPLES := 384              ## terrain texture resolution, per side
-const MARGIN := 1.5               ## texture covers this multiple of the view
+const SAMPLES := 512              ## map pixels per side (see MapPixels.grid_for)
+const MARGIN := 1.3               ## the pixels cover this multiple of the view
 const MIN_SPAN := 90.0
 const MAX_SPAN := 1400.0
 
@@ -36,11 +36,16 @@ var _dir: Array = []                    ## Homes.directory(), refreshed with the
 var _dir_t := 0.0
 
 var _root: Control
-var _land: TextureRect
+var _land: TextureRect                  ## explored land, from the voxels
+var _survey: TextureRect                ## the rest, from the generator, under it
+var pixels: MapPixels                   ## Minecraft-style pixels (shared with the minimap)
+var _grid: Dictionary = {}              ## the pixel grid both textures are on
+var _survey_grid: Dictionary = {}
+var _explored_rev := -1
+var _explored_t := 0.0
+var _tags: Array[Rect2] = []            ## labels drawn this frame, so they do not pile up
 var _overlay: Control
 var _hud: Control
-var _tex_centre := Vector2(1e9, 1e9)
-var _tex_span := 0.0
 var _pending := false
 var _mutex := Mutex.new()
 var _result: Array = []
@@ -49,18 +54,10 @@ var _vignette: TextureRect
 var _font: Font
 
 # --- palette: muted, so the ink layer on top stays legible ---
-const C_DEEP := Color("#33556b")
 const C_SHALLOW := Color("#5d8ea4")
-const C_SAND := Color("#d9c79a")
-const C_GRASS_LOW := Color("#8aa063")
-const C_GRASS_HIGH := Color("#a6a473")
-const C_ROCK := Color("#9c9890")
-const C_SNOW := Color("#d6d6cf")
 const C_PAPER := Color("#efe6d2")
 const C_INK := Color("#2b2118")
-const C_ROAD := Color("#e8dcbf")
 const C_PLOT := Color("#7c6a4e")
-const C_BUILDING := Color("#7a4a2e")
 const C_HOME := Color("#a8432f")           ## somebody lives here: keep out
 const C_WORK := Color("#3f5f7a")
 const DIR_W := 330.0
@@ -72,6 +69,8 @@ func setup(w: VoxelWorld, g: WorldGen, v: Village, p: Player) -> void:
 	village = v
 	player = p
 	centre = Vector2(v.well_pos.x, v.well_pos.z)
+	pixels = MapPixels.new()
+	pixels.setup(w, g, v)
 	_font = UiTheme.font(600)
 	layer = 20
 	_build_ui()
@@ -101,10 +100,11 @@ func _build_ui() -> void:
 	frame.offset_right = -48
 	frame.offset_bottom = -36
 	var style := StyleBoxFlat.new()
-	style.bg_color = C_PAPER
-	style.border_color = UiTheme.GOLD.darkened(0.15)
-	style.set_border_width_all(4)
-	style.set_corner_radius_all(14)
+	# Minecraft's empty map: plain parchment inside a dark brown edge.
+	style.bg_color = MapPixels.PARCHMENT
+	style.border_color = Color("#6b4a2b")
+	style.set_border_width_all(6)
+	style.set_corner_radius_all(4)
 	style.shadow_color = Color(0, 0, 0, 0.6)
 	style.shadow_size = 28
 	style.anti_aliasing = true
@@ -133,17 +133,18 @@ func _build_ui() -> void:
 	vig.texture = gt
 	_vignette = vig
 
+	# Hard pixels, never smoothed: that is the whole look.
+	_survey = TextureRect.new()
+	_survey.stretch_mode = TextureRect.STRETCH_SCALE
+	_survey.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_survey.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	clip.add_child(_survey)
 	_land = TextureRect.new()
-	_land.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_land.stretch_mode = TextureRect.STRETCH_SCALE
-	_land.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_land.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_land.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip.add_child(_land)
-
-	var wash := ColorRect.new()
-	wash.set_anchors_preset(Control.PRESET_FULL_RECT)
-	wash.color = Color(C_PAPER.r, C_PAPER.g, C_PAPER.b, 0.20)
-	wash.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	clip.add_child(wash)
+	_vignette.modulate = Color(1, 1, 1, 0.45)
 	clip.add_child(_vignette)
 
 	_overlay = Control.new()
@@ -249,6 +250,13 @@ func _after_move() -> void:
 
 func _process(delta: float) -> void:
 	_collect_texture()
+	if player != null:
+		pixels.tick(delta, Vector2(player.global_position.x, player.global_position.z), open)
+	if open and pixels.revision != _explored_rev:
+		_explored_t -= delta
+		if _explored_t <= 0.0:
+			_explored_t = 0.3
+			_compose_explored()
 	if open:
 		_overlay.queue_redraw()
 		# The list moves slower than the dots: once a second is plenty.
@@ -261,74 +269,44 @@ func _process(delta: float) -> void:
 ## Regenerates only when the view has drifted past the texture's margin, so
 ## panning slowly costs nothing.
 func _request_texture(force: bool) -> void:
-	if _pending:
-		return
-	var covered := _tex_span
-	var drift := centre.distance_to(_tex_centre)
-	if not force and covered > 0.0 and absf(covered - span * MARGIN) < covered * 0.25 \
-			and drift < covered * 0.15:
+	var g := MapPixels.grid_for(centre, span * MARGIN, SAMPLES)
+	if force or _grid.is_empty() or _needs_new_grid(g):
+		_grid = g
+		_compose_explored()
+	if _pending or (_survey_grid == _grid and not force):
 		return
 	_pending = true
-	var want_centre := centre
-	var want_span := span * MARGIN
-	WorkerThreadPool.add_task(_sample_job.bind(want_centre, want_span), false, "map")
+	WorkerThreadPool.add_task(_sample_job.bind(_grid.duplicate()), false, "map")
+
+
+## A new grid when the zoom wants a different pixel size, or the view has
+## reached the edge of what the current one covers.
+func _needs_new_grid(g: Dictionary) -> bool:
+	if int(g["step"]) != int(_grid["step"]):
+		return true
+	var o: Vector2i = _grid["origin"]
+	var cover_m := float(int(_grid["n"]) * int(_grid["step"])) * VoxelChunk.VOXEL_M
+	var cov := Rect2(Vector2(o) * VoxelChunk.VOXEL_M, Vector2(cover_m, cover_m))
+	var aspect := _overlay.size.y / maxf(_overlay.size.x, 1.0) if _overlay != null else 1.0
+	var view := Rect2(centre - Vector2(span, span * aspect) * 0.5, Vector2(span, span * aspect))
+	return not cov.encloses(view)
+
+
+func _compose_explored() -> void:
+	if _grid.is_empty():
+		return
+	_land.texture = ImageTexture.create_from_image(pixels.compose_explored(_grid))
+	_explored_rev = pixels.revision
+	_place_land()
 
 
 ## Runs on a worker thread: WorldGen is a pure function of position, so this can
 ## survey land nobody has ever loaded.
-func _sample_job(at: Vector2, world_span: float) -> void:
-	var data := PackedByteArray()
-	data.resize(SAMPLES * SAMPLES * 3)
-	var step := world_span / float(SAMPLES)
-	var half := world_span * 0.5
-	var sea := float(gen.sea_voxel()) * VoxelChunk.VOXEL_M
-	var inv := 1.0 / VoxelChunk.VOXEL_M
-
-	# Heights first, so shading can use real neighbours rather than resampling.
-	var h := PackedFloat32Array()
-	h.resize(SAMPLES * SAMPLES)
-	for j in SAMPLES:
-		var wz := at.y - half + j * step
-		for i in SAMPLES:
-			var wx := at.x - half + i * step
-			h[i + j * SAMPLES] = float(gen.height_at(int(wx * inv), int(wz * inv))) \
-				* VoxelChunk.VOXEL_M
-
-	for j in SAMPLES:
-		for i in SAMPLES:
-			var y: float = h[i + j * SAMPLES]
-			var col := _land_colour(y, sea)
-
-			# Raked light from the north-west, the cartographer's convention.
-			var hx: float = h[mini(i + 1, SAMPLES - 1) + j * SAMPLES] - h[maxi(i - 1, 0) + j * SAMPLES]
-			var hz: float = h[i + mini(j + 1, SAMPLES - 1) * SAMPLES] - h[i + maxi(j - 1, 0) * SAMPLES]
-			var shade := clampf(1.0 + (-hx - hz) * 0.16 / maxf(step, 0.5), 0.55, 1.45)
-			if y <= sea:
-				shade = 1.0
-			col = col * shade
-
-			var o := (i + j * SAMPLES) * 3
-			data[o] = int(clampf(col.r, 0.0, 1.0) * 255.0)
-			data[o + 1] = int(clampf(col.g, 0.0, 1.0) * 255.0)
-			data[o + 2] = int(clampf(col.b, 0.0, 1.0) * 255.0)
-
+func _sample_job(g: Dictionary) -> void:
+	var img := MapPixels.survey(g, gen, village)
 	_mutex.lock()
-	_result.append({"data": data, "centre": at, "span": world_span})
+	_result.append({"img": img, "grid": g})
 	_mutex.unlock()
-
-
-static func _land_colour(y: float, sea: float) -> Color:
-	if y <= sea - 3.0:
-		return C_DEEP
-	if y <= sea:
-		return C_DEEP.lerp(C_SHALLOW, inverse_lerp(sea - 3.0, sea, y))
-	if y <= sea + 1.4:
-		return C_SAND
-	if y <= sea + 16.0:
-		return C_GRASS_LOW.lerp(C_GRASS_HIGH, inverse_lerp(sea + 1.4, sea + 16.0, y))
-	if y <= sea + 26.0:
-		return C_GRASS_HIGH.lerp(C_ROCK, inverse_lerp(sea + 16.0, sea + 26.0, y))
-	return C_ROCK.lerp(C_SNOW, clampf(inverse_lerp(sea + 26.0, sea + 34.0, y), 0.0, 1.0))
 
 
 func _collect_texture() -> void:
@@ -341,24 +319,30 @@ func _collect_texture() -> void:
 	if got.is_empty():
 		return
 	_pending = false
-	var img := Image.create_from_data(SAMPLES, SAMPLES, false, Image.FORMAT_RGB8, got["data"])
-	_land.texture = ImageTexture.create_from_image(img)
-	_tex_centre = got["centre"]
-	_tex_span = got["span"]
+	_survey.texture = ImageTexture.create_from_image(got["img"])
+	_survey_grid = got["grid"]
 	_place_land()
+	# The view may have moved on while that was being drawn.
+	if _survey_grid != _grid and open:
+		_request_texture(false)
 
 
-## Positions the terrain texture so its world coverage lines up with the vector
-## overlay, whatever the view has done since it was generated.
+## Lines both pictures up with the overlay, whatever the view has done since
+## they were made.
 func _place_land() -> void:
-	if _overlay == null or _tex_span <= 0.0:
+	if _overlay == null:
+		return
+	_fit(_land, _grid)
+	_fit(_survey, _survey_grid)
+
+
+func _fit(rect: TextureRect, g: Dictionary) -> void:
+	if g.is_empty():
 		return
 	var px_per_m := _overlay.size.x / span
-	var size_px := _tex_span * px_per_m
-	var half := _tex_span * 0.5
-	var top_left := _world_to_screen(Vector2(_tex_centre.x - half, _tex_centre.y - half))
-	_land.position = top_left
-	_land.size = Vector2(size_px, size_px)
+	var cover_m := float(int(g["n"]) * int(g["step"])) * VoxelChunk.VOXEL_M
+	rect.position = _world_to_screen(Vector2(g["origin"]) * VoxelChunk.VOXEL_M)
+	rect.size = Vector2(cover_m, cover_m) * px_per_m
 
 
 func _world_to_screen(w: Vector2) -> Vector2:
@@ -373,10 +357,12 @@ func _screen_scale() -> float:
 # ------------------------------------------------------------------- drawing
 
 func _draw_overlay() -> void:
+	_tags.clear()
 	_place_land()
 	var s := _screen_scale()
 
-	_draw_streets(s)
+	# The roads, roofs and fields are in the pixels themselves, as on a
+	# Minecraft map; only what the pixels cannot say is drawn over them.
 	_draw_plots(s)
 	_draw_buildings(s)
 	_draw_well(s)
@@ -419,28 +405,7 @@ func _draw_neighbours() -> void:
 		_overlay.draw_string(_font, Vector2(lx, p.y + 17), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_PAPER)
 
 
-func _draw_streets(s: float) -> void:
-	var half_w := Village.ROAD_WIDTH * s
-	var lo := village.lines_x[0] * VoxelChunk.VOXEL_M
-	var hi := village.lines_x[village.lines_x.size() - 1] * VoxelChunk.VOXEL_M
-	var lo_z := village.lines_z[0] * VoxelChunk.VOXEL_M
-	var hi_z := village.lines_z[village.lines_z.size() - 1] * VoxelChunk.VOXEL_M
-
-	# Drawn twice: a dark casing, then the carriageway, which is what makes a
-	# road look like a road rather than a coloured line.
-	for pass_i in 2:
-		var w := half_w + (3.0 if pass_i == 0 else 0.0)
-		var col := C_INK if pass_i == 0 else C_ROAD
-		for lx: int in village.lines_x:
-			var x := lx * VoxelChunk.VOXEL_M
-			_overlay.draw_line(_world_to_screen(Vector2(x, lo_z)),
-				_world_to_screen(Vector2(x, hi_z)), col, w, true)
-		for lz: int in village.lines_z:
-			var z := lz * VoxelChunk.VOXEL_M
-			_overlay.draw_line(_world_to_screen(Vector2(lo, z)),
-				_world_to_screen(Vector2(hi, z)), col, w, true)
-
-
+## Free plots: a thin dashed outline, so you can see where there is room.
 func _draw_plots(s: float) -> void:
 	if s < 0.9:
 		return                              # too far out to be readable
@@ -449,26 +414,40 @@ func _draw_plots(s: float) -> void:
 			continue
 		var r := Rect2(_world_to_screen(Vector2(p.origin.x, p.origin.z) * VoxelChunk.VOXEL_M),
 			Vector2(p.size_v) * VoxelChunk.VOXEL_M * s)
-		_overlay.draw_rect(r, Color(C_PLOT, 0.14), true)
-		_overlay.draw_rect(r, Color(C_PLOT, 0.55), false, 1.0)
+		var pts := PackedVector2Array([r.position, Vector2(r.end.x, r.position.y), r.end,
+			Vector2(r.position.x, r.end.y), r.position])
+		for i in 4:
+			_overlay.draw_dashed_line(pts[i], pts[i + 1], Color(1, 1, 1, 0.55), 1.5, 6.0)
 
 
+## Building names as Minecraft prints a named banner: white on a dark box.
 func _draw_buildings(s: float) -> void:
+	if s < 1.6:
+		return
 	for b in buildings:
 		var rm: Rect2 = b["rect_m"]
 		var r := Rect2(_world_to_screen(rm.position), rm.size * s)
-		# A hard drop shadow to the south-east reads as height on a flat map.
-		_overlay.draw_rect(Rect2(r.position + Vector2(2, 2), r.size), Color(0, 0, 0, 0.30), true)
-		_overlay.draw_rect(r, C_BUILDING, true)
-		_overlay.draw_rect(r, C_INK, false, 1.5)
+		_tag(Vector2(r.position.x + r.size.x * 0.5, r.position.y - 4.0), str(b["name"]))
 
-		if s > 1.6:
-			var label := str(b["name"])
-			var w := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
-			var at := r.position + Vector2(r.size.x * 0.5 - w * 0.5, -5)
-			_overlay.draw_string_outline(_font, at, label, HORIZONTAL_ALIGNMENT_LEFT,
-				-1, 12, 3, C_PAPER)
-			_overlay.draw_string(_font, at, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_INK)
+
+## Minecraft's map label: white text on a translucent black box, centred.
+func _tag(bottom_centre: Vector2, label: String, col: Color = Color.WHITE) -> void:
+	var w := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+	var box := Rect2(bottom_centre.x - w * 0.5 - 4.0, bottom_centre.y - 16.0, w + 8.0, 16.0)
+	# Step down past any label already there, as a stack reads; a crowd does not.
+	var moved := true
+	var tries := 0
+	while moved and tries < 8:
+		moved = false
+		tries += 1
+		for other: Rect2 in _tags:
+			if other.grow(1.0).intersects(box):
+				box.position.y = other.end.y + 2.0
+				moved = true
+	_tags.append(box)
+	_overlay.draw_rect(box, Color(0, 0, 0, 0.55))
+	_overlay.draw_string(_font, Vector2(box.position.x + 4.0, box.end.y - 4.0), label,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
 
 
 func _draw_well(s: float) -> void:
@@ -478,10 +457,7 @@ func _draw_well(s: float) -> void:
 	_overlay.draw_circle(p, r, C_INK)
 	_overlay.draw_circle(p, r * 0.45, C_SHALLOW)
 	if s > 1.0:
-		var at := p + Vector2(r + 5, 4)
-		_overlay.draw_string_outline(_font, at, "the well", HORIZONTAL_ALIGNMENT_LEFT,
-			-1, 12, 3, C_PAPER)
-		_overlay.draw_string(_font, at, "the well", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_INK)
+		_tag(p - Vector2(0, r + 3), "the well")
 
 
 func _draw_workers() -> void:
@@ -490,8 +466,8 @@ func _draw_workers() -> void:
 			continue
 		var node: Node3D = w
 		var p := _world_to_screen(Vector2(node.global_position.x, node.global_position.z))
-		_overlay.draw_circle(p, 5.0, C_PAPER)
-		_overlay.draw_circle(p, 3.5, Color("#c46a3a"))
+		_overlay.draw_rect(Rect2(p - Vector2(5, 5), Vector2(10, 10)), Color(0, 0, 0, 0.85))
+		_overlay.draw_rect(Rect2(p - Vector2(3.5, 3.5), Vector2(7, 7)), Color("#e8763a"))
 
 
 ## A number on each building, matching the list down the side. Red for a
@@ -520,16 +496,14 @@ func _draw_people() -> void:
 		if not is_instance_valid(w):
 			continue
 		var p := _world_to_screen(Vector2(w.global_position.x, w.global_position.z))
+		# Square pixel markers, as Minecraft marks things on a map.
 		if not w.hired:
-			_overlay.draw_circle(p, 3.0, Color(C_INK, 0.55))
+			_overlay.draw_rect(Rect2(p - Vector2(2.5, 2.5), Vector2(5, 5)), Color(0, 0, 0, 0.75))
+			_overlay.draw_rect(Rect2(p - Vector2(1.5, 1.5), Vector2(3, 3)), Color("#e8e2d0"))
 			continue
-		_overlay.draw_circle(p, 5.5, C_PAPER)
-		_overlay.draw_circle(p, 4.0, Color("#c46a3a"))
-		var at := p + Vector2(8, 4)
-		_overlay.draw_string_outline(_font, at, w.display_name(), HORIZONTAL_ALIGNMENT_LEFT,
-			-1, 12, 3, C_PAPER)
-		_overlay.draw_string(_font, at, w.display_name(), HORIZONTAL_ALIGNMENT_LEFT,
-			-1, 12, C_INK)
+		_overlay.draw_rect(Rect2(p - Vector2(5, 5), Vector2(10, 10)), Color(0, 0, 0, 0.85))
+		_overlay.draw_rect(Rect2(p - Vector2(3.5, 3.5), Vector2(7, 7)), Color("#e8763a"))
+		_tag(p - Vector2(0, 8), w.display_name(), Color("#ffe8a8"))
 
 
 func _draw_player() -> void:
@@ -540,13 +514,14 @@ func _draw_player() -> void:
 	# Player forward is -Z rotated by yaw.
 	var fwd := Vector2(-sin(yaw), -cos(yaw))
 	var side := Vector2(-fwd.y, fwd.x)
-	var tip := p + fwd * 11.0
-	var a := p - fwd * 5.0 + side * 6.5
-	var b := p - fwd * 5.0 - side * 6.5
-	_overlay.draw_colored_polygon(PackedVector2Array([tip, a, p - fwd * 1.0, b]),
-		Color("#f2f0e6"))
-	_overlay.draw_polyline(PackedVector2Array([tip, a, p - fwd * 1.0, b, tip]),
-		C_INK, 1.5, true)
+	# Minecraft's white player pointer: a long arrowhead, black edged.
+	var tip := p + fwd * 13.0
+	var a := p - fwd * 8.0 + side * 8.0
+	var b := p - fwd * 8.0 - side * 8.0
+	var notch := p - fwd * 3.0
+	var arrow := PackedVector2Array([tip, a, notch, b])
+	_overlay.draw_colored_polygon(arrow, Color.WHITE)
+	_overlay.draw_polyline(PackedVector2Array([tip, a, notch, b, tip]), Color.BLACK, 2.5)
 
 
 # ---------------------------------------------------------------------- hud
@@ -619,7 +594,7 @@ func _draw_hud() -> void:
 func _draw_legend(at: Vector2) -> void:
 	var entries := [
 		["home", C_HOME, "dot"], ["workplace", C_WORK, "dot"], ["you", Color("#f2f0e6"), "arrow"],
-		["crew", Color("#c46a3a"), "dot"], ["townsfolk", Color(C_INK, 0.55), "small"],
+		["crew", Color("#e8763a"), "square"], ["townsfolk", Color("#e8e2d0"), "small"],
 		["free plot", C_PLOT, "plot"],
 	]
 	var w := 16.0
@@ -640,11 +615,16 @@ func _draw_legend(at: Vector2) -> void:
 			"dot":
 				_hud.draw_circle(Vector2(x + 6, cy), 7.0, C_PAPER)
 				_hud.draw_circle(Vector2(x + 6, cy), 5.6, c)
+			"square":
+				_hud.draw_rect(Rect2(x + 1, cy - 5, 10, 10), Color(0, 0, 0, 0.85))
+				_hud.draw_rect(Rect2(x + 2.5, cy - 3.5, 7, 7), c)
 			"small":
-				_hud.draw_circle(Vector2(x + 6, cy), 3.0, c)
+				_hud.draw_rect(Rect2(x + 3.5, cy - 2.5, 5, 5), Color(0, 0, 0, 0.75))
+				_hud.draw_rect(Rect2(x + 4.5, cy - 1.5, 3, 3), c)
 			"plot":
-				_hud.draw_rect(Rect2(x, cy - 5, 12, 10), Color(c, 0.25), true)
-				_hud.draw_rect(Rect2(x, cy - 5, 12, 10), Color(c, 0.8), false, 1.0)
+				var r := Rect2(x, cy - 5, 12, 10)
+				_hud.draw_rect(r, Color(MapPixels.MC["grass"], 0.9), true)
+				_hud.draw_rect(r, Color(1, 1, 1, 0.9), false, 1.0)
 			"arrow":
 				var pc := Vector2(x + 6, cy)
 				var poly := PackedVector2Array([pc + Vector2(0, -7), pc + Vector2(6, 6), pc + Vector2(0, 3), pc + Vector2(-6, 6)])
@@ -780,7 +760,7 @@ func capture_and_quit() -> void:
 	set_open(true)
 	for _i in 240:
 		await get_tree().process_frame
-		if not _pending and _land.texture != null:
+		if not _pending and _survey.texture != null and pixels._queue.is_empty():
 			break
 	for _i in 6:
 		await get_tree().process_frame
@@ -789,5 +769,6 @@ func capture_and_quit() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(ProjectSettings.globalize_path(dir + "/map.png"))
-	print("[map] saved %s/map.png" % dir)
+	print("[map] saved %s/map.png  (%d columns drawn, last took %d us)" % [dir,
+		pixels.explored_count(), pixels.stat_column_us])
 	get_tree().quit()

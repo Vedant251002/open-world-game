@@ -8,9 +8,10 @@ class_name Minimap
 ## whatever is in front of your face. The full map on [M] is the one that holds
 ## still, and that is the one for reading; this one is for walking.
 ##
-## Drawn as vectors from the town layout rather than sampled from the world.
-## The streets are five numbers and the plots are a rectangle each, so a frame
-## of this costs less than reading one chunk would, and it stays sharp.
+## The ground is the full map's own pixels (MapPixels): Minecraft-style, one
+## colour per column from what is on top, shaded by height. The picture is
+## remade only when you walk off it or more land has been drawn, so a frame of
+## this is one textured quad.
 
 const V := VoxelChunk.VOXEL_M
 ## Metres from the middle of the disc to its edge. Two blocks and a bit, so
@@ -19,12 +20,6 @@ const RANGE_M := 58.0
 
 # Muted, because the thing on top of it is the town and the thing under it is
 # the game. A minimap that shouts is a minimap you turn off.
-const C_WILD := Color("#3a4a35")
-const C_TOWN := Color("#4b4a38")
-const C_PLOT := Color("#5f5340")
-const C_ROAD := Color("#d9cba4")
-const C_BUILDING := Color("#b0703e")
-const C_BUILDING_EDGE := Color("#2a1c12")
 const C_RING := Color("#efe0b8")
 const C_SHADE := Color(0, 0, 0, 0.38)
 const C_PLAYER := Color("#fff4d6")
@@ -61,6 +56,12 @@ var _font: Font
 var _centre := Vector2.ZERO         ## world metres under the middle of the disc
 var _rot := 0.0                     ## radians the world is turned by
 var _due := 0.0                     ## seconds until the next redraw
+## The disc's picture: the map's own Minecraft-style pixels (MapPixels) for a
+## patch around you, remade when you walk off it or more land is drawn.
+var _tex: ImageTexture = null
+var _grid: Dictionary = {}
+var _rev := -1
+var _tex_t := 0.0
 
 
 func setup(p: Player, v: Village, m: MapScreen, c: Crew, touch: bool,
@@ -91,6 +92,7 @@ func setup(p: Player, v: Village, m: MapScreen, c: Crew, touch: bool,
 	_ink.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_ink.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_ink.draw.connect(_draw_map)
+	_ink.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	_disc.add_child(_ink)
 
 	_frame = Control.new()
@@ -122,6 +124,7 @@ func _process(delta: float) -> void:
 	# put on a horse.
 	var f := -player.global_transform.basis.z
 	_rot = -atan2(f.x, -f.z)
+	_refresh_pixels(1.0 / REDRAW_HZ)
 	_ink.queue_redraw()
 	_frame.queue_redraw()
 
@@ -156,37 +159,41 @@ func _near(world_xz: Vector2, slack: float) -> bool:
 	return world_xz.distance_squared_to(_centre) < (RANGE_M + slack) * (RANGE_M + slack)
 
 
+func _refresh_pixels(dt: float) -> void:
+	if map == null or map.pixels == null:
+		return
+	_tex_t -= dt
+	var moved := true
+	if not _grid.is_empty():
+		var o: Vector2i = _grid["origin"]
+		var half := float(int(_grid["n"]) * int(_grid["step"])) * V * 0.5
+		moved = _centre.distance_to(Vector2(o) * V + Vector2(half, half)) > half - RANGE_M * 1.45
+	if not moved and (map.pixels.revision == _rev or _tex_t > 0.0):
+		return
+	_tex_t = 0.5
+	# Wide enough that the corners of the turning disc are always covered.
+	_grid = MapPixels.grid_for(_centre, RANGE_M * 4.0, 128)
+	_rev = map.pixels.revision
+	var img := map.pixels.compose_explored(_grid)
+	if _tex == null or _tex.get_size() != Vector2(img.get_size()):
+		_tex = ImageTexture.create_from_image(img)
+	else:
+		_tex.update(img)
+
+
 func _draw_map() -> void:
-	_ink.draw_circle(Vector2(radius, radius), _mr, C_WILD)
+	_ink.draw_circle(Vector2(radius, radius), _mr, MapPixels.PARCHMENT.darkened(0.25))
 	if village == null:
 		return
 
-	# The levelled shelf the town stands on, so the edge of town reads as an
-	# edge rather than as the map running out.
-	var b := village.bounds_v
-	_ink.draw_colored_polygon(_rect_points(Rect2(
-		b.position.x * V, b.position.y * V, b.size.x * V, b.size.y * V)), C_TOWN)
-
-	for p: Plot in village.plots:
-		var c := p.centre_m()
-		if not _near(Vector2(c.x, c.z), 30.0):
-			continue
-		var pr := p.rect_v()
-		_ink.draw_colored_polygon(_rect_points(Rect2(
-			pr.position.x * V, pr.position.y * V,
-			pr.size.x * V, pr.size.y * V)), C_PLOT)
-
-	_draw_streets()
-
-	if map != null:
-		for rec: Dictionary in map.buildings:
-			var r: Rect2 = rec["rect_m"]
-			if not _near(r.get_center(), 24.0):
-				continue
-			var quad := _rect_points(r)
-			_ink.draw_colored_polygon(quad, C_BUILDING)
-			quad.append(quad[0])
-			_ink.draw_polyline(quad, C_BUILDING_EDGE, 1.4, true)
+	# The ground, as the full map draws it: hard pixels, turned with you.
+	if _tex != null and not _grid.is_empty():
+		var o: Vector2i = _grid["origin"]
+		var size_m := float(int(_grid["n"]) * int(_grid["step"])) * V
+		_ink.draw_set_transform(Vector2(radius, radius), _rot, Vector2.ONE)
+		var top_left := (Vector2(o) * V - _centre) * _scale()
+		_ink.draw_texture_rect(_tex, Rect2(top_left, Vector2(size_m, size_m) * _scale()), false)
+		_ink.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	if crew != null:
 		for w: Worker in crew.workers:
@@ -196,42 +203,17 @@ func _draw_map() -> void:
 			if not _near(at, 0.0):
 				continue
 			var dot := _at(at)
+			# Square markers, as on the full map.
 			if w.hired:
-				_ink.draw_circle(dot, 5.6, Color(0.05, 0.04, 0.03, 0.85))
-				_ink.draw_circle(dot, 4.4, C_RING)
-				_ink.draw_circle(dot, 3.0, w.body.cloth_colour.lightened(0.3))
+				_ink.draw_rect(Rect2(dot - Vector2(4.5, 4.5), Vector2(9, 9)), Color(0, 0, 0, 0.85))
+				_ink.draw_rect(Rect2(dot - Vector2(3, 3), Vector2(6, 6)), Color("#e8763a"))
 			else:
-				_ink.draw_circle(dot, 3.2, Color(0.05, 0.04, 0.03, 0.6))
-				_ink.draw_circle(dot, 2.2, w.body.cloth_colour.lightened(0.35))
+				_ink.draw_rect(Rect2(dot - Vector2(2.5, 2.5), Vector2(5, 5)), Color(0, 0, 0, 0.7))
+				_ink.draw_rect(Rect2(dot - Vector2(1.5, 1.5), Vector2(3, 3)), Color("#e8e2d0"))
 
 	# A vignette, so the edge of the disc is a horizon rather than a cut.
 	_ink.draw_arc(Vector2(radius, radius), _mr - 6.0, 0.0, TAU, 64,
 		C_SHADE, 12.0, true)
-
-
-## The street grid. Five lines each way, drawn as the roads they are rather
-## than as hairlines: the width is what makes a junction look like a junction.
-func _draw_streets() -> void:
-	var w := Village.ROAD_WIDTH * _scale()
-	var lo_x := village.lines_x[0] * V
-	var hi_x := village.lines_x[village.lines_x.size() - 1] * V
-	var lo_z := village.lines_z[0] * V
-	var hi_z := village.lines_z[village.lines_z.size() - 1] * V
-	for lx: int in village.lines_x:
-		var x := lx * V
-		if absf(x - _centre.x) > RANGE_M + Village.ROAD_PITCH:
-			continue
-		_ink.draw_line(_at(Vector2(x, lo_z)), _at(Vector2(x, hi_z)), C_ROAD, w)
-	for lz: int in village.lines_z:
-		var z := lz * V
-		if absf(z - _centre.y) > RANGE_M + Village.ROAD_PITCH:
-			continue
-		_ink.draw_line(_at(Vector2(lo_x, z)), _at(Vector2(hi_x, z)), C_ROAD, w)
-
-	var pz := village.plaza_rect_v
-	_ink.draw_colored_polygon(_rect_points(Rect2(
-		pz.position.x * V, pz.position.y * V,
-		pz.size.x * V, pz.size.y * V)), C_ROAD)
 
 
 ## The furniture: a glass compass band with degree ticks and N/E/S/W that turn

@@ -261,13 +261,23 @@ func _facts(day: int) -> Dictionary:
 # ----------------------------------------------------------------- picking
 
 ## A choice from `options` for `slot` that is never the one chosen last time.
-func _pick(slot: String, options: Array) -> Variant:
+## Remembered by its words, not its place in the list: the lists of gossip and
+## notices change from day to day, and the same line can come back at another
+## index. Headlines share one memory (`memo`) across their groups.
+func _pick(slot: String, options: Array, memo: String = "") -> Variant:
 	if options.is_empty():
 		return ""
-	var idx := _rng.randi() % options.size()
-	if options.size() > 1 and int(_last_pick.get(slot, -1)) == idx:
-		idx = (idx + 1 + _rng.randi() % (options.size() - 1)) % options.size()
+	var key := "txt_" + (memo if memo != "" else slot)
+	var last := str(_last_pick.get(key, ""))
+	var pool: Array[int] = []
+	for i in options.size():
+		if str(options[i]) != last:
+			pool.append(i)
+	if pool.is_empty():
+		pool.append(0)
+	var idx: int = pool[_rng.randi() % pool.size()]
 	_last_pick[slot] = idx
+	_last_pick[key] = str(options[idx])
 	return options[idx]
 
 
@@ -326,7 +336,7 @@ func _lead(f: Dictionary) -> Dictionary:
 		lede = str(_pick("lede", FILLER_LEDES))
 	if lede != "":
 		lede = lede.substr(0, 1).to_upper() + lede.substr(1)
-	return {"headline": _fill(str(_pick("head_" + group, HEADLINES[group]))),
+	return {"headline": _fill(str(_pick("head_" + group, HEADLINES[group], "headline"))),
 		"lede": lede, "used": used, "group": group}
 
 
