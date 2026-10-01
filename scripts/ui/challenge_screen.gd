@@ -92,6 +92,11 @@ func _rebuild() -> void:
 	var w := Challenge.current_week()
 	var spec := Challenge.for_week(int(w["year"]), int(w["week"]))
 	var playing := Challenge.mode and not challenge.spec.is_empty()
+	# A run in progress is described by its own goal, not this week's: one
+	# begun last week and carried over showed this week's goal over last
+	# week's progress ("Feed 12 people" above "0 / 6 built").
+	if playing:
+		spec = challenge.spec
 	var show_result := playing and challenge.done
 
 	var t := UiTheme.title("WEEKLY CHALLENGE", 26, UiTheme.ACCENT)
