@@ -185,8 +185,8 @@ var _employer_was := Vector3.ZERO
 var _employer_heading := Vector3(0.0, 0.0, 1.0)
 ## Speech is shown in world space rather than in the HUD, so you can tell at a
 ## glance which of the three said it without reading a name.
-var bubble: Label3D
-var _bubble_left := 0.0
+var bubble: SpeechBubble
+var nametag: NameTag
 
 
 func setup(mem: WorkerMemory, n: NavGrid, w: VoxelWorld, c: GameClock, t: Town) -> void:
@@ -231,35 +231,14 @@ func setup(mem: WorkerMemory, n: NavGrid, w: VoxelWorld, c: GameClock, t: Town) 
 	area.add_child(acs)
 	add_child(area)
 
-	bubble = Label3D.new()
-	bubble.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	bubble.no_depth_test = false
-	bubble.fixed_size = false
-	bubble.font_size = 44
-	bubble.outline_size = 14
-	bubble.outline_modulate = Color(0.05, 0.04, 0.03, 0.85)
-	bubble.pixel_size = 0.0032
-	bubble.width = 900.0
-	bubble.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	bubble.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bubble.position.y = 2.15
-	bubble.visible = false
+	bubble = SpeechBubble.new()
 	add_child(bubble)
 
-	# A name over the head, so the three of them are learnable on sight.
-	var tag := Label3D.new()
-	tag.text = memory.display_name
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	# At 30 px and a 0.0028 pixel size the name was eight screen pixels tall
-	# from across the plaza, which is a smudge rather than a label.
-	tag.font_size = 48
-	tag.outline_size = 14
-	tag.outline_modulate = Color(0.05, 0.04, 0.03, 0.85)
-	tag.modulate = body.cloth_colour.lightened(0.55)
-	tag.pixel_size = 0.0045
-	tag.position.y = 1.94
-	tag.visibility_range_end = 40.0
-	add_child(tag)
+	# A name over the head, so the three of them are learnable on sight. It
+	# sizes and fades itself from the camera distance (see NameTag).
+	nametag = NameTag.new()
+	add_child(nametag)
+	nametag.setup(self)
 
 	floor_max_angle = deg_to_rad(55.0)
 	floor_snap_length = 0.5
@@ -413,11 +392,6 @@ func _physics_process(delta: float) -> void:
 		body.work(delta, _gesture)
 	else:
 		body.animate(delta, planar, state == State.WALKING and job_patch != null)
-
-	if _bubble_left > 0.0:
-		_bubble_left -= delta
-		if _bubble_left <= 0.0 and bubble != null:
-			bubble.visible = false
 
 	_tick_state(delta)
 
@@ -1799,21 +1773,9 @@ func status_text() -> String:
 func _say(line: String, kind: String) -> void:
 	last_line = line
 	if bubble != null:
-		bubble.text = line
-		bubble.modulate = _bubble_tint(kind)
-		bubble.visible = true
 		# Long lines stay up longer, at roughly reading speed.
-		_bubble_left = clampf(2.4 + line.length() * 0.045, 3.0, 11.0)
+		bubble.say(line, kind, clampf(2.2 + line.length() * 0.04, 2.8, 8.0))
 	said.emit(self, line, kind)
-
-
-static func _bubble_tint(kind: String) -> Color:
-	match kind:
-		"refuse": return Color("#ffb4a2")
-		"question": return Color("#ffe08a")
-		"done": return Color("#b9f0b0")
-		"work": return Color("#dbe6f0")
-		_: return Color("#f4efe6")
 
 
 func speak(line: String, kind: String = "talk") -> void:
@@ -1825,10 +1787,7 @@ func speak(line: String, kind: String = "talk") -> void:
 func murmur(line: String) -> void:
 	if bubble == null:
 		return
-	bubble.text = line
-	bubble.modulate = _bubble_tint("talk")
-	bubble.visible = true
-	_bubble_left = 12.0
+	bubble.say(line, "talk", 12.0)
 
 
 func _acknowledge() -> String:

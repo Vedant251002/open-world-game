@@ -46,6 +46,7 @@ var _prompt_key: PanelContainer
 var _prompt_key_label: Label
 var _prompt_name: Label
 var _prompt_verb: Label
+var _prompt_role: Label
 var _prompt_state := ""
 var _toast_box: PanelContainer
 var _stack: VBoxContainer
@@ -159,11 +160,15 @@ func _build() -> void:
 	_prompt_key = UiTheme.key_cap("TALK" if _touch else "E", int(15 * _k))
 	_prompt_key_label = _prompt_key.get_child(0) as Label
 	prow.add_child(_prompt_key)
+	# "[E] Talk to  Mira  — shopkeeper": the action first, then who, then what
+	# they do, so the verb is the first thing read after the key.
+	_prompt_verb = _label("", int(17 * _k), DIM, 600)
+	prow.add_child(_prompt_verb)
 	_prompt_name = _label("", int(19 * _k), INK)
 	_prompt_name.add_theme_font_override("font", UiTheme.font(800))
 	prow.add_child(_prompt_name)
-	_prompt_verb = _label("", int(17 * _k), DIM)
-	prow.add_child(_prompt_verb)
+	_prompt_role = _label("", int(15 * _k), UiTheme.GOLD, 600)
+	prow.add_child(_prompt_role)
 
 	_toast_box = PanelContainer.new()
 	_toast_box.add_theme_stylebox_override("panel", UiTheme.card(1.0, 18))
@@ -541,6 +546,11 @@ func _on_looked_at(node: Node) -> void:
 	# looking at. It is hidden again the moment the ray loses them.
 	if _crosshair_dot != null:
 		_crosshair_dot.visible = _target != null or _crop != null
+	# Rim glow on what is being looked at, and a warm crosshair to match.
+	TargetHighlight.set_target(node if (_target != null or _crop != null) else null)
+	if _crosshair != null:
+		_crosshair.modulate = Color(1.0, 0.86, 0.5) if (_target != null or _crop != null) \
+			else Color.WHITE
 
 
 func _process(delta: float) -> void:
@@ -640,28 +650,32 @@ func _process(delta: float) -> void:
 
 	var pname := ""
 	var pverb := ""
+	var prole := ""
 	var pcol := INK
 	_bottom.offset_bottom = (_bar.offset_top - 14.0) if _bar.visible else -(150 if _touch else 112)
 	if _typing_for != null:
 		pass
 	elif _target != null:
 		pname = _target.display_name()
+		pverb = "Talk to"
+		if _target.role != null:
+			prole = "— " + _target.role.name.to_lower()
 		if _target.pending_question != "":
-			pverb = "is waiting on an answer"
+			prole = "— is waiting on an answer"
 			pcol = WARN
-		else:
-			pverb = "speak"
 	elif _crop != null and is_instance_valid(_crop):
-		pname = "Ripe %s" % str(_crop.get_meta("crop_kind", "crop"))
-		pverb = "pick"
-	var pstate := pname + "|" + pverb
+		pname = str(_crop.get_meta("crop_kind", "crop"))
+		pverb = "Harvest"
+	var pstate := pname + "|" + pverb + "|" + prole
 	if pstate != _prompt_state:
 		_prompt_state = pstate
 		_prompt_box.visible = pname != ""
 		_prompt_name.text = pname
 		_prompt_name.add_theme_color_override("font_color", pcol)
 		_prompt_verb.text = pverb
-		_prompt_verb.add_theme_color_override("font_color", pcol if pcol != INK else DIM)
+		_prompt_role.text = prole
+		_prompt_role.visible = prole != ""
+		_prompt_role.add_theme_color_override("font_color", pcol if pcol != INK else UiTheme.GOLD)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -671,6 +685,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("talk") and _typing_for == null 			and _crop != null and is_instance_valid(_crop):
 		harvest_wanted.emit(_crop.get_meta("crop_tile") as Vector2i)
 		_crop = null
+		TargetHighlight.clear()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("menu") and _typing_for != null:
 		_close_bar()
