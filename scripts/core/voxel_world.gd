@@ -42,6 +42,7 @@ var height_chunks := 6                     ## vertical extent, in chunks
 var chunks: Dictionary = {}                ## Vector3i -> VoxelChunk
 
 var _htiles: Dictionary = {}               ## Vector2i -> PackedInt32Array(32*32)
+var _col_rev: Dictionary = {}              ## Vector2i -> edits so far, for the map
 var _nodes: Dictionary = {}                ## Vector3i -> MeshInstance3D
 var _bodies: Dictionary = {}               ## Vector3i -> StaticBody3D
 var _dirty: Dictionary = {}
@@ -188,6 +189,7 @@ func set_voxel(v: Vector3i, id: int) -> void:
 	_dirty[cpos] = true
 	_mark_seam_neighbours(cpos, lx, ly, lz)
 	_update_height(v, id)
+	_col_rev[Vector2i(cpos.x, cpos.z)] = int(_col_rev.get(Vector2i(cpos.x, cpos.z), 0)) + 1
 
 
 ## A voxel on a chunk face changes the culling and the baked AO of the chunks
@@ -249,6 +251,11 @@ func _update_height(v: Vector3i, id: int) -> void:
 		_htiles[key] = t
 
 
+## How many times a column has changed, so the map knows what to redraw.
+func column_revision(cx: int, cz: int) -> int:
+	return int(_col_rev.get(Vector2i(cx, cz), 0))
+
+
 ## Top solid voxel y in a column, or -1 where nothing is loaded. O(1).
 func height_at(x: int, z: int) -> int:
 	var t: PackedInt32Array = _htiles.get(Vector2i(x >> 5, z >> 5), PackedInt32Array())
@@ -280,6 +287,7 @@ func mark_dirty(cpos: Vector3i) -> void:
 ## being walked away from and come back to.
 func install_column(cx: int, cz: int, column_chunks: Dictionary,
 		tile: PackedInt32Array) -> void:
+	_col_rev[Vector2i(cx, cz)] = int(_col_rev.get(Vector2i(cx, cz), 0)) + 1
 	var merged := false
 	for cpos: Vector3i in column_chunks:
 		var c: VoxelChunk = column_chunks[cpos]
