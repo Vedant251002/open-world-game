@@ -248,6 +248,28 @@ static func is_leafy(id: int) -> bool:
 	return id == LEAF or (id >= LEAF_LIGHT and id <= BLOSSOM)
 
 
+## A tree trunk of any species. Birch has its own bark; oak and pine share BARK.
+static func is_wood(id: int) -> bool:
+	return id == BARK or id == BIRCH_BARK
+
+
+## Whether a voxel is what a search for `src` is after. Wood and leaves come in
+## several species now, and a woodcutter sent for "bark" who could only see
+## oak walked straight through a birch wood saying there were no trees in it.
+static func same_source(src: int, id: int) -> bool:
+	if src == BARK:
+		return is_wood(id)
+	if src == LEAF:
+		return is_leafy(id)
+	return id == src
+
+
+## What a top-of-ground voxel counts as underfoot: grass with a tuft or a
+## flower on it is still a grassy field.
+static func is_grassy(id: int) -> bool:
+	return id == GRASS or is_cover(id)
+
+
 ## Small ground cover that stands one to three voxels over the soil: flowers,
 ## tufts, ferns. Soft, so a field may be ploughed straight through it.
 static func is_cover(id: int) -> bool:

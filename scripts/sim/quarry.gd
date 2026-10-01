@@ -58,7 +58,7 @@ func _plan_cut() -> void:
 					var v := Vector3i(site.x + dx, site.y - dy, site.z + dz)
 					if v.y < 2:
 						break
-					if world.get_voxel(v) == source:
+					if VoxelTypes.same_source(source, world.get_voxel(v)):
 						found.append([dy + r * 2, v])
 		if found.size() >= need:
 			break
@@ -185,6 +185,6 @@ static func _probe(w: VoxelWorld, village: Village, src: int, vx: int, vz: int,
 				var v := Vector3i(cx, top - dy, cz)
 				if v.y < 2:
 					break
-				if w.get_voxel(v) == src:
+				if VoxelTypes.same_source(src, w.get_voxel(v)):
 					return Vector3i(cx, maxi(v.y, h), cz)
 	return Vector3i.ZERO

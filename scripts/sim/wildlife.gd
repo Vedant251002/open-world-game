@@ -202,7 +202,7 @@ func _perches_near(here: Vector3) -> Array[Vector3]:
 		var p := here + Vector3(randf_range(-50, 50), 0.0, randf_range(-50, 50))
 		var v := VoxelWorld.to_voxel(p)
 		var h := world.height_at(v.x, v.z)
-		if h > 0 and world.get_voxel(Vector3i(v.x, h, v.z)) == VoxelTypes.LEAF:
+		if h > 0 and VoxelTypes.is_leafy(world.get_voxel(Vector3i(v.x, h, v.z))):
 			out.append(Vector3(p.x, (h + 1) * 0.25, p.z))
 	if out.size() < 3:
 		for _i in 3:
@@ -339,7 +339,7 @@ func _stock_wild(here: Vector3) -> void:
 		if village != null and village.bounds_v.grow(24).has_point(Vector2i(v.x, v.z)):
 			continue
 		var h := world.height_at(v.x, v.z)
-		if h <= 0 or world.get_voxel(Vector3i(v.x, h, v.z)) != VoxelTypes.GRASS:
+		if h <= 0 or not VoxelTypes.is_grassy(world.get_voxel(Vector3i(v.x, h, v.z))):
 			continue
 		if world.is_solid(Vector3i(v.x, h + 1, v.z)):
 			continue

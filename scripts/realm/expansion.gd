@@ -262,6 +262,11 @@ func on_hour(_hour: float, _day: int) -> void:
 			continue
 		var y := realm.world.height_at(c.x, c.y)
 		var here := realm.world.get_voxel(Vector3i(c.x, y, c.y))
+		# A tuft or a flower is in the road's way, not a reason to leave a gap.
+		while VoxelTypes.is_cover(here) and y > 0:
+			realm.world.set_voxel(Vector3i(c.x, y, c.y), VoxelTypes.AIR)
+			y -= 1
+			here = realm.world.get_voxel(Vector3i(c.x, y, c.y))
 		if here == VoxelTypes.GRASS or here == VoxelTypes.DIRT or here == VoxelTypes.SAND:
 			realm.world.set_voxel(Vector3i(c.x, y, c.y), VoxelTypes.COBBLE)
 			realm.town.stock["cobble"] = int(realm.town.stock["cobble"]) - 1

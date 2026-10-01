@@ -350,6 +350,8 @@ func _physics_process(delta: float) -> void:
 	velocity.z = move_toward(velocity.z, target.z, rate * delta * 10.0)
 
 	move_and_slide()
+	if not in_water:
+		_step_up(wish)
 	_catch_if_fallen()
 
 	# Head bob, scaled by actual ground speed so it stops when you do.
@@ -404,6 +406,28 @@ func _catch_if_fallen() -> void:
 		return
 	global_position.y = g + 0.1
 	velocity = Vector3.ZERO
+
+
+## Up to two voxels without a jump, as the crew already manage: a ledge in
+## the terrain, a kerb, a tuft of grass or a flower. Without it the ground
+## cover in the woods stopped the player dead every few steps.
+const STEP_UP_M := 0.55
+
+
+func _step_up(wish: Vector3) -> void:
+	if world == null or wish.length_squared() < 0.01 or not is_on_floor() or not is_on_wall():
+		return
+	var dir := Vector3(wish.x, 0.0, wish.z).normalized()
+	var ahead := global_position + dir * 0.5
+	var top := world.ground_m(ahead.x, ahead.z)
+	var rise := top - global_position.y
+	if rise <= 0.05 or rise > STEP_UP_M:
+		return
+	# Room for a head on top of the step.
+	if world.is_solid(VoxelWorld.to_voxel(Vector3(ahead.x, top + 1.7, ahead.z))):
+		return
+	global_position.y = top + 0.02
+	velocity.y = 0.0
 
 
 ## Finds the worker the player is looking at, so pressing talk opens the right

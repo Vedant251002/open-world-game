@@ -1390,7 +1390,7 @@ func _nearest_ground_of(tops: Array, from: Vector3, beside: bool) -> Vector3:
 				if h < 0:
 					continue
 				var top := world.get_voxel(Vector3i(x, h, z))
-				if top not in tops:
+				if not tops.any(func(t: int) -> bool: return VoxelTypes.same_source(t, top)):
 					continue
 				var at := Vector3(x * VoxelChunk.VOXEL_M, 0.0, z * VoxelChunk.VOXEL_M)
 				var stand := nav.nearest_walkable_world(at, 12) if beside else at
@@ -1567,7 +1567,7 @@ func _describe_ground(at: Vector3, dir: String) -> String:
 			var top := world.get_voxel(Vector3i(cx + dx, h, cz + dz))
 			if top == VoxelTypes.WATER:
 				water += 1
-			elif top == VoxelTypes.LEAF or top == VoxelTypes.BARK:
+			elif VoxelTypes.is_leafy(top) or VoxelTypes.is_wood(top):
 				trees += 1
 	if n == 0:
 		return "Nothing out %s but the edge of the world." % dir
