@@ -26,6 +26,7 @@ const LOOK_SENS := 0.0052         ## radians per canvas unit of drag
 var player: Player
 var map: MapScreen
 var inventory: InventoryScreen
+var hud: Hud
 
 ## Up from boot on a handheld. Elsewhere it stays out of the way until a real
 ## finger lands, which covers both the touchscreen laptop that should keep its
@@ -43,6 +44,7 @@ var _held: Dictionary = {}            ## action name -> frames held
 var _wants_release: Dictionary = {}   ## action name -> true
 var _unit := 1.0
 var _last_target: Node = null
+var _last_armed := false
 
 
 func _ready() -> void:
@@ -116,7 +118,40 @@ func _buttons() -> Dictionary:
 		"centre": Vector2(s.x - 212.0 * u, s.y - 74.0 * u), "radius": 38.0 * u,
 		"action": &"move_jump", "label": "JUMP",
 	}
+	# The villager card (Tab / V on a keyboard), only while somebody is under
+	# the crosshair or the card is already up to be closed again.
+	if _has_target() or _card_open():
+		out["info"] = {
+			"centre": Vector2(s.x - 196.0 * u, s.y - 176.0 * u), "radius": 28.0 * u,
+			"action": &"", "label": "INFO",
+		}
+	# The gun is a mouse button on a desktop. Nobody is holding one until they
+	# have been handed one at the armoury, so until then there is nothing to
+	# fire and no reason to crowd the right thumb.
+	if _armed():
+		out["fire"] = {
+			"centre": Vector2(s.x - 100.0 * u, s.y - 248.0 * u), "radius": 46.0 * u,
+			"action": &"fire", "label": "FIRE",
+		}
+		out["swap"] = {
+			"centre": Vector2(s.x - 186.0 * u, s.y - 284.0 * u), "radius": 26.0 * u,
+			"action": &"swap_weapon", "label": "SWAP",
+		}
 	return out
+
+
+func _has_target() -> bool:
+	return player != null and player.looked_at_worker() != null
+
+
+func _card_open() -> bool:
+	return hud != null and hud.villager_card != null and hud.villager_card.open
+
+
+func _armed() -> bool:
+	if player == null or player.warfare == null:
+		return false
+	return str(player.warfare.call("player_weapon")) != ""
 
 
 func _map_open() -> bool:
@@ -174,7 +209,13 @@ func _press(index: int, pos: Vector2) -> bool:
 	if hit != "":
 		var b: Dictionary = buttons[hit]
 		_button_touch[index] = b["action"]
-		_begin(b["action"])
+		if hit == "info":
+			# Not an action of its own: the keyboard reaches it through two
+			# raw keys, so the button goes straight to the HUD instead.
+			if hud != null:
+				hud.toggle_card()
+		else:
+			_begin(b["action"])
 		_pad.queue_redraw()
 		return true
 	if _map_open():
@@ -207,7 +248,8 @@ func _drag(index: int, pos: Vector2) -> bool:
 func _release(index: int) -> bool:
 	var used := false
 	if _button_touch.has(index):
-		_wants_release[_button_touch[index]] = true
+		if _button_touch[index] != &"":
+			_wants_release[_button_touch[index]] = true
 		_button_touch.erase(index)
 		_pad.queue_redraw()
 		used = true
@@ -259,8 +301,10 @@ func _process(_delta: float) -> void:
 		# on its own, and a phone should not be redrawing a static overlay
 		# sixty times a second.
 		var target := player.looked_at_worker()
-		if target != _last_target:
+		var armed := _armed()
+		if target != _last_target or armed != _last_armed:
 			_last_target = target
+			_last_armed = armed
 			_pad.queue_redraw()
 
 
@@ -282,7 +326,7 @@ func _draw_pad() -> void:
 		return
 	_refresh_unit()
 	var font := UiTheme.font(800)
-	var has_target := player != null and player.looked_at_worker() != null
+	var has_target := _has_target()
 
 	if _stick_touch != -1:
 		var r := STICK_RADIUS * _unit
@@ -302,7 +346,7 @@ func _draw_pad() -> void:
 		var b: Dictionary = buttons[key]
 		var radius := float(b["radius"])
 		var down: bool = b["action"] in held
-		var lit: bool = down or (key == "talk" and has_target)
+		var lit: bool = down or (key == "talk" and has_target) or (key == "info" and _card_open())
 		var fill := Color(0.075, 0.062, 0.05, 0.50)
 		if down:
 			fill = Color(UiTheme.GOLD, 0.45)

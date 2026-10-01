@@ -16,7 +16,9 @@ It works on a phone. On iPhone or Android, open that link and use **Share → Ad
 to Home Screen**; it installs as a standalone app and launches without the
 browser chrome. Touch controls appear automatically: drag your left thumb
 anywhere on the left of the screen to walk (push to the rim to run), drag on the
-right to look, and use the on-screen TALK / JUMP / MAP buttons.
+right to look, and use the on-screen TALK / JUMP / MAP buttons. FIRE and SWAP
+appear once you are carrying a weapon, and INFO while you are looking at
+somebody.
 
 If the page hangs on a black screen, your browser has refused
 `SharedArrayBuffer` — try the
@@ -36,6 +38,9 @@ Desktop builds for Windows, Linux and macOS are attached to every tagged
 | Jump       | Space             | JUMP                           |
 | Look       | mouse             | drag on the right of the screen |
 | Talk       | E                 | TALK                           |
+| Villager card | Tab / V        | INFO (while looking at someone) |
+| Fire       | left click        | FIRE (once you carry a weapon) |
+| Swap weapon | Q                | SWAP                           |
 | Map        | M                 | MAP                            |
 | Pause / quit | Esc             | ESC                            |
 | Fullscreen | F11               | —                              |
