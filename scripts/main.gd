@@ -1088,8 +1088,9 @@ func _raise_village_life() -> void:
 	progression.name = "Progression"
 	add_child(progression)
 	progression.setup(town, crew, clock, farm, realm, dispatch)
-	if not _save.is_empty():
+	if not _save.is_empty() or VillageVisit.active:
 		# People are restored one signal at a time; nothing is paid for that.
+		# Nor is anything earned for walking round somebody else's village.
 		progression.begin_silent()
 
 	milestones_ui = MilestonesUi.new()

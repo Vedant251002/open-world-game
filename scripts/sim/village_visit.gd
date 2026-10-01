@@ -195,9 +195,8 @@ static func talk(m: Node, w: Worker, text: String) -> void:
 static func facts_for(w: Worker) -> String:
 	var p := person(w.memory.display_name)
 	var bits: Array[String] = []
-	var land := _land()
 	bits.append("You live in %s, a village%s. Its mayor is %s." % [
-		str(data.get("name", "this village")), (" on %s country" % land) if land != "" else "", _mayor()])
+		str(data.get("name", "this village")), _where(), _mayor()])
 	bits.append("The person talking to you is a visitor; they cannot give you orders and you owe them nothing. Be hospitable and tell them about your village if they ask.")
 	var kinds := _building_kinds()
 	if not kinds.is_empty():
@@ -218,9 +217,14 @@ static func facts_for(w: Worker) -> String:
 	return " ".join(bits)
 
 
-static func _land() -> String:
-	var l := str(data.get("landscape", ""))
-	return str((VillageIdentity.LANDSCAPES[l] as Dictionary)["name"]).to_lower() if VillageIdentity.LANDSCAPES.has(l) else ""
+## Where the village lies, as a villager would put it: " up in the hills".
+static func _where() -> String:
+	match str(data.get("landscape", "")):
+		"meadow": return " in the meadows"
+		"coast": return " on the coast"
+		"forest": return " in the forest"
+		"hills": return " up in the hills"
+	return ""
 
 
 static func _mayor() -> String:
@@ -267,10 +271,13 @@ static func offline_line(w: Worker, text: String) -> String:
 			"Somebody who talks to us a great deal and does everything by asking. They are away today."
 	if Realm.has_phrase(t, ["tell me about", "your village", "this place", "this village", "this town",
 			"what is it like", "how is it here", "what is here", "what's here", "what do you have", "what is there"]):
-		var land := (" on %s country" % _land()) if _land() != "" else ""
+		var land := _where()
 		if kinds.is_empty():
 			return "%s is not much yet%s: a well and some good people." % [vname, land]
-		return "%s%s: we have %s. %d of us live here." % [vname, land, _join(kinds.slice(0, 5)),
+		var named: Array[String] = []
+		for k: String in kinds.slice(0, 5):
+			named.append(("an " if k.substr(0, 1) in ["a", "e", "i", "o", "u"] else "a ") + k)
+		return "%s%s: we have %s. %d of us live here." % [vname, land, _join(named),
 			(data.get("crew", []) as Array).size()]
 	if Realm.has_phrase(t, ["news", "happened", "history", "lately", "recently", "chronicle", "any news"]):
 		if not chron.is_empty():

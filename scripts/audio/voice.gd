@@ -50,6 +50,11 @@ static func supported() -> bool:
 static func _refresh_voices() -> void:
 	if not _voice_ids.is_empty():
 		return
+	# Only the browser fills its list in late; a desktop with no speech engine
+	# says so once (and logs an engine error each time it is asked).
+	if _voices_asked and not OS.has_feature("web"):
+		return
+	_voices_asked = true
 	var all: Array = DisplayServer.tts_get_voices_for_language("en")
 	if all.is_empty():
 		all = DisplayServer.tts_get_voices()
