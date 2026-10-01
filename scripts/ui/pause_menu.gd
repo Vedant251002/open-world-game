@@ -24,6 +24,10 @@ const FOCUS_GRACE_MS := 2500
 signal photo_requested
 signal challenge_requested
 signal crier_requested          ## the Village Crier's back issues (crier_screen.gd)
+## Neighbours and shared villages (scripts/ui/diplomacy_screen.gd, visit_screen.gd).
+signal diplomacy_requested
+signal villages_requested
+signal leave_visit_requested
 
 var player: Player
 var open := false
@@ -31,6 +35,11 @@ var open := false
 var _root: Control
 var _screen_button: Button
 var _challenge_button: Button
+var _village_row: HBoxContainer
+var _leave_button: Button
+var _diplomacy_button: Button
+var _crier_button: Button
+var _share_button: Button
 var _ready_ms := 0
 
 
@@ -123,7 +132,22 @@ func _build() -> void:
 	extra.add_child(_challenge_button)
 
 	# Village Crier: today's paper and back issues.
-	col.add_child(_button("The Village Crier  [N]", func() -> void: crier_requested.emit()))
+	_crier_button = _button("The Village Crier  [N]", func() -> void: crier_requested.emit())
+	col.add_child(_crier_button)
+	# Neighbours and shared villages. While visiting somebody else's village
+	# only "Leave this village" shows (see set_visiting).
+	_village_row = HBoxContainer.new()
+	_village_row.add_theme_constant_override("separation", int(UiTheme.px(8)))
+	col.add_child(_village_row)
+	_diplomacy_button = _button("Diplomacy  [O]", func() -> void: diplomacy_requested.emit())
+	_diplomacy_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_village_row.add_child(_diplomacy_button)
+	_share_button = _button("Share / visit", func() -> void: villages_requested.emit())
+	_share_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_village_row.add_child(_share_button)
+	_leave_button = _button("Leave this village", func() -> void: leave_visit_requested.emit(), true)
+	_leave_button.visible = false
+	col.add_child(_leave_button)
 
 	col.add_child(_rule())
 	# A quick reminder of the controls, since this is where a player goes when
@@ -148,6 +172,17 @@ func _build() -> void:
 func set_challenge_label(in_challenge: bool) -> void:
 	if _challenge_button != null:
 		_challenge_button.text = "Challenge (playing)" if in_challenge else "Weekly challenge"
+
+
+## In somebody else's village: the way home, and none of the town's own screens.
+func set_visiting(v: bool) -> void:
+	if _leave_button == null:
+		return
+	_leave_button.visible = v
+	_village_row.visible = not v
+	_challenge_button.visible = not v
+	if _crier_button != null:
+		_crier_button.visible = not v
 
 
 func _rule() -> Control:

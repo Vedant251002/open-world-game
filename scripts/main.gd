@@ -43,6 +43,9 @@ var challenge: Challenge
 var challenge_screen: ChallengeScreen
 ## Village identity, milestones and the guided first day (see _raise_village_life).
 var identity: VillageIdentity
+# Neighbours and village sharing (see _raise_neighbour_screens).
+var diplomacy_screen: DiplomacyScreen
+var visit_screen: VisitScreen
 var progression: Progression
 var milestones_ui: MilestonesUi
 ## The Village Crier (daily paper) and daily villager requests (see _raise_crier).
@@ -84,19 +87,26 @@ func _ready() -> void:
 			SaveGame.erase()
 	# Weekly challenge: which save slot this boot uses (see Challenge.boot).
 	Challenge.boot(args)
+	# Visiting somebody else's village (scripts/sim/village_visit.gd): read-only,
+	# never reads or writes the player's own save.
+	VillageVisit.boot(args)
 	# The seed is the world; a save carries its own and overrides the clock's.
-	if "--fresh" not in args:
+	if "--fresh" not in args and not VillageVisit.active:
 		_save = SaveGame.read()
 		if not _save.is_empty():
 			_world_seed = int(_save.get("seed", _world_seed))
 			print("[delegate] loading the town saved %s" % str(_save.get("written", "?")))
-	if Challenge.mode and _save.is_empty():
+	if Challenge.mode and _save.is_empty() and not VillageVisit.active:
 		var cw := Challenge.current_week()
 		_world_seed = int(Challenge.for_week(int(cw["year"]), int(cw["week"]))["world_seed"])
+	if VillageVisit.active:
+		_world_seed = int(VillageVisit.data["seed"])
 
 	# Who is founding this village, and on what land. A save carries its own; a
 	# new game takes what the title screen left (see VillageIdentity.pending).
-	if not _save.is_empty():
+	if VillageVisit.active:
+		identity = VillageVisit.identity()
+	elif not _save.is_empty():
 		identity = VillageIdentity.from_dict(_save.get("identity", {}))
 	elif VillageIdentity.pending != null:
 		identity = VillageIdentity.pending
@@ -323,7 +333,9 @@ func _on_world_ready(t0: int) -> void:
 	# A saved town has its founding buildings in the world already, and their
 	# records in the save; founding it again would put a second bakery in the
 	# first one.
-	if "--empty" not in args and _save.is_empty():
+	if VillageVisit.active:
+		VillageVisit.raise_buildings(self)        # their buildings, not ours
+	elif "--empty" not in args and _save.is_empty():
 		_found_town()
 	elif not _save.is_empty():
 		_restore_town()
@@ -334,6 +346,8 @@ func _on_world_ready(t0: int) -> void:
 		_raise_crew()
 		if not _save.is_empty():
 			_restore_people()
+		if VillageVisit.active:
+			VillageVisit.populate(self)           # their people, not ours
 		_arm_saving()
 		if Challenge.mode and challenge != null and challenge.spec.is_empty():
 			var w := Challenge.current_week()
@@ -812,10 +826,18 @@ func _raise_crew() -> void:
 	# clock stays something Town is handed rather than something it listens to.
 	clock.day_passed.connect(func(_d: int) -> void: town.market_day())
 	hud.harvest_wanted.connect(_on_harvest)
+	# Visiting a shared village, words go to the villager and nowhere else: no
+	# order can be planned there (VillageVisit.talk).
 	hud.instruction_given.connect(func(w: Worker, t: String) -> void:
-		dispatch.instruct(w, t))
+		if VillageVisit.active:
+			VillageVisit.talk(self, w, t)
+		else:
+			dispatch.instruct(w, t))
 	hud.answer_given.connect(func(w: Worker, t: String) -> void:
-		dispatch.answer(w, t))
+		if VillageVisit.active:
+			VillageVisit.talk(self, w, t)
+		else:
+			dispatch.answer(w, t))
 	dispatch.plan_accepted.connect(func(w: Worker, a: Array) -> void:
 		hud.show_assumptions(w, a))
 	dispatch.status.connect(func(t: String) -> void: hud.toast(t))
@@ -824,7 +846,7 @@ func _raise_crew() -> void:
 
 	# The kingdom: everything that makes the town a place rather than a
 	# building site. One hub; every system of it plugs into that.
-	if "--norealm" not in OS.get_cmdline_user_args():
+	if "--norealm" not in OS.get_cmdline_user_args() and not VillageVisit.active:
 		_raise_realm()
 	# --- village ambience: chimney smoke, forge sparks, fireflies, butterflies ---
 	if "--noambience" not in OS.get_cmdline_user_args():
@@ -943,6 +965,7 @@ func _raise_extras() -> void:
 	challenge_screen.start_requested.connect(_switch_world.bind(true))
 	challenge_screen.leave_requested.connect(func() -> void: _switch_world(false, false))
 	hud.challenge_card.bind(challenge, clock)
+	_raise_neighbour_screens()
 	pause_menu.photo_requested.connect(photo.open_from_pause)
 	pause_menu.challenge_requested.connect(challenge_screen.open_screen)
 	pause_menu.set_challenge_label(Challenge.mode)
@@ -954,11 +977,45 @@ func _raise_extras() -> void:
 			challenge_screen.open_screen())
 
 
+## Diplomacy (key O) and sharing/visiting villages. Small and self-contained:
+## both screens are CanvasLayers that pause the game while open; the pause menu
+## only asks for them. See scripts/ui/diplomacy_screen.gd, visit_screen.gd.
+func _raise_neighbour_screens() -> void:
+	visit_screen = VisitScreen.new()
+	visit_screen.name = "VisitScreen"
+	add_child(visit_screen)
+	visit_screen.setup(player, identity)
+	visit_screen.export_provider = func() -> Dictionary:
+		return VillageExport.build_data(identity, _world_seed, town, crew,
+			realm.chronicle if realm != null else null, clock.day, visit_screen.owner_name)
+	visit_screen.visit_requested.connect(func(d: Dictionary) -> void:
+		_save_now("visit")                       # the player's own village, kept as it is
+		VillageVisit.request(d)
+		get_tree().paused = false
+		get_tree().reload_current_scene())
+	visit_screen.leave_requested.connect(func() -> void:
+		VillageVisit.leave()
+		get_tree().paused = false
+		get_tree().reload_current_scene())
+	pause_menu.villages_requested.connect(visit_screen.open_screen)
+	pause_menu.leave_visit_requested.connect(visit_screen.leave_requested.emit)
+	pause_menu.set_visiting(VillageVisit.active)
+	if VillageVisit.active:
+		visit_screen.show_visit_banner(VillageVisit.data)
+	if realm != null:
+		diplomacy_screen = DiplomacyScreen.new()
+		diplomacy_screen.name = "DiplomacyScreen"
+		add_child(diplomacy_screen)
+		diplomacy_screen.setup(realm, player)
+		pause_menu.diplomacy_requested.connect(diplomacy_screen.open_screen)
+
+
 ## Into a challenge world (`into` true; `fresh` per the button) or back to the
 ## village. The current slot is saved first, then the scene is reloaded and
 ## Challenge.boot points the save at the right file.
 func _switch_world(fresh: bool, into: bool) -> void:
 	_save_now("switch")
+	VillageVisit.cancel()      # a visit never survives a switch of world
 	if into:
 		Challenge.request(fresh)
 	else:
@@ -1031,8 +1088,9 @@ func _raise_village_life() -> void:
 	progression.name = "Progression"
 	add_child(progression)
 	progression.setup(town, crew, clock, farm, realm, dispatch)
-	if not _save.is_empty():
+	if not _save.is_empty() or VillageVisit.active:
 		# People are restored one signal at a time; nothing is paid for that.
+		# Nor is anything earned for walking round somebody else's village.
 		progression.begin_silent()
 
 	milestones_ui = MilestonesUi.new()

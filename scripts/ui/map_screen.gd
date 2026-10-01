@@ -384,6 +384,39 @@ func _draw_overlay() -> void:
 	_draw_workers()
 	_draw_people()
 	_draw_player()
+	_draw_neighbours()
+
+
+## The neighbouring towns, as small pennants at the edge of the map in the
+## direction of the road to each, with the treaty and how they feel (hook for
+## realm/neighbours.gd; nothing is drawn without a realm).
+func _draw_neighbours() -> void:
+	var nb: Node = realm.call("system", "Neighbours") if realm != null else null
+	if nb == null:
+		return
+	var sz := _overlay.size
+	# The open part of the map: clear of the title plate, the directory and the key caps.
+	var area := Rect2(70.0, 120.0, maxf(sz.x - DIR_W - 190.0, 200.0), maxf(sz.y - 230.0, 160.0))
+	var c := area.get_center()
+	var well := _world_to_screen(Vector2(village.well_pos.x, village.well_pos.z))
+	for t: Dictionary in nb.call("list"):
+		var dir: Vector2 = (t["bearing"] as Vector2).normalized()
+		var tx := 1e9 if absf(dir.x) < 0.0001 else (area.size.x * 0.5) / absf(dir.x)
+		var ty := 1e9 if absf(dir.y) < 0.0001 else (area.size.y * 0.5) / absf(dir.y)
+		var p := c + dir * minf(tx, ty)
+		var col: Color = nb.call("banner_colour", t)
+		_overlay.draw_line(well, well + (p - well).normalized() * minf(60.0, well.distance_to(p)),
+			Color(C_INK, 0.35), 2.0)
+		_overlay.draw_rect(Rect2(p.x - 9, p.y - 22, 18, 3), Color("#8c6a3c"))
+		_overlay.draw_colored_polygon(PackedVector2Array([Vector2(p.x - 8, p.y - 19),
+			Vector2(p.x + 8, p.y - 19), Vector2(p.x + 8, p.y + 2), Vector2(p.x, p.y - 3),
+			Vector2(p.x - 8, p.y + 2)]), col)
+		BannerIcon.draw_emblem(_overlay, Vector2(p.x, p.y - 10), 4.0, str(nb.call("banner_emblem", t)), C_PAPER)
+		var label := "%s  %s" % [str(t["name"]), str(t["treaty"]) if str(t["treaty"]) != "none" else nb.call("mood_word", t)]
+		var tw := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+		var lx := clampf(p.x - tw * 0.5, 8.0, sz.x - tw - 8.0)
+		_overlay.draw_rect(Rect2(lx - 6, p.y + 3, tw + 12, 19), Color(0.10, 0.08, 0.06, 0.78))
+		_overlay.draw_string(_font, Vector2(lx, p.y + 17), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_PAPER)
 
 
 func _draw_streets(s: float) -> void:

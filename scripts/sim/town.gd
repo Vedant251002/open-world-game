@@ -101,6 +101,9 @@ func register(patch: VoxelPatch, plot: Plot, builder: String, day: int) -> Dicti
 		"patch": patch,
 		"front": patch.front,
 		"materials": patch.cost.duplicate(),
+		# How it was generated (kept for sharing the village; see VillageExport).
+		"spec": patch.get_meta("spec", {}),
+		"gen_seed": int(patch.get_meta("gen_seed", 0)),
 	}
 	_next_id += 1
 	buildings.append(rec)
@@ -408,6 +411,7 @@ func snapshot() -> Dictionary:
 			"street": b["street"], "builder": b["builder"], "day": b["day"],
 			"materials": (b["materials"] as Dictionary).duplicate(),
 			"patch": SaveGame.patch_to_dict(b["patch"]),
+			"spec": b.get("spec", {}), "gen_seed": int(b.get("gen_seed", 0)),
 		})
 	return {"tier": tier, "stock": stock.duplicate(), "coins": coins,
 		"buildings": recs, "next_id": _next_id}
@@ -431,6 +435,7 @@ func restore(d: Dictionary, village: Village) -> void:
 			"builder": str(r["builder"]), "day": int(r["day"]),
 			"patch": patch, "front": patch.front,
 			"materials": (r.get("materials", {}) as Dictionary).duplicate(),
+			"spec": r.get("spec", {}), "gen_seed": int(r.get("gen_seed", 0)),
 		}
 		buildings.append(rec)
 		occupied_rects.append(patch.footprint)
