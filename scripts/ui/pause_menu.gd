@@ -23,6 +23,7 @@ const FOCUS_GRACE_MS := 2500
 ## Photo mode and the weekly challenge live elsewhere; the menu only asks.
 signal photo_requested
 signal challenge_requested
+signal crier_requested          ## the Village Crier's back issues (crier_screen.gd)
 
 var player: Player
 var open := false
@@ -120,6 +121,9 @@ func _build() -> void:
 	_challenge_button = _button("Weekly challenge", func() -> void: challenge_requested.emit())
 	_challenge_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	extra.add_child(_challenge_button)
+
+	# Village Crier: today's paper and back issues.
+	col.add_child(_button("The Village Crier  [N]", func() -> void: crier_requested.emit()))
 
 	col.add_child(_rule())
 	# A quick reminder of the controls, since this is where a player goes when
