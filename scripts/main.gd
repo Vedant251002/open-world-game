@@ -36,6 +36,11 @@ var livestock: Livestock
 var wildlife: Wildlife
 var warfare: Warfare
 var realm: Realm
+var audio: AudioDirector
+# Features: photo mode and the weekly challenge (see _raise_extras).
+var photo: PhotoMode
+var challenge: Challenge
+var challenge_screen: ChallengeScreen
 
 var _world_seed := 0
 var showcase_views: Array[Dictionary] = []
@@ -68,12 +73,17 @@ func _ready() -> void:
 		SaveGame.enabled = true
 		if not SaveTest.second_boot:
 			SaveGame.erase()
+	# Weekly challenge: which save slot this boot uses (see Challenge.boot).
+	Challenge.boot(args)
 	# The seed is the world; a save carries its own and overrides the clock's.
 	if "--fresh" not in args:
 		_save = SaveGame.read()
 		if not _save.is_empty():
 			_world_seed = int(_save.get("seed", _world_seed))
 			print("[delegate] loading the town saved %s" % str(_save.get("written", "?")))
+	if Challenge.mode and _save.is_empty():
+		var cw := Challenge.current_week()
+		_world_seed = int(Challenge.for_week(int(cw["year"]), int(cw["week"]))["world_seed"])
 
 	sky = SkyEnv.new()
 	add_child(sky)
@@ -130,9 +140,17 @@ func _ready() -> void:
 	clock.name = "Clock"
 	add_child(clock)
 
+	# Sound (scripts/audio/): created here so the title screen's buttons click;
+	# bound to the game's systems in _raise_audio() once they exist.
+	if "--nosound" not in args:
+		audio = AudioDirector.new()
+		audio.name = "Audio"
+		add_child(audio)
+
 	# The front door, only on a plain interactive launch: no test, bench, shot
 	# or other dev flag. It holds the clock and the player until "Begin".
-	if _is_interactive_launch(args):
+	# A reload into or out of a challenge goes straight to the village.
+	if _is_interactive_launch(args) and not Challenge.skip_title:
 		PauseMenu.start_fullscreen(args)
 		title = TitleScreen.new()
 		title.name = "Title"
@@ -289,6 +307,9 @@ func _on_world_ready(t0: int) -> void:
 		if not _save.is_empty():
 			_restore_people()
 		_arm_saving()
+		if Challenge.mode and challenge != null and challenge.spec.is_empty():
+			var w := Challenge.current_week()
+			challenge.begin(Challenge.for_week(int(w["year"]), int(w["week"])))
 	if "--nostream" in args:
 		streamer.set_process(false)
 	if "--nomap" in args:
@@ -335,6 +356,22 @@ func _on_world_ready(t0: int) -> void:
 		uf.pause = pause_menu
 		add_child(uf)
 		uf.begin()
+		return
+	if "--featureshot" in args:
+		var fs := FeatureShot.new()
+		fs.main = self
+		add_child(fs)
+		fs.begin()
+		return
+	if "--challengetest" in args:
+		var cht := ChallengeTest.new()
+		cht.clock = clock
+		cht.town = town
+		cht.dispatch = dispatch
+		cht.realm = realm
+		cht.crew = crew
+		add_child(cht)
+		get_tree().quit(cht.run())
 		return
 	if "--costrun" in args:
 		# A scripted first session, for reading the cost of each thing a
@@ -543,6 +580,13 @@ func _on_world_ready(t0: int) -> void:
 		iv.town = town
 		add_child(iv)
 		return
+	if "--audiotest" in args:
+		# Sound: the soundscape driven through a day, a storm and a night.
+		var aut := AudioTest.new()
+		aut.main = self
+		add_child(aut)
+		aut.begin()
+		return
 	if "--walktest" in args:
 		var wt := WalkTest.new()
 		wt.world = world
@@ -742,6 +786,17 @@ func _raise_crew() -> void:
 
 	print("[delegate] crew: %s   (AI: %s)" % [", ".join(crew.by_id.keys()),
 		dispatch.describe_ai()])
+	_raise_audio()
+	_raise_extras()
+
+
+## Sound (scripts/audio/): hands the audio director the finished game.
+func _raise_audio() -> void:
+	if audio == null:
+		return
+	audio.bind({"player": player, "world": world, "clock": clock, "realm": realm,
+		"crew": crew, "livestock": livestock, "warfare": warfare, "map": map,
+		"inventory": inventory, "pause_menu": pause_menu, "town": town})
 
 
 ## A field already in the ground, ripened, for screenshots and for anyone who
@@ -789,6 +844,60 @@ func build_context() -> Dictionary:
 		"world": world, "village": village, "worldgen": gen, "tier": 1,
 		"occupied_rects": [], "built_fronts": {},
 	}
+
+
+## Photo mode (key P, pause menu, touch button) and the weekly challenge
+## (pause menu, `--challenge`). Both are self-contained; this only wires them.
+func _raise_extras() -> void:
+	photo = PhotoMode.new()
+	photo.name = "PhotoMode"
+	photo.player = player
+	photo.hud = hud
+	photo.clock = clock
+	photo.sky = sky
+	photo.realm = realm
+	photo.town = town
+	photo.crew = crew
+	photo.world = world
+	photo.dispatch = dispatch
+	photo.touch = touch
+	photo.pause_menu = pause_menu
+	add_child(photo)
+	photo.setup()
+
+	challenge = Challenge.new()
+	challenge.name = "Challenge"
+	add_child(challenge)
+	challenge.bind(clock, town, dispatch, realm, crew)
+	challenge_screen = ChallengeScreen.new()
+	challenge_screen.name = "ChallengeScreen"
+	add_child(challenge_screen)
+	challenge_screen.setup(challenge, player)
+	challenge_screen.start_requested.connect(_switch_world.bind(true))
+	challenge_screen.leave_requested.connect(func() -> void: _switch_world(false, false))
+	hud.challenge_card.bind(challenge, clock)
+	pause_menu.photo_requested.connect(photo.open_from_pause)
+	pause_menu.challenge_requested.connect(challenge_screen.open_screen)
+	pause_menu.set_challenge_label(Challenge.mode)
+	challenge.finished.connect(func(res: Dictionary) -> void:
+		_save_now("challenge")
+		hud.toast("Weekly challenge: %s" % ("complete!" if bool(res["success"])
+			else "not this time."), 6.0)
+		if not photo.active:
+			challenge_screen.open_screen())
+
+
+## Into a challenge world (`into` true; `fresh` per the button) or back to the
+## village. The current slot is saved first, then the scene is reloaded and
+## Challenge.boot points the save at the right file.
+func _switch_world(fresh: bool, into: bool) -> void:
+	_save_now("switch")
+	if into:
+		Challenge.request(fresh)
+	else:
+		Challenge.leave()
+	get_tree().paused = false
+	get_tree().reload_current_scene()
 
 
 # ------------------------------------------------------------------ saving
@@ -854,6 +963,9 @@ func _snapshot() -> Dictionary:
 		state["realm"] = realm.snapshot()
 	if hud != null and hud.chat != null:
 		state["chat"] = hud.chat.snapshot()
+	# Weekly challenge run in progress (absent from an ordinary town's save).
+	if challenge != null and not challenge.spec.is_empty():
+		state["challenge"] = challenge.snapshot()
 	return state
 
 
@@ -864,6 +976,8 @@ func _save_now(why: String) -> void:
 	var state := _snapshot()
 	var t1 := Time.get_ticks_msec()
 	if SaveGame.write(state):
+		if Challenge.mode:
+			Challenge.write_meta(challenge)
 		print("[delegate] saved (%s) in %d ms: %d gathering, %d writing" % [
 			why, Time.get_ticks_msec() - t0, t1 - t0, Time.get_ticks_msec() - t1])
 		if hud != null and why != "morning":
@@ -900,6 +1014,8 @@ func _restore_people() -> void:
 		realm.restore(_save.get("realm", {}))
 	if hud != null and hud.chat != null:
 		hud.chat.restore(_save.get("chat", {}))
+	if challenge != null:
+		challenge.restore(_save.get("challenge", {}))
 	var pl: Dictionary = _save.get("player", {})
 	if pl.has("pos"):
 		var at: Vector3 = pl["pos"]

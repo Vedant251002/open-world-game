@@ -63,6 +63,8 @@ var _realm_labels: Array[Label] = []
 var _in_debt := false
 var _crew_tint: Array[Color] = []
 var minimap: Minimap
+## The weekly challenge's objective, bound by main.gd.
+var challenge_card: ChallengeCard
 var _typing_for: Worker = null
 var _root: Control
 ## The crosshair and its target dot. The dot is the cheapest useful signal in
@@ -270,6 +272,10 @@ func _build_topleft() -> void:
 	_realm_box.add_theme_constant_override("separation", 1)
 	rrow.add_child(_realm_box)
 
+	# The weekly challenge objective (hidden unless a run is under way).
+	challenge_card = ChallengeCard.new()
+	_stack.add_child(challenge_card)
+
 	# Key hints, said once and left there. The phone build has buttons instead.
 	if not _touch:
 		var pill := PanelContainer.new()
@@ -282,6 +288,7 @@ func _build_topleft() -> void:
 		pill.add_child(hints)
 		hints.add_child(UiTheme.chip("I", "stores"))
 		hints.add_child(UiTheme.chip("M", "map"))
+		hints.add_child(UiTheme.chip("P", "photo"))
 		var ch := HBoxContainer.new()
 		ch.add_theme_constant_override("separation", 6)
 		ch.add_child(UiTheme.key_cap("C"))

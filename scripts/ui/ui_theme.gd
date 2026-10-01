@@ -306,6 +306,9 @@ static func style_button(b: Button, size: int = FS_SMALL, primary: bool = false)
 	b.add_theme_stylebox_override("pressed", _btn_style(2, primary))
 	b.add_theme_stylebox_override("focus", _btn_style(1, primary, ACCENT))
 	b.add_theme_stylebox_override("disabled", _btn_style(0, primary))
+	# Sound: the soft click and hover (scripts/audio/sfx.gd). A no-op until the
+	# audio director exists; safe to call again on the same button.
+	Sfx.hook_button(b)
 
 
 ## state: 0 rest, 1 hover, 2 pressed.
