@@ -66,7 +66,18 @@ const VISUALS := {
 	"snow":     {"tint": Color(0.80, 0.87, 0.99), "fog": 0.20, "cloud": 0.25, "precip": "snow"},
 }
 
+## The light of the year: golden in autumn, cold and blue in winter.
+const SEASON_TINT := {
+	"spring": Color(0.99, 1.02, 1.0), "summer": Color(1.02, 1.0, 0.97),
+	"autumn": Color(1.04, 0.97, 0.90), "winter": Color(0.95, 0.98, 1.03),
+}
+
 const FLAMMABLE := [VoxelTypes.TIMBER, VoxelTypes.PLANK, VoxelTypes.THATCH]
+## A fire that nobody fights burns this many hours, jumping to a neighbour
+## (SPREAD_PER_HOUR a go, within SPREAD_REACH_M of the door) as it does.
+const FIRE_BURN_HOURS := 8.0
+const SPREAD_PER_HOUR := 0.16
+const SPREAD_REACH_M := 22.0
 
 const PRECIP_MAX := 400
 const PRECIP_RADIUS := 15.0
@@ -98,7 +109,11 @@ var _lightning_saved_energy := 0.0
 
 var _fires: Array[Dictionary] = []   ## {id, rec, hp, started, embers: [{pos, at}]}
 var _next_fire_id := 0
-var _fire_fx: Dictionary = {}        ## fire id -> Node3D of ember/smoke boxes
+var _storm_damaged: Dictionary = {}  ## building id -> Array[Vector3i] of torn roof tiles
+var _fire_fx: FireFx = null          ## flames, smoke, light and water (scripts/obj/fire_fx.gd)
+## fire id -> what became of it, for the Crisis system's aftermath report:
+## {name, lost (0..1 of the building's burnable voxels), by_hand, hours, day}
+var fire_reports: Dictionary = {}
 
 var _precip: MultiMeshInstance3D = null
 var _precip_kind := ""
@@ -108,6 +123,7 @@ var _precip_speeds: PackedFloat32Array = PackedFloat32Array()
 var _precip_t := 0.0
 var _sky_refresh_t := 0.0
 var _fx_t := 0.0
+var _season_look: SeasonFx = null   ## snow, autumn colour, falling leaves (scripts/obj/season_fx.gd)
 
 
 func setup(r: Realm) -> void:
@@ -118,10 +134,62 @@ func setup(r: Realm) -> void:
 		if a.begins_with("--weather="):
 			force(a.substr(10))
 	_build_precip()
+	_build_fx()
 	_refresh_sky()
 
 
+## The two pieces of scenery this system drives, both under the props root so
+## they live and die with the world (a test with no props root simply has none).
+func _build_fx() -> void:
+	if realm.props_root == null:
+		return
+	_fire_fx = FireFx.new()
+	_fire_fx.name = "FireFx"
+	_fire_fx.viewer = realm.player
+	realm.props_root.add_child(_fire_fx)
+	_season_look = SeasonFx.new()
+	_season_look.name = "SeasonFx"
+	_season_look.viewer = realm.player
+	realm.props_root.add_child(_season_look)
+
+
 # -------------------------------------------------------------- seasons & sun
+
+## 1..DAYS_PER_SEASON: how far into the season it is.
+func day_of_season(day: int = -1) -> int:
+	return (_day_of_year(day) % DAYS_PER_SEASON) + 1
+
+
+func season_index(day: int = -1) -> int:
+	return (_day_of_year(day) / DAYS_PER_SEASON) % SEASONS.size()
+
+
+## Days until the named season begins (0 if it is that season now, and then it
+## counts the days until it comes round again only if `again` is set).
+func days_until(target: String) -> int:
+	var t := SEASONS.find(target)
+	if t < 0:
+		return 0
+	var cur := season_index()
+	if cur == t:
+		return 0
+	var seasons_away := (t - cur + SEASONS.size()) % SEASONS.size()
+	return (DAYS_PER_SEASON - (day_of_season() - 1)) + (seasons_away - 1) * DAYS_PER_SEASON
+
+
+## Which year of the calendar a day falls in (0-based), for once-a-year things.
+func year_of(day: int = -1) -> int:
+	var d := ((realm.clock.day if day < 0 else day) - 1) + _season_offset
+	return maxi(d, 0) / DAYS_PER_YEAR
+
+
+func season_fx() -> SeasonFx:
+	return _season_look
+
+
+## The season a given in-game day falls in (for forecasts and tests).
+func season_of(day: int) -> String:
+	return SEASONS[season_index(day)]
 
 func _day_of_year(day: int = -1) -> int:
 	var d := ((realm.clock.day if day < 0 else day) - 1) + _season_offset
@@ -219,7 +287,7 @@ func on_hour(_hour: float, _day: int) -> void:
 		_water_fields()
 	if _state == "snow" or temperature() < 2.0:
 		_chill_homeless()
-	if _state == "storm" and _rng.randf() < 0.22:
+	if _state == "storm" and _rng.randf() < 0.30:
 		_storm_damage()
 	if _state in ["clear", "overcast"] and _dry_days >= 2 and temperature() > 26.0 \
 			and _rng.randf() < 0.01:
@@ -278,34 +346,67 @@ func _chill_homeless() -> void:
 			c.mood = maxf(c.mood - 0.015, 0.0)
 
 
-## A storm takes a couple of thatch tiles off a roof, chosen from whatever is
-## actually standing there now rather than what was originally built — a
-## building already missing its roof cannot lose it twice.
+## A storm takes thatch off roofs, chosen from whatever is actually standing
+## there now rather than what was originally built -- a building already missing
+## its roof cannot lose it twice. Each torn tile is remembered (by building) so
+## the Crisis system can have it mended, and the rain that gets in is real:
+## the building's upkeep takes the hit.
 func _storm_damage() -> void:
+	storm_damage(1)
+
+
+## Tears the roofs of up to `buildings` buildings. Returns how many were hit.
+func storm_damage(buildings: int) -> int:
 	if realm.town.buildings.is_empty():
-		return
-	var rec: Dictionary = realm.town.buildings[_rng.randi() % realm.town.buildings.size()]
-	var patch: VoxelPatch = rec.get("patch")
-	if patch == null:
-		return
-	var fp: Rect2i = patch.footprint
-	if fp.size.x <= 0 or fp.size.y <= 0:
-		return
-	var knocked := 0
-	for _try in 10:
-		if knocked >= 2:
+		return 0
+	var hit := 0
+	var order: Array[Dictionary] = []
+	order.assign(realm.town.buildings)
+	order.shuffle()
+	for rec: Dictionary in order:
+		if hit >= buildings:
 			break
-		var fx := _rng.randi_range(fp.position.x, fp.end.x - 1)
-		var fz := _rng.randi_range(fp.position.y, fp.end.y - 1)
-		var top := realm.world.height_at(fx, fz)
-		if top < 0:
+		var patch: VoxelPatch = rec.get("patch")
+		if patch == null:
 			continue
-		if realm.world.get_voxel(Vector3i(fx, top, fz)) == VoxelTypes.THATCH:
-			realm.world.set_voxel(Vector3i(fx, top, fz), VoxelTypes.AIR)
-			knocked += 1
-	if knocked > 0:
-		realm.note("storm", "The storm tore thatch off the %s's roof." %
-			str(rec.get("archetype", "building")).replace("_", " "))
+		var fp: Rect2i = patch.footprint
+		if fp.size.x <= 0 or fp.size.y <= 0:
+			continue
+		var bid := int(rec.get("id", -1))
+		var knocked: Array = _storm_damaged.get(bid, [])
+		var added := 0
+		for _try in 40:
+			if added >= 4:
+				break
+			var fx := _rng.randi_range(fp.position.x, fp.end.x - 1)
+			var fz := _rng.randi_range(fp.position.y, fp.end.y - 1)
+			var top := realm.world.height_at(fx, fz)
+			if top < 0:
+				continue
+			if realm.world.get_voxel(Vector3i(fx, top, fz)) == VoxelTypes.THATCH:
+				realm.world.set_voxel(Vector3i(fx, top, fz), VoxelTypes.AIR)
+				knocked.append(Vector3i(fx, top, fz))
+				added += 1
+		if added > 0:
+			_storm_damaged[bid] = knocked
+			hit += 1
+			var name := str(rec.get("archetype", "building")).replace("_", " ")
+			realm.note("storm", "The storm tore thatch off the %s's roof." % name)
+			realm.say("The storm has torn the roof of the %s." % name)
+	return hit
+
+
+## building id -> the roof tiles the storm has torn off and nobody has put back.
+func storm_damaged() -> Dictionary:
+	return _storm_damaged
+
+
+func clear_storm_damage() -> void:
+	_storm_damaged.clear()
+
+
+func state() -> String:
+	return _state
 
 
 # ---------------------------------------------------------------------- fire
@@ -335,7 +436,7 @@ func ignite(rec: Dictionary, why: String) -> void:
 		return
 	_next_fire_id += 1
 	var fire := {"id": _next_fire_id, "rec": rec, "hp": 100.0, "started": _abs_hour(),
-		"embers": []}
+		"embers": [], "lost": 0, "total": _burnable(rec), "why": why}
 	_fires.append(fire)
 	var name := str(rec.get("archetype", "building")).replace("_", " ")
 	realm.say("The %s is on fire!" % name)
@@ -343,20 +444,44 @@ func ignite(rec: Dictionary, why: String) -> void:
 	_spawn_fire_visual(fire)
 
 
+## How many voxels of the building could burn, so a fire's damage can be told
+## as a fraction. Counted once, when it starts.
+func _burnable(rec: Dictionary) -> int:
+	var patch: VoxelPatch = rec.get("patch")
+	if patch == null or realm.world == null:
+		return 1
+	var n := 0
+	for x in patch.size.x:
+		for y in patch.size.y:
+			for z in patch.size.z:
+				if realm.world.get_voxel(patch.origin + Vector3i(x, y, z)) in FLAMMABLE:
+					n += 1
+	return maxi(n, 1)
+
+
 func _abs_hour() -> float:
 	return float(realm.clock.day) * 24.0 + realm.clock.hour
+
+
+## Everyone who is on the bucket line for this fire: hired hands and the
+## villagers who turned out, any Worker whose errand carries its id.
+func fighters_of(fire: Dictionary) -> Array[Worker]:
+	var active: Array[Worker] = []
+	if realm.crew != null:
+		for w: Worker in realm.crew.workers:
+			if not is_instance_valid(w):
+				continue
+			var extra: Dictionary = w.job_errand.get("extra", {})
+			if int(extra.get("fire_id", -1)) == int(fire["id"]):
+				active.append(w)
+	return active
 
 
 ## Firefighting, ageing and, failing either of those, the fire finishing on
 ## its own. Voxels only burn while the fire is still alive at the end of this.
 func _tick_fire_progress(fire: Dictionary) -> void:
 	var age := _abs_hour() - float(fire["started"])
-	var active: Array[Worker] = []
-	if realm.crew != null:
-		for w: Worker in realm.crew.hired():
-			var extra: Dictionary = w.job_errand.get("extra", {})
-			if int(extra.get("fire_id", -1)) == int(fire["id"]):
-				active.append(w)
+	var active := fighters_of(fire)
 
 	if not active.is_empty():
 		var rec: Dictionary = fire["rec"]
@@ -368,38 +493,43 @@ func _tick_fire_progress(fire: Dictionary) -> void:
 	if float(fire["hp"]) <= 0.0:
 		_extinguish(fire, active, true)
 		return
-	if age >= 6.0:
+	if age >= FIRE_BURN_HOURS:
 		_extinguish(fire, active, false)
 		return
 	_tick_fire_voxels(fire)
-	_maybe_spread(fire)
+	_maybe_spread(fire, age)
+	if _fire_fx != null:
+		_fire_fx.set_intensity(int(fire["id"]), float(fire["hp"]) / 100.0)
 
 
-## Eats a handful of flammable voxels each hour: last hour's embers finish
-## burning through to air, and a few more catch. Sampled rather than scanned,
-## so the cost is the same twelve edits whether the building is a hut or a
-## tower block.
+## Eats the building: last hour's embers finish burning through to air, and
+## more catch. How many scales with the size of the building (a fire that took
+## six hours to eat a hut in twelve voxels an hour would not be a crisis) and
+## with how much of the fire is left, so a bucket line saves real timber.
 func _tick_fire_voxels(fire: Dictionary) -> void:
 	var rec: Dictionary = fire["rec"]
 	var patch: VoxelPatch = rec.get("patch")
 	if patch == null or realm.world == null:
 		return
 	var abs_hour := _abs_hour()
+	var cap := int(clampf(float(fire["total"]) / 6.0, 12.0, 700.0) * float(fire["hp"]) / 100.0) + 4
 	var edits := 0
 	var keep: Array = []
 	for e: Dictionary in (fire["embers"] as Array):
-		if edits >= 12:
+		if edits >= cap * 2:
 			keep.append(e)
 			continue
-		if abs_hour - float(e["at"]) >= 2.0:
+		if abs_hour - float(e["at"]) >= 1.0:
 			realm.world.set_voxel(e["pos"], VoxelTypes.AIR)
+			fire["lost"] = int(fire["lost"]) + 1
 			edits += 1
 		else:
 			keep.append(e)
 	fire["embers"] = keep
 
+	var made := 0
 	var tries := 0
-	while edits < 12 and tries < 60:
+	while made < cap and tries < cap * 8:
 		tries += 1
 		var lx := _rng.randi_range(0, maxi(patch.size.x - 1, 0))
 		var ly := _rng.randi_range(0, maxi(patch.size.y - 1, 0))
@@ -408,21 +538,28 @@ func _tick_fire_voxels(fire: Dictionary) -> void:
 		if realm.world.get_voxel(wp) in FLAMMABLE:
 			realm.world.set_voxel(wp, VoxelTypes.EMBER)
 			(fire["embers"] as Array).append({"pos": wp, "at": abs_hour})
-			edits += 1
+			made += 1
 
 
-func _maybe_spread(fire: Dictionary) -> void:
-	if _rng.randf() > 0.05:
+## Fire jumps: to a neighbouring plot first, and failing that to whatever
+## stands within a stone's throw. Likelier the longer it has burned.
+func _maybe_spread(fire: Dictionary, age: float) -> void:
+	if age < 1.0 or _rng.randf() > SPREAD_PER_HOUR:
 		return
 	var rec: Dictionary = fire["rec"]
-	var plot := realm.village.plot_by_id(int(rec.get("plot_id", -1)))
-	if plot == null:
-		return
 	var options: Array[Dictionary] = []
-	for nid: int in plot.neighbours:
-		var nb := realm.town.find_by_plot(nid)
-		if not nb.is_empty() and _fire_for(nb).is_empty():
-			options.append(nb)
+	var plot := realm.village.plot_by_id(int(rec.get("plot_id", -1)))
+	if plot != null:
+		for nid: int in plot.neighbours:
+			var nb := realm.town.find_by_plot(nid)
+			if not nb.is_empty() and _fire_for(nb).is_empty():
+				options.append(nb)
+	if options.is_empty():
+		var here := realm.door_of(rec)
+		for other: Dictionary in realm.town.buildings:
+			if other != rec and _fire_for(other).is_empty() \
+					and realm.door_of(other).distance_to(here) < SPREAD_REACH_M:
+				options.append(other)
 	if options.is_empty():
 		return
 	ignite(options[_rng.randi() % options.size()], "the fire next door")
@@ -433,6 +570,16 @@ func _extinguish(fire: Dictionary, active: Array[Worker], by_hand: bool) -> void
 	var name := str(rec.get("archetype", "building")).replace("_", " ")
 	for w: Worker in active:
 		w.drop_everything()
+	# What is still glowing goes to a charred gap, not a flame that never ends.
+	for e: Dictionary in (fire["embers"] as Array):
+		if realm.world.get_voxel(e["pos"]) == VoxelTypes.EMBER:
+			realm.world.set_voxel(e["pos"], VoxelTypes.AIR)
+			fire["lost"] = int(fire["lost"]) + 1
+	fire["embers"] = []
+	var frac := clampf(float(fire["lost"]) / float(maxi(int(fire["total"]), 1)), 0.0, 1.0)
+	fire_reports[int(fire["id"])] = {"name": name, "lost": frac, "by_hand": by_hand,
+		"hours": _abs_hour() - float(fire["started"]), "day": realm.clock.day,
+		"building_id": int(rec.get("id", -1))}
 	if by_hand and not active.is_empty():
 		active[0].speak("Fire's out at the %s." % name, "done")
 		realm.note("fire", "The fire at the %s was put out." % name)
@@ -451,30 +598,78 @@ func _fire_named_in(t: String) -> Dictionary:
 	return {}
 
 
-## "put out the fire", "fight the fire at the bakery" — the worker given the
-## order, plus every idle hired hand, turns out for it. The well is the water:
-## a building far from it takes longer to save.
-func _fight_fire(worker: Worker, fire: Dictionary) -> void:
+## The fire to act on: the one named, else the one nearest `near`, else the
+## first. {} when nothing burns.
+func fire_for_text(text: String, near: Vector3 = Vector3.INF) -> Dictionary:
+	if _fires.is_empty():
+		return {}
+	var named := _fire_named_in(text.to_lower().replace("_", " "))
+	if not named.is_empty():
+		return named
+	var best: Dictionary = _fires[0]
+	if near != Vector3.INF:
+		var best_d := INF
+		for fire: Dictionary in _fires:
+			var d := realm.door_of(fire["rec"]).distance_to(near)
+			if d < best_d:
+				best_d = d
+				best = fire
+	return best
+
+
+func fires() -> Array[Dictionary]:
+	return _fires
+
+
+## "put out the fire", "fight the fire at the bakery", "everyone to the bakery
+## with buckets": the worker given the order, every idle hired hand, and
+## `volunteers` idle villagers turn out. They walk a bucket line between the
+## well and the burning building (the well is the water: a building far from it
+## takes longer to save). The order is an emergency, so it breaks into whatever
+## the worker was doing. Returns how many are on the line.
+func fight_fire(worker: Worker, fire: Dictionary, volunteers: int = 2) -> int:
 	var rec: Dictionary = fire["rec"]
 	var door := realm.door_of(rec)
 	var name := str(rec.get("archetype", "building")).replace("_", " ")
-	var brigade: Array[Worker] = [worker]
+	var brigade: Array[Worker] = []
+	if worker != null:
+		if worker.busy():
+			worker.drop_everything()
+		brigade.append(worker)
 	if realm.crew != null:
 		for w: Worker in realm.crew.hired():
-			if w != worker and not w.busy():
+			if w != worker and not w.busy() and not brigade.has(w):
 				brigade.append(w)
-	for i in brigade.size():
-		var w2: Worker = brigade[i]
-		var line := ("Forming a bucket line for the %s!" % name) if i == 0 else ""
-		w2.take_errand_job("station", door, 30.0, line,
-			{"doing": "hammer", "fire_id": int(fire["id"])})
-	realm.note("fire", "The crew turned out to fight the fire at the %s." % name)
+		var pool: Array[Worker] = []
+		for c: Worker in realm.crew.citizens():
+			if is_instance_valid(c) and not c.busy() and not brigade.has(c):
+				pool.append(c)
+		pool.sort_custom(func(a: Worker, b: Worker) -> bool:
+			return a.global_position.distance_to(door) < b.global_position.distance_to(door))
+		for c2: Worker in pool.slice(0, volunteers):
+			brigade.append(c2)
+	var well := realm.village.well_pos
+	var legs: Array = [well, door]
+	var first := true
+	var taken := 0
+	for w2: Worker in brigade:
+		var line := ""
+		if first:
+			line = "Bucket line from the well to the %s! Everyone, now!" % name
+		elif not w2.hired:
+			line = "I will carry water!"
+		first = false
+		if w2.take_errand_job("patrol", door, 10.0, line,
+				{"doing": "hammer", "fire_id": int(fire["id"]), "where": "the %s fire" % name}, legs):
+			taken += 1
+	realm.note("fire", "%d turned out with buckets for the fire at the %s." % [taken, name])
+	return taken
 
 
 # -------------------------------------------------------------- fire visuals
 
 func _spawn_fire_visual(fire: Dictionary) -> void:
-	if realm.props_root == null:
+	if _fire_fx == null:
 		return
 	var rec: Dictionary = fire["rec"]
 	var patch: VoxelPatch = rec.get("patch")
@@ -486,47 +681,27 @@ func _spawn_fire_visual(fire: Dictionary) -> void:
 	var v := VoxelChunk.VOXEL_M
 	var cx := fp.position.x + fp.size.x * 0.5
 	var cz := fp.position.y + fp.size.y * 0.5
-	var top := realm.world.height_at(int(cx), int(cz))
-	var centre := Vector3(cx * v, float(maxi(top, 0) + 1) * v, cz * v)
-
-	var root := Node3D.new()
-	root.name = "Fire%d" % int(fire["id"])
-	root.position = centre
-	realm.props_root.add_child(root)
-	for i in 6:
-		var ember := i % 2 == 0
-		var colour := Color("#ff7a2a") if ember else Color(0.35, 0.35, 0.33, 0.65)
-		var size := Vector3(0.22, 0.22, 0.22) if ember else Vector3(0.4, 0.5, 0.4)
-		var box := BoxKit.add(root, Vector3(
-			randf_range(-0.6, 0.6), randf_range(0.0, 1.2), randf_range(-0.6, 0.6)),
-			size, colour)
-		box.visibility_range_end = 120.0
-		box.set_meta("base_y", box.position.y)
-		box.set_meta("phase", randf() * TAU)
-	_fire_fx[int(fire["id"])] = root
+	var top_y := float(patch.origin.y + patch.size.y) * v
+	var centre := Vector3(cx * v, top_y, cz * v)
+	_fire_fx.add_fire(int(fire["id"]), centre, Vector2(fp.size.x, fp.size.y) * v * 0.4, top_y - 0.6)
+	_fire_fx.set_intensity(int(fire["id"]), float(fire["hp"]) / 100.0)
 
 
 func _clear_fire_visual(fire: Dictionary) -> void:
-	var id := int(fire["id"])
-	var node: Node3D = _fire_fx.get(id)
-	if node != null and is_instance_valid(node):
-		node.queue_free()
-	_fire_fx.erase(id)
+	if _fire_fx != null:
+		_fire_fx.remove_fire(int(fire["id"]))
 
 
-func _bob_fire_fx(dt: float) -> void:
-	for id: int in _fire_fx:
-		var root: Node3D = _fire_fx[id]
-		if not is_instance_valid(root):
-			continue
-		for child: Node in root.get_children():
-			if not (child is MeshInstance3D):
-				continue
-			var mi := child as MeshInstance3D
-			var phase := float(mi.get_meta("phase", 0.0)) + dt * 1.6
-			mi.set_meta("phase", phase)
-			var base_y := float(mi.get_meta("base_y", mi.position.y))
-			mi.position.y = base_y + sin(phase) * 0.12
+## Tells the picture where each bucket carrier stands, so the water arcs.
+func _feed_fire_fx() -> void:
+	if _fire_fx == null:
+		return
+	for fire: Dictionary in _fires:
+		var spots: Array = []
+		for w: Worker in fighters_of(fire):
+			if w.global_position.distance_to(realm.door_of(fire["rec"])) < 7.0:
+				spots.append(w.global_position)
+		_fire_fx.set_fighters(int(fire["id"]), spots)
 
 
 # ------------------------------------------------------------------ lightning
@@ -616,7 +791,7 @@ func _refresh_sky() -> void:
 	if realm.sky == null:
 		return
 	var v: Dictionary = VISUALS.get(_state, VISUALS["clear"])
-	realm.sky.weather_tint = v["tint"]
+	realm.sky.weather_tint = (v["tint"] as Color) * (SEASON_TINT.get(season(), Color.WHITE) as Color)
 	realm.sky.weather_fog = v["fog"]
 	realm.sky.cloud_cover = v["cloud"]
 	realm.sky.hour = realm.sky.hour   # re-trigger _apply_time() with the new fields
@@ -639,11 +814,11 @@ func tick(delta: float) -> void:
 			_lightning_timer = _rng.randf_range(20.0, 60.0)
 			_flash_lightning()
 
-	if not _fire_fx.is_empty():
+	if not _fires.is_empty():
 		_fx_t += delta
 		if _fx_t >= FX_UPDATE_DT:
-			_bob_fire_fx(_fx_t)
 			_fx_t = 0.0
+			_feed_fire_fx()
 
 	_sky_refresh_t += delta
 	if _sky_refresh_t >= SKY_REFRESH_DT:
@@ -668,12 +843,8 @@ func run(worker: Worker, step: Dictionary) -> String:
 	if _fires.is_empty():
 		worker.speak("Nothing is burning right now.")
 		return "done"
-	var fire := _fire_named_in(str(step.get("place", "")).to_lower().replace("_", " "))
-	if fire.is_empty():
-		fire = _fires[0]
-	if worker.busy():
-		return "I am busy just now — I will get to it after."
-	_fight_fire(worker, fire)
+	var fire := fire_for_text(str(step.get("place", "")), worker.global_position)
+	fight_fire(worker, fire, 3)
 	return "started"
 
 
@@ -786,7 +957,8 @@ func snapshot() -> Dictionary:
 	for fire: Dictionary in _fires:
 		var rec: Dictionary = fire["rec"]
 		fires_out.append({"building_id": int(rec.get("id", -1)), "hp": float(fire["hp"]),
-			"started": float(fire["started"]), "embers": fire["embers"]})
+			"started": float(fire["started"]), "embers": fire["embers"],
+			"lost": int(fire["lost"]), "total": int(fire["total"])})
 	return {
 		"season_offset": _season_offset, "state": _state, "wind": _wind,
 		"dry_days": _dry_days, "rained_today": _rained_today,
@@ -794,10 +966,28 @@ func snapshot() -> Dictionary:
 		# the season offset above, so restoring it needs nothing further.
 		"temperature": temperature(),
 		"fires": fires_out,
+		"storm_damaged": _storm_damaged_out(),
 	}
 
 
+func _storm_damaged_out() -> Dictionary:
+	var out := {}
+	for bid: int in _storm_damaged:
+		var flat: Array = []
+		for p: Vector3i in _storm_damaged[bid]:
+			flat.append([p.x, p.y, p.z])
+		out[str(bid)] = flat
+	return out
+
+
 func restore(d: Dictionary) -> void:
+	_storm_damaged.clear()
+	var sd: Dictionary = d.get("storm_damaged", {})
+	for k: Variant in sd:
+		var tiles: Array = []
+		for t: Variant in sd[k]:
+			tiles.append(Vector3i(int(t[0]), int(t[1]), int(t[2])))
+		_storm_damaged[int(str(k))] = tiles
 	_season_offset = int(d.get("season_offset", _season_offset))
 	_state = str(d.get("state", "clear"))
 	_wind = d.get("wind", _wind)
@@ -813,7 +1003,9 @@ func restore(d: Dictionary) -> void:
 			continue
 		_next_fire_id += 1
 		var fire := {"id": _next_fire_id, "rec": rec, "hp": float(e.get("hp", 100.0)),
-			"started": float(e.get("started", _abs_hour())), "embers": e.get("embers", [])}
+			"started": float(e.get("started", _abs_hour())), "embers": e.get("embers", []),
+			"lost": int(e.get("lost", 0)), "total": int(e.get("total", 0)) if int(e.get("total", 0)) > 0 else _burnable(rec),
+			"why": "an old fire"}
 		_fires.append(fire)
 		_spawn_fire_visual(fire)
 	_refresh_sky()

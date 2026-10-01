@@ -14,6 +14,8 @@ extends Node
 const NONE_CHANCE := 0.45
 const REPEAT_DAYS := 6
 const DECIDE_DAYS := 2
+## Nothing that hurts the town befalls it before this day (see Crisis).
+const CRISIS_MIN_DAY := 3
 
 var realm: Realm
 var last_fired: Dictionary = {}      ## id -> day
@@ -31,7 +33,7 @@ func setup(r: Realm) -> void:
 		{"id": "merchant", "weight": 5, "min_day": 2, "fire": _merchant},
 		{"id": "refugees", "weight": 4, "min_day": 3, "fire": _refugees},
 		{"id": "wolves", "weight": 3, "min_day": 4, "fire": _wolves},
-		{"id": "plague", "weight": 1, "min_day": 8, "fire": _plague},
+		{"id": "plague", "weight": 1, "min_day": 6, "fire": _plague},
 		{"id": "harvest", "weight": 3, "min_day": 3, "fire": _harvest},
 		{"id": "blight", "weight": 2, "min_day": 5, "fire": _blight},
 		{"id": "bandits", "weight": 3, "min_day": 5, "fire": _bandits},
@@ -41,6 +43,9 @@ func setup(r: Realm) -> void:
 		{"id": "players", "weight": 3, "min_day": 2, "fire": _players},
 		{"id": "storm", "weight": 2, "min_day": 3, "fire": _storm},
 		{"id": "omen", "weight": 4, "min_day": 1, "fire": _omen},
+		# Crisis: a building catches. Likelier the bigger the town (more hearths,
+		# more thatch); never before the town has a few buildings to lose.
+		{"id": "fire", "weight": 2, "weight_fn": _fire_weight, "min_day": CRISIS_MIN_DAY, "fire": _fire},
 	]
 
 
@@ -93,15 +98,26 @@ func on_day(day: int) -> void:
 		if day - int(last_fired.get(str(e["id"]), -100)) < REPEAT_DAYS:
 			continue
 		pool.append(e)
-		total += int(e["weight"])
+		total += _weight_of(e)
 	if pool.is_empty():
 		return
 	var roll := _rng.randi_range(1, total)
 	for e2: Dictionary in pool:
-		roll -= int(e2["weight"])
+		roll -= _weight_of(e2)
 		if roll <= 0:
 			trigger(str(e2["id"]))
 			return
+
+
+func _weight_of(e: Dictionary) -> int:
+	if e.has("weight_fn"):
+		return int((e["weight_fn"] as Callable).call())
+	return int(e["weight"])
+
+
+## One building on fire is a story; a town of one building has nothing to burn.
+func _fire_weight() -> int:
+	return clampi(realm.town.buildings.size() / 3, 0, 5)
 
 
 func _tick_live(day: int) -> void:
@@ -183,6 +199,19 @@ func _wolves() -> void:
 	realm.say("Wolves! A pack of %d is circling the pens." % n)
 	realm.note("event", "A pack of %d wolves came down on the town." % n)
 	_ask("wolves", ["hunt", "wait"], {})
+
+
+## Crisis: a building catches fire (a stray spark, an unattended hearth).
+## The Weather system owns the fire; the Crisis system gives it its drama.
+func _fire() -> void:
+	var weather: Node = realm.system("Weather")
+	if weather == null or realm.town.buildings.size() < 2:
+		return
+	var rec: Dictionary = weather.call("_pick_flammable_building")
+	if rec.is_empty():
+		return
+	weather.call("ignite", rec, ["a stray spark from the hearth", "an unattended candle",
+		"a hot chimney"][_rng.randi() % 3])
 
 
 func _plague() -> void:
@@ -307,6 +336,45 @@ func _omen() -> void:
 
 # ---------------------------------------------------------------- outcomes
 
+## Soldiers (or failing them, a hired hand with a stick) go after the wolves.
+## Returns what was done, in a line.
+func hunt_wolves() -> String:
+	if realm.warfare != null and not realm.warfare.soldiers.is_empty():
+		var w: Dictionary = live.get("wolves", {})
+		if not w.is_empty():
+			for s: Fighter in realm.warfare.soldiers:
+				for a: Variant in w["pack"]:
+					if is_instance_valid(a):
+						s.attack(a)
+						break
+		return "The soldiers are out after the pack."
+	var hands := realm.crew.hired()
+	if not hands.is_empty() and live.has("wolves"):
+		var w2: Dictionary = live["wolves"]
+		var first: Node3D = null
+		for a2: Variant in w2["pack"]:
+			if is_instance_valid(a2):
+				first = a2
+				break
+		if first != null:
+			(hands[0] as Worker).take_errand_job("wait", first.global_position, 3.0,
+				"After the wolves with a stick and a shout.", {"where": "the woods", "doing": "survey"})
+	return "Somebody is sent to drive them off. Guns would be better."
+
+
+## Shut the town and keep the sick apart: the flux passes sooner.
+func quarantine() -> String:
+	var law: Node = realm.system("Law")
+	if law != null and law.has_method("try_order") and not realm.crew.hired().is_empty():
+		law.call("try_order", realm.crew.hired()[0], "close the borders")
+	var hl: Node = realm.system("Health")
+	if hl != null:
+		var sick: Dictionary = hl.get("sick")
+		for wid: String in sick.keys():
+			sick[wid]["severity"] = 0.5
+	return "The town is shut and the sick kept apart. It will pass sooner."
+
+
 func _resolve(id: String, choice: String, data: Dictionary) -> void:
 	var town := realm.town
 	var pop := realm.population
@@ -346,44 +414,9 @@ func _resolve(id: String, choice: String, data: Dictionary) -> void:
 				for c2: Population.Citizen in pop.alive():
 					c2.mood = clampf(c2.mood - 0.02, 0.0, 1.0)
 		"wolves":
-			if choice == "hunt":
-				if realm.warfare != null and not realm.warfare.soldiers.is_empty():
-					var w: Dictionary = live.get("wolves", {})
-					if not w.is_empty():
-						for s: Fighter in realm.warfare.soldiers:
-							for a: Variant in w["pack"]:
-								if is_instance_valid(a):
-									s.attack(a)
-									break
-					line = "The soldiers are out after the pack."
-				else:
-					var hands := realm.crew.hired()
-					if not hands.is_empty() and live.has("wolves"):
-						var w2: Dictionary = live["wolves"]
-						var first: Node3D = null
-						for a2: Variant in w2["pack"]:
-							if is_instance_valid(a2):
-								first = a2
-								break
-						if first != null:
-							(hands[0] as Worker).take_errand_job("wait", first.global_position, 3.0,
-								"After the wolves with a stick and a shout.", {"where": "the woods", "doing": "survey"})
-					line = "Somebody is sent to drive them off. Guns would be better."
-			else:
-				line = "The pens are left to take their chances."
+			line = hunt_wolves() if choice == "hunt" else "The pens are left to take their chances."
 		"plague":
-			var law: Node = realm.system("Law")
-			if choice == "quarantine":
-				if law != null and law.has_method("try_order") and not realm.crew.hired().is_empty():
-					law.call("try_order", realm.crew.hired()[0], "close the borders")
-				var hl: Node = realm.system("Health")
-				if hl != null:
-					var sick: Dictionary = hl.get("sick")
-					for wid: String in sick.keys():
-						sick[wid]["severity"] = 0.5
-				line = "The town is shut and the sick kept apart. It will pass sooner."
-			else:
-				line = "It runs its course."
+			line = quarantine() if choice == "quarantine" else "It runs its course."
 		"bandits":
 			if choice == "pay":
 				town.coins -= int(data["demand"])

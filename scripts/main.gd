@@ -621,6 +621,21 @@ func _on_world_ready(t0: int) -> void:
 		iv.town = town
 		add_child(iv)
 		return
+	if "--socialtest" in args:
+		# Relationships, personality and voice: see scripts/dev/social_test.gd.
+		var sot := SocialTest.new()
+		sot.main = self
+		add_child(sot)
+		sot.begin()
+		return
+	if "--cardshot" in args:
+		# The villager card on screen, for the screenshot.
+		var csh := SocialTest.new()
+		csh.main = self
+		csh.shot_mode = true
+		add_child(csh)
+		csh.begin()
+		return
 	if "--audiotest" in args:
 		# Sound: the soundscape driven through a day, a storm and a night.
 		var aut := AudioTest.new()
@@ -1056,6 +1071,20 @@ func _apply_identity() -> void:
 	if milestones_ui != null:
 		milestones_ui.refresh()
 
+	# --- Relationships (features wave 2) -----------------------------------
+	# What you say and do feeds how each person feels about you; the standing
+	# is saved with each person's memory (crew snapshot), so nothing extra to
+	# snapshot here. A change of label is announced. If a Requests system is
+	# present it should call Relationships.record(mem, "request_done", day).
+	Relationships.bind(hud, crew, clock)
+	Relationships.tier_listener = func(mem: WorkerMemory, from_t: int, to_t: int) -> void:
+		if to_t > from_t and to_t >= Relationships.Tier.FRIEND:
+			hud.toast("%s thinks of you as a %s now." % [mem.display_name,
+				Relationships.LABELS[to_t].to_lower()], 5.0)
+		elif to_t < from_t and to_t <= Relationships.Tier.WARY:
+			hud.toast("%s has turned %s toward you." % [mem.display_name,
+				Relationships.LABELS[to_t].to_lower()], 5.0)
+
 
 ## After the crew and realm are restored from a save.
 func _restore_village_life() -> void:
@@ -1087,6 +1116,14 @@ func _raise_realm() -> void:
 	hud.realm = realm
 	# The map's directory of buildings and people reads from the realm.
 	map.realm = realm
+	# --- crisis banner: fire / raid / wolves / hunger / sickness / storm status
+	# and the one suggested order, across the top (scripts/ui/crisis_banner.gd).
+	var crisis_sys: Node = realm.system("Crisis")
+	if crisis_sys != null:
+		var banner := CrisisBanner.new()
+		banner.name = "CrisisBanner"
+		hud.add_child(banner)
+		banner.bind(crisis_sys)
 
 
 func _run_realm_test(which: String) -> void:

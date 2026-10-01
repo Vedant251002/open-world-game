@@ -77,7 +77,58 @@ static func build() -> Control:
 		# Letting go of the effects slider plays a sample, so you can judge it.
 		if bus == AudioBuses.SFX or bus == AudioBuses.UI:
 			s.drag_ended.connect(func(_c: bool) -> void: Sfx.click())
+	_voice_rows(body, save_timer)
 	return box
+
+
+## "Voices": villagers speak aloud (TTS), with a volume. Greyed out with a note
+## where the machine or browser has no speech voices.
+static func _voice_rows(body: VBoxContainer, save_timer: Timer) -> void:
+	Voice.load_settings()
+	var ok := Voice.supported()
+	var sw := CheckButton.new()
+	sw.text = "Voices" if ok else "Voices (not available here)"
+	sw.button_pressed = Voice.enabled and ok
+	sw.disabled = not ok
+	sw.focus_mode = Control.FOCUS_ALL
+	sw.add_theme_font_override("font", UiTheme.font(600))
+	sw.add_theme_font_size_override("font_size", UiTheme.fs(15))
+	sw.add_theme_color_override("font_color", UiTheme.INK)
+	body.add_child(sw)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", int(UiTheme.px(10)))
+	body.add_child(row)
+	var name_l := UiTheme.label("Voice volume", 14, UiTheme.DIM, 600)
+	name_l.custom_minimum_size = Vector2(UiTheme.px(84), 0)
+	row.add_child(name_l)
+	var s := HSlider.new()
+	s.min_value = 0.0
+	s.max_value = 1.0
+	s.step = 0.01
+	s.value = Voice.volume
+	s.editable = ok
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	s.custom_minimum_size = Vector2(UiTheme.px(150), UiTheme.px(28))
+	s.focus_mode = Control.FOCUS_ALL
+	_style_slider(s)
+	row.add_child(s)
+	var pct := UiTheme.label("%d%%" % int(round(s.value * 100.0)), 13, UiTheme.FAINT, 600)
+	pct.custom_minimum_size = Vector2(UiTheme.px(40), 0)
+	pct.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	row.add_child(pct)
+	sw.toggled.connect(func(on: bool) -> void:
+		Voice.set_enabled(on)
+		Voice.save_settings())
+	s.value_changed.connect(func(v: float) -> void:
+		Voice.set_volume(v)
+		pct.text = "%d%%" % int(round(v * 100.0))
+		save_timer.start())
+	# Letting go of the slider saves and plays a sample line to judge it by.
+	save_timer.timeout.connect(Voice.save_settings)
+	s.drag_ended.connect(func(_c: bool) -> void:
+		if Voice.enabled and ok:
+			Voice.stop()
+			Voice.sample())
 
 
 static func _style_slider(s: HSlider) -> void:

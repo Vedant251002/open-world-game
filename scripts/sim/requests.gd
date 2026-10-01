@@ -120,8 +120,9 @@ func _fulfil(req: Dictionary) -> void:
 	var w := _worker(str(req["who"]))
 	if w != null:
 		w.memory.nudge("morale", 0.14)
-		w.memory.nudge("trust_in_player", 0.05)
 		w.memory.remember(clock.day, "You came through on a request: %s" % str(req["text"]), 0.6)
+		# And it warms them to you (scripts/sim/relationships.gd).
+		Relationships.record(w.memory, "request_done", clock.day)
 		w.speak(str(req["thanks"]))
 	if realm != null:
 		realm.note("request", "%s's wish was granted: %s." % [str(req["name"]), str(req["text"]).trim_suffix(".")])

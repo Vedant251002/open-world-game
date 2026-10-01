@@ -55,6 +55,21 @@ func _run() -> void:
 	var hl: Node = realm.system("Health")
 	var up: Node = realm.system("Upkeep")
 	_check(hl != null and up != null, "health and upkeep loaded")
+	# Keep the sky, the calendar and the sickbed quiet: a random storm tearing
+	# the bakery roof, a plague rolled by Events, a siege, or a hand falling ill on
+	# their own would spoil the scripted checks.
+	hl.set("no_new_cases", true)
+	var wx: Node = realm.system("Weather")
+	if wx != null:
+		wx.call("force", "clear")
+		wx.set("_forced_hold", 1 << 20)
+	var cp: Node = realm.system("Campaign")
+	if cp != null:
+		cp.set("_next_siege_day", 1 << 20)   # no siege setting the bakery alight
+	var ev: Node = realm.system("Events")
+	if ev != null:
+		for e: Dictionary in ev.get("_events"):
+			ev.get("last_fired")[str(e["id"])] = 1 << 20
 
 	# --- health ---
 	var cit: Worker = crew.citizens()[0]

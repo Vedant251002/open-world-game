@@ -94,10 +94,16 @@ func _run() -> void:
 	_check(realm.run(w, {"do": "fight_fire"}), "bucket line order taken")
 	_check(not w.job_errand.is_empty(), "worker is on the fire errand")
 	var hours := 0
-	while not wx.burning().is_empty() and hours < 12:
+	while rec in wx.burning() and hours < 12:
 		clock.advance(1.0)
 		hours += 1
-	_check(wx.burning().is_empty(), "fire out after %d hours" % hours)
+	_check(not rec in wx.burning(), "fire out after %d hours" % hours)
+	# Anything it set going next door burns itself out in the end.
+	var tail := 0
+	while not wx.burning().is_empty() and tail < 96:
+		clock.advance(1.0)
+		tail += 1
+	_check(wx.burning().is_empty(), "nothing else left burning, %d hours later" % tail)
 	_check(realm.run(w, {"do": "fight_fire"}), "ring the bell with no fire is still taken")
 
 	# Snapshot round trip keeps the calendar.

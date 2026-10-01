@@ -85,6 +85,8 @@ const SETUP := """
   });
 
   window.__dgt = {
+    // The field and its button row, for Voice.install_mic() to add a dictation button.
+    el: { input: input, row: row },
     show: function (cfg) {
       label.textContent = cfg.title || '';
       input.placeholder = cfg.hint || '';
@@ -123,6 +125,7 @@ func setup() -> void:
 		return
 	JavaScriptBridge.eval(SETUP, true)
 	_ready_done = true
+	Voice.install_mic()      # dictation button, only where SpeechRecognition exists
 
 
 func show_bar(title: String, hint: String, phrases: Array) -> void:

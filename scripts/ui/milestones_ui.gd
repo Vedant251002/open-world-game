@@ -341,11 +341,13 @@ func _next_banner() -> void:
 	_b_icon.set_banner(identity.colour(), "star")
 	_banner.visible = true
 	_banner.modulate.a = 0.0
-	_banner.offset_top = 80
+	# Under a crisis banner if one is up, not on top of it.
+	var rest := maxf(112.0, CrisisBanner.bottom + 14.0)
+	_banner.offset_top = rest - 32.0
 	var tw := create_tween()
 	tw.set_parallel(true)
 	tw.tween_property(_banner, "modulate:a", 1.0, 0.35)
-	tw.tween_property(_banner, "offset_top", 112.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(_banner, "offset_top", rest, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.chain().tween_interval(4.6)
 	tw.chain().tween_property(_banner, "modulate:a", 0.0, 0.6)
 	tw.chain().tween_callback(func() -> void:

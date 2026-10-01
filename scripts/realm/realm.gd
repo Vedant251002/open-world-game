@@ -49,6 +49,9 @@ const SYSTEM_PATHS := [
 	"res://scripts/realm/upkeep.gd",
 	# Tier 5: war with depth
 	"res://scripts/realm/campaign.gd",
+	# Seasons that bite, and crises with real drama (before events, which feed it)
+	"res://scripts/realm/seasons.gd",
+	"res://scripts/realm/crisis.gd",
 	# And the world talking back
 	"res://scripts/realm/events.gd",
 ]

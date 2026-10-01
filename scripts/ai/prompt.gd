@@ -400,6 +400,14 @@ static func _character(mem: WorkerMemory) -> String:
 	elif trust < 0.35:
 		out.append("You are not sure your employer knows what they want, so you stick closely to exactly what was said and ask when it is unclear.")
 
+	# Relationship and temperament (features wave 2).
+	var rel_line := Relationships.prompt_line(mem)
+	if rel_line != "":
+		out.append(rel_line)
+	var kind_line := Personality.describe(mem)
+	if Personality.kind_of(mem) != "":
+		out.append("In your work: " + kind_line)
+
 	var morale := float(d["morale"])
 	if morale < 0.35:
 		out.append("You are tired of this job at the moment. Your replies are short and you cut anything optional.")

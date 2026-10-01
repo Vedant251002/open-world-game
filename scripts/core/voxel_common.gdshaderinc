@@ -70,6 +70,9 @@ uniform float recolor : hint_range(0.0, 1.0) = 0.0;
 // Small bright things (petals, grain, bark) clip to white without it.
 uniform float recolor_flat : hint_range(0.0, 1.0) = 0.0;
 uniform float recolor_mean : hint_range(0.0, 1.0) = 0.1;
+// Winter: how far the upward faces of this material are under snow. Set per
+// material by SeasonFx (scripts/obj/season_fx.gd); 0 leaves a material alone.
+uniform float snow_cover : hint_range(0.0, 1.0) = 0.0;
 
 group_uniforms water;
 uniform int water_mode = 0;
@@ -355,6 +358,10 @@ VoxelSurface voxel_shade(vec3 vertex_ao, vec3 camera_world) {
 	col *= mix(vec3(1.0), tint, clamp(hue_jitter * 3.0, 0.0, 1.0) * macro_strength * 1.5);
 	// Upward faces catch a little more sky.
 	col *= mix(1.0, 1.05, clamp(world_nrm.y, 0.0, 1.0));
+	// Settled snow on the tops of things.
+	if (snow_cover > 0.0) {
+		col = mix(col, vec3(0.70, 0.74, 0.82), snow_cover * smoothstep(0.6, 0.95, world_nrm.y));
+	}
 
 	// vertex_ao is the mesher's baked corner AO; tex_ao the texture's own
 	// cavity darkening. Together they give contact shadow in the joints and at

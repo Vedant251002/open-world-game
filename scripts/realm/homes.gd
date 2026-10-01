@@ -144,6 +144,10 @@ func _walked_in(rec: Dictionary) -> void:
 	who.memory.remember(realm.clock.day if realm.clock != null else 0,
 		"You walked into my house without asking.", -0.3)
 	who.memory.nudge("trust_in_player", -0.08 if again else -0.04)
+	# Relationships (features wave 2): affection takes the hit too.
+	Relationships.record(who.memory, "trespass",
+		realm.clock.day if realm.clock != null else 0,
+		{"again": again, "quiet": true, "no_trust": true})
 	_last_scold[bid] = Time.get_ticks_msec()
 	if again:
 		_inside_for = SHOW_OUT_AFTER          # no second warning
