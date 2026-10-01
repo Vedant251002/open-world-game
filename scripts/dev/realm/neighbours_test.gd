@@ -99,9 +99,10 @@ func _run() -> void:
 	# A road, laid over hours.
 	var cob0 := town.units_of("cobble")
 	_check(realm.run(w2, {"do": "road_out", "side": "east"}), "road order taken")
+	# A short road can be finished inside the two hours, so look while it is laid.
+	_check(realm.hud_lines().any(func(l: String) -> bool: return l.find("road") >= 0), "hud shows the road")
 	clock.advance(2.0)
 	_check(town.units_of("cobble") < cob0, "cobble spent on the road: %d" % (cob0 - town.units_of("cobble")))
-	_check(realm.hud_lines().any(func(l: String) -> bool: return l.find("road") >= 0), "hud shows the road")
 	# hour_passed fires once per advance() call, so hours go one at a time.
 	for i in 40:
 		clock.advance(1.0)
