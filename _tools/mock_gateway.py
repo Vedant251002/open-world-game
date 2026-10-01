@@ -89,7 +89,7 @@ def last_user(body: dict) -> str:
 
 def instruction_of(text: str) -> str:
     # Prompt.user() quotes the player's sentence; fall back to the whole text.
-    m = re.search(r'"([^"\n]{2,200})"', text)
+    m = re.search(r'YOUR EMPLOYER SAYS\n"(.*)"\s*$', text, re.S) or re.search(r'"([^"\n]{2,200})"', text)
     return m.group(1) if m else text[-200:]
 
 

@@ -323,6 +323,16 @@ func _on_world_ready(t0: int) -> void:
 				say2 = a.substr(6)
 		rt.begin(say2)
 		return
+	if "--costrun" in args:
+		# A scripted first session, for reading the cost of each thing a
+		# player does off the gateway's log. See scripts/dev/cost_run.gd.
+		var cr := CostRun.new()
+		cr.dispatch = dispatch
+		cr.crew = crew
+		cr.clock = clock
+		add_child(cr)
+		cr.begin()
+		return
 	if "--playertest" in args:
 		# PlayerTest is the adversarial one: nonsense, insults, empty input,
 		# impossible orders, the same order three times, and every worker told
