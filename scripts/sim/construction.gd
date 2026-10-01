@@ -165,47 +165,19 @@ func _spawn_props() -> void:
 	_register_chimneys()
 
 
-## Smoke from every chimney the building has: found as the highest voxel above
-## each module that needs a flue, since that stack is the tallest thing there.
+## Smoke from every chimney the building has. Only the module's rectangle and
+## the building's height are recorded here: the stack itself is found later, by
+## Ambience, from the voxels once they are in the world (a restored save has no
+## patch data to read, and its chunks are not loaded yet at this point).
 func _register_chimneys() -> void:
-	var seen: Array[Vector3] = []
 	for m: Dictionary in patch.modules:
 		var mdef := Vocabulary.def(str(m.get("type", "")))
 		if not ("chimney" in mdef.get("needs", [])):
 			continue
-		var rect: Rect2i = m["rect"]
-		var best_y := -1
-		var sum := Vector2.ZERO
-		var cnt := 0
-		for z in range(rect.position.y, rect.end.y):
-			for x in range(rect.position.x, rect.end.x):
-				var lx := x - patch.origin.x
-				var lz := z - patch.origin.z
-				for ly in range(patch.size.y - 1, -1, -1):
-					var d := patch.peek(lx, ly, lz)
-					if d == VoxelPatch.UNTOUCHED or d == VoxelTypes.AIR:
-						continue
-					if ly > best_y:
-						best_y = ly
-						sum = Vector2.ZERO
-						cnt = 0
-					if ly == best_y:
-						sum += Vector2(x, z)
-						cnt += 1
-					break
-		if best_y < 0 or cnt == 0:
-			continue
-		var c := sum / float(cnt)
-		var at := Vector3((c.x + 0.5) * SiteFx.VOXEL_M, float(patch.origin.y + best_y + 1) * SiteFx.VOXEL_M + 0.1,
-			(c.y + 0.5) * SiteFx.VOXEL_M)
-		var dup := false
-		for o in seen:
-			if o.distance_to(at) < 1.5:
-				dup = true
-		if dup:
-			continue
-		seen.append(at)
-		Ambience.add_source(patch.get_instance_id(), "steam" if str(m.get("type", "")) == "oven" else "smoke", at)
+		var kind := "steam" if str(m.get("type", "")) == "oven" else "smoke"
+		Ambience.add_chimney(patch.get_instance_id(), kind, m["rect"],
+			patch.origin.y, patch.origin.y + patch.size.y - 1)
+
 
 
 ## The shop sign is the one place text belongs in the world: it is how the

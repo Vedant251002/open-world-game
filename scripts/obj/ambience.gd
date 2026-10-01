@@ -43,6 +43,15 @@ static func add_source(owner_id: int, kind: String, pos: Vector3) -> void:
 		"phase": randf() * 10.0, "acc": randf()})
 
 
+## A chimney whose stack is located lazily: rect is in world voxels.
+static func add_chimney(owner_id: int, kind: String, rect: Rect2i, y_lo: int, y_hi: int) -> void:
+	var c := rect.get_center()
+	sources.append({"owner": owner_id, "kind": kind,
+		"pos": Vector3(c.x, 0.0, c.y) * VoxelChunk.VOXEL_M, "phase": randf() * 10.0,
+		"acc": randf(), "pending": true, "rect": rect, "y_lo": y_lo, "y_hi": y_hi,
+		"wait": 0.0})
+
+
 static func remove_owner(owner_id: int) -> void:
 	sources = sources.filter(func(s: Dictionary) -> bool: return s["owner"] != owner_id)
 
@@ -139,6 +148,13 @@ func _emit_sources(delta: float, here: Vector3) -> void:
 		var dz := pos.z - here.z
 		if dx * dx + dz * dz > NEAR_M * NEAR_M:
 			continue
+		if s.get("pending", false):
+			s["wait"] = float(s["wait"]) - delta
+			if float(s["wait"]) > 0.0:
+				continue
+			if not _resolve_chimney(s):
+				s["wait"] = 2.0
+				continue
 		var kind: String = s["kind"]
 		s["acc"] = float(s["acc"]) + delta
 		match kind:
@@ -173,6 +189,35 @@ func _emit_sources(delta: float, here: Vector3) -> void:
 					if randf() < 0.5:
 						_glow.emit(pos - Vector3(0, 0.1, 0), Vector3(randf_range(-0.3, 0.3), randf_range(0.4, 1.0), randf_range(-0.3, 0.3)),
 							Color(1.0, 0.55, 0.2, 1.0), 0.03, 0.7, 3.0, 0.5)
+
+
+## The stack is the tallest solid voxel over the module: scan the world for it.
+func _resolve_chimney(s: Dictionary) -> bool:
+	var rect: Rect2i = s["rect"]
+	var best := -1000000
+	var sum := Vector2.ZERO
+	var cnt := 0
+	for z in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			for y in range(int(s["y_hi"]), int(s["y_lo"]) - 1, -1):
+				var id := world.get_voxel(Vector3i(x, y, z))
+				if id == VoxelTypes.AIR or not VoxelTypes.is_solid(id):
+					continue
+				if y > best:
+					best = y
+					sum = Vector2.ZERO
+					cnt = 0
+				if y == best:
+					sum += Vector2(x, z)
+					cnt += 1
+				break
+	if cnt == 0:
+		return false
+	var c := sum / float(cnt)
+	s["pos"] = Vector3((c.x + 0.5) * VoxelChunk.VOXEL_M, float(best + 1) * VoxelChunk.VOXEL_M + 0.1,
+		(c.y + 0.5) * VoxelChunk.VOXEL_M)
+	s["pending"] = false
+	return true
 
 
 ## Where a creature could be: a point above grass near the camera. Flowers are
@@ -212,7 +257,7 @@ func _critters(delta: float, here: Vector3) -> void:
 			var at: Vector3 = pt
 			at.y += randf_range(0.4, 1.8)
 			var p := _glow.emit(at, Vector3(randf_range(-0.15, 0.15), randf_range(-0.05, 0.1), randf_range(-0.15, 0.15)),
-				Color(0.78, 1.0, 0.35, 0.95), 0.07, randf_range(6.0, 9.5))
+				Color(0.85, 1.0, 0.4, 1.0), 0.1, randf_range(6.0, 9.5))
 			if p != null:
 				p.flicker = randf_range(2.2, 4.0)
 				p.fade_in = 1.2
