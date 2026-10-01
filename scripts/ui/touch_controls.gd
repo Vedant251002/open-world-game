@@ -103,6 +103,11 @@ func _buttons() -> Dictionary:
 		"centre": Vector2(s.x - 56.0 * u, 254.0 * u), "radius": 28.0 * u,
 		"action": &"menu", "label": "ESC",
 	}
+	# Photo mode (PhotoMode listens for the `photo` action).
+	out["photo"] = {
+		"centre": Vector2(s.x - 56.0 * u, 320.0 * u), "radius": 28.0 * u,
+		"action": &"photo", "label": "SNAP",
+	}
 	out["talk"] = {
 		"centre": Vector2(s.x - 100.0 * u, s.y - 108.0 * u), "radius": 54.0 * u,
 		"action": &"talk", "label": "TALK",

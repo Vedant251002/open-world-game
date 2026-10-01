@@ -20,11 +20,16 @@ const C_INK := Color(0.94, 0.92, 0.87)
 ## the way in. That is not the player leaving.
 const FOCUS_GRACE_MS := 2500
 
+## Photo mode and the weekly challenge live elsewhere; the menu only asks.
+signal photo_requested
+signal challenge_requested
+
 var player: Player
 var open := false
 
 var _root: Control
 var _screen_button: Button
+var _challenge_button: Button
 var _ready_ms := 0
 
 
@@ -105,6 +110,16 @@ func _build() -> void:
 
 	# Sound: volume sliders and mute (scripts/audio/sound_panel.gd).
 	col.add_child(SoundPanel.build())
+	# Feature entries: photo mode and the weekly challenge.
+	var extra := HBoxContainer.new()
+	extra.add_theme_constant_override("separation", int(UiTheme.px(8)))
+	col.add_child(extra)
+	var photo_b := _button("Photo mode  [P]", func() -> void: photo_requested.emit())
+	photo_b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	extra.add_child(photo_b)
+	_challenge_button = _button("Weekly challenge", func() -> void: challenge_requested.emit())
+	_challenge_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	extra.add_child(_challenge_button)
 
 	col.add_child(_rule())
 	# A quick reminder of the controls, since this is where a player goes when
@@ -123,6 +138,12 @@ func _build() -> void:
 	if not Platform.is_web():
 		col.add_child(_rule())
 		col.add_child(_button("Save and quit", quit_game))
+
+
+## "Weekly challenge" normally; says so when this world is a challenge run.
+func set_challenge_label(in_challenge: bool) -> void:
+	if _challenge_button != null:
+		_challenge_button.text = "Challenge (playing)" if in_challenge else "Weekly challenge"
 
 
 func _rule() -> Control:
