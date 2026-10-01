@@ -78,8 +78,11 @@ func _test_no_trimmed_features() -> void:
 	# Judged features come from cells -3..3, and a canopy on the edge of cell -3
 	# reaches into column -4, so the installed block has to be wider than the
 	# judged one or the test blames the world for its own missing ground.
-	for cz in range(-5, 6):
-		for cx in range(-5, 6):
+	# Centred on woodland, not on the origin: the origin is the village, and
+	# trees are kept out of the town, so a window there judged nothing at all.
+	var at := _wooded_column()
+	for cz in range(at.y - 5, at.y + 6):
+		for cx in range(at.x - 5, at.x + 6):
 			_install(cx, cz)
 
 	var checked := 0
@@ -90,8 +93,8 @@ func _test_no_trimmed_features() -> void:
 
 	# Only judge features in the middle, where every column that could
 	# contribute to them has been installed.
-	for cz in range(-2, 3):
-		for cx in range(-2, 3):
+	for cz in range(at.y - 2, at.y + 3):
+		for cx in range(at.x - 2, at.x + 3):
 			for f: Dictionary in gen.features_near(cx, cz):
 				var key := "%d,%d" % [f["vx"], f["vz"]]
 				if seen.has(key):
@@ -142,6 +145,11 @@ func _test_no_trimmed_features() -> void:
 func _test_building_faces() -> void:
 	var base_x := 3 * VoxelChunk.SIZE
 	var base_z := 3 * VoxelChunk.SIZE
+	# Its own column and the ring round it, rather than whatever the feature
+	# test happened to leave installed.
+	for cz in range(2, 5):
+		for cx in range(2, 5):
+			_install(cx, cz)
 	var h := world.height_at(base_x + 16, base_z + 16)
 	if h < 0:
 		_fail("test column not installed")
@@ -189,6 +197,23 @@ func _diagnose(v: Vector3i) -> String:
 	return "
            chunk %v: freshly generated -> %s, in world -> %s, column loaded -> %s" % [
 		owning, in_gen, installed, str(world.has_column(cx, cz))]
+
+
+## The nearest column, spiralling out from the origin, with a few features
+## in the 5x5 block round it. Falls back to the origin if the seed is bare.
+func _wooded_column() -> Vector2i:
+	for r in range(0, 40, 2):
+		for dz in range(-r, r + 1, 2):
+			for dx in range(-r, r + 1, 2):
+				if maxi(absi(dx), absi(dz)) != r:
+					continue
+				var n := 0
+				for oz in range(-2, 3):
+					for ox in range(-2, 3):
+						n += gen.features_near(dx + ox, dz + oz).size()
+				if n >= 4:
+					return Vector2i(dx, dz)
+	return Vector2i.ZERO
 
 
 func _install(cx: int, cz: int) -> void:

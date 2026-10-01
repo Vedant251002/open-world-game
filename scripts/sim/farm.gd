@@ -62,15 +62,20 @@ func till(vx: int, vz: int) -> bool:
 	var key := Vector2i(vx, vz)
 	if tiles.has(key):
 		return false
-	var h := world.height_at(vx, vz)
+	var h := _ground_y(vx, vz)
 	if h < 0:
 		return false
 	var top := world.get_voxel(Vector3i(vx, h, vz))
 	if top != VoxelTypes.GRASS and top != VoxelTypes.DIRT:
 		return false
-	# Nothing standing on it. A crop under a floor is not a crop.
-	if world.is_solid(Vector3i(vx, h + 1, vz)):
+	# Nothing standing on it. A crop under a floor is not a crop. Flowers and
+	# tufts do not count: the hoe takes them out with the turf.
+	if world.is_solid(Vector3i(vx, h + 1, vz)) and not VoxelTypes.is_cover(world.get_voxel(Vector3i(vx, h + 1, vz))):
 		return false
+	var cy := h + 1
+	while VoxelTypes.is_cover(world.get_voxel(Vector3i(vx, cy, vz))):
+		world.set_voxel(Vector3i(vx, cy, vz), VoxelTypes.AIR)
+		cy += 1
 
 	var wet := _water_near(vx, h, vz)
 	world.set_voxel(Vector3i(vx, h, vz),
@@ -78,6 +83,15 @@ func till(vx: int, vz: int) -> bool:
 	tiles[key] = {"kind": "", "stage": -1, "growth": 0.0, "wet": wet,
 		"node": null, "y": h}
 	return true
+
+
+## The ground a crop would stand on: the column's top solid voxel, looking
+## through any flowers and tufts growing over it. -1 where nothing is loaded.
+func _ground_y(vx: int, vz: int) -> int:
+	var h := world.height_at(vx, vz)
+	while h >= 0 and VoxelTypes.is_cover(world.get_voxel(Vector3i(vx, h, vz))):
+		h -= 1
+	return h
 
 
 ## Whether there is water within reach on roughly the same level — crops do not
@@ -138,7 +152,18 @@ func _show_stage(key: Vector2i, t: Dictionary) -> void:
 	var stage: int = clampi(int(t["stage"]), 0, stages.size() - 1)
 	var pos := VoxelWorld.centre_metres(Vector3i(key.x, int(t["y"]) + 1, key.y))
 	pos.y -= V * 0.5
-	var mi := Props.spawn(str(stages[stage]), pos, 0.0, crops_root)
+	var mi: Node3D
+	if CROP_KINDS.has(kind):
+		var inst := MeshInstance3D.new()
+		inst.mesh = crop_mesh(kind, stage)
+		# Each plant a quarter turn off its neighbour, so the rows of one field
+		# do not repeat the same pattern at a one-metre beat.
+		inst.position = pos + Vector3(0.0, 0.004, 0.0)
+		inst.rotation.y = float((key.x * 7 + key.y * 13) & 3) * PI * 0.5
+		crops_root.add_child(inst)
+		mi = inst
+	else:
+		mi = Props.spawn(str(stages[stage]), pos, 0.0, crops_root)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 	# Ripe crops are pickable: the look ray reads layer 4, the same layer the
@@ -157,6 +182,150 @@ func _show_stage(key: Vector2i, t: Dictionary) -> void:
 		mi.set_meta("crop_tile", key)
 		mi.set_meta("crop_kind", kind)
 	t["node"] = mi
+
+
+# ---------------------------------------------------------- crop appearance
+# What a plant looks like at each stage. Built here, as a mesh of 5 cm boxes per
+# kind and stage, shared by every plant of that kind and stage: a field is a
+# few dozen instances of four meshes. Boxes are [x, y, z, w, h, d, material] in
+# object voxels (0.05 m) about the plant's base centre, over the square metre
+# the plant occupies.
+
+const CROP_KINDS := ["wheat", "carrot"]
+const U := 0.05
+
+static var _crop_meshes: Dictionary = {}
+static var _crop_mats: Dictionary = {}
+
+
+static func crop_mesh(kind: String, stage: int) -> ArrayMesh:
+	var key := "%s_%d" % [kind, stage]
+	if _crop_meshes.has(key):
+		return _crop_meshes[key]
+	var boxes: Array = _wheat_boxes(stage) if kind == "wheat" else _carrot_boxes(stage)
+	var by_mat := {}
+	for b: Array in boxes:
+		if not by_mat.has(b[6]):
+			by_mat[b[6]] = []
+		by_mat[b[6]].append(b)
+	var mesh := ArrayMesh.new()
+	var i := 0
+	for mat: int in by_mat:
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for b: Array in by_mat[mat]:
+			_add_box(st, Vector3(b[0], b[1], b[2]) * U, Vector3(b[3], b[4], b[5]) * U)
+		st.generate_normals()
+		st.commit(mesh)
+		mesh.surface_set_material(i, _crop_material(mat))
+		i += 1
+	_crop_meshes[key] = mesh
+	return mesh
+
+
+## The world's own foliage materials, without the wind: a crop is rooted in a
+## voxel that does not move, so a shader that sways the whole mesh would make
+## its foot slide over the soil.
+static func _crop_material(mat: int) -> Material:
+	if _crop_mats.has(mat):
+		return _crop_mats[mat]
+	var m: ShaderMaterial = VoxelMaterials.get_material(mat).duplicate()
+	m.set_shader_parameter("wave_amount", 0.0)
+	m.set_shader_parameter("hue_jitter", 0.10)
+	_crop_mats[mat] = m
+	return m
+
+
+static func _jit(a: int, b: int, salt: int) -> float:
+	return float(DetRng.mix(DetRng.mix(salt, a), b) & 0xFFFF) / 65536.0
+
+
+## Wheat in four rows of six across the square metre. Sprout, young blades,
+## green ear-bearing stalks, then gold with heavy drooping heads.
+static func _wheat_boxes(stage: int) -> Array:
+	var out: Array = []
+	for row in 4:
+		for col in 6:
+			var jx := _jit(row, col, 3) - 0.5
+			var jz := _jit(row, col, 5) - 0.5
+			var x := int(round(-9.0 + float(col) * 3.6 + jx * 2.0))
+			var z := int(round(-7.0 + float(row) * 4.7 + jz * 1.5))
+			var t := _jit(row, col, 7)
+			match stage:
+				0:
+					var h := 2 + int(t * 3.0)
+					out.append([x, 0, z, 1, h, 1, VoxelTypes.CROP_GREEN])
+					out.append([x + 1, 0, z, 1, maxi(h - 1, 1), 1, VoxelTypes.CROP_GREEN])
+				1:
+					var h := 7 + int(t * 4.0)
+					out.append([x, 0, z, 1, h, 1, VoxelTypes.CROP_GREEN])
+					out.append([x + 1, 0, z, 1, h - 2, 1, VoxelTypes.CROP_GREEN])
+					out.append([x - 1, 0, z + 1, 1, h - 4, 1, VoxelTypes.CROP_GREEN])
+					out.append([x + 1, h - 3, z, 1, 3, 1, VoxelTypes.CROP_GREEN])
+				2:
+					var h := 13 + int(t * 5.0)
+					out.append([x, 0, z, 1, h, 1, VoxelTypes.CROP_GREEN])
+					out.append([x + 1, 0, z, 1, h - 5, 1, VoxelTypes.CROP_GREEN])
+					out.append([x - 1, 0, z - 1, 1, h - 7, 1, VoxelTypes.CROP_GREEN])
+					out.append([x + 1, h - 6, z, 1, 3, 1, VoxelTypes.CROP_GREEN])
+					out.append([x, h, z, 2, 4, 2, VoxelTypes.CROP_GREEN])
+				_:
+					var h := 15 + int(t * 6.0)
+					out.append([x, 0, z, 1, h, 1, VoxelTypes.WHEAT_STRAW])
+					out.append([x + 1, 0, z, 1, h - 6, 1, VoxelTypes.WHEAT_STRAW])
+					out.append([x - 1, 0, z + 1, 1, h - 9, 1, VoxelTypes.WHEAT_STRAW])
+					# The head, bowed over under its own weight.
+					out.append([x, h, z, 2, 5, 2, VoxelTypes.WHEAT_HEAD])
+					out.append([x + 1, h + 3, z, 2, 2, 2, VoxelTypes.WHEAT_HEAD])
+					out.append([x + 2, h + 1, z, 1, 3, 1, VoxelTypes.WHEAT_HEAD])
+					# Awns.
+					out.append([x - 1, h + 3, z + 1, 1, 3, 1, VoxelTypes.WHEAT_STRAW])
+	return out
+
+
+## Carrots in a four by four of leafy clumps; ripe ones show an orange crown.
+static func _carrot_boxes(stage: int) -> Array:
+	var out: Array = []
+	for row in 4:
+		for col in 4:
+			var x := int(round(-7.5 + float(col) * 5.0 + (_jit(row, col, 3) - 0.5) * 2.0))
+			var z := int(round(-7.5 + float(row) * 5.0 + (_jit(row, col, 5) - 0.5) * 2.0))
+			var t := _jit(row, col, 7)
+			if stage >= 3:
+				out.append([x - 1, -1, z - 1, 3, 2, 3, VoxelTypes.CARROT_ORANGE])
+			var h: int = [2, 4, 8, 10][clampi(stage, 0, 3)] + int(t * 2.0)
+			# Four fronds fanning outward, each with leaflets as it grows.
+			for k in 4:
+				var dx: int = [1, 0, -1, 0][k]
+				var dz: int = [0, 1, 0, -1][k]
+				var fh := maxi(h - (k % 2) * 2, 2)
+				out.append([x + dx, 0, z + dz, 1, fh, 1, VoxelTypes.CROP_GREEN])
+				if stage >= 1:
+					out.append([x + dx * 2, fh - 2, z + dz * 2, 1, 2, 1, VoxelTypes.CROP_GREEN])
+				if stage >= 2:
+					out.append([x + dx + dz, fh - 3, z + dz + dx, 1, 2, 1, VoxelTypes.CROP_GREEN])
+					out.append([x + dx - dz, fh - 4, z + dz - dx, 1, 2, 1, VoxelTypes.CROP_GREEN])
+	return out
+
+
+static func _add_box(st: SurfaceTool, o: Vector3, s: Vector3) -> void:
+	var p := [
+		o,
+		o + Vector3(s.x, 0, 0),
+		o + Vector3(s.x, s.y, 0),
+		o + Vector3(0, s.y, 0),
+		o + Vector3(0, 0, s.z),
+		o + Vector3(s.x, 0, s.z),
+		o + s,
+		o + Vector3(0, s.y, s.z),
+	]
+	var faces := [
+		[0, 3, 2, 1], [5, 6, 7, 4], [4, 7, 3, 0],
+		[1, 2, 6, 5], [3, 7, 6, 2], [4, 0, 1, 5],
+	]
+	for f: Array in faces:
+		st.add_vertex(p[f[0]]); st.add_vertex(p[f[1]]); st.add_vertex(p[f[2]])
+		st.add_vertex(p[f[0]]); st.add_vertex(p[f[2]]); st.add_vertex(p[f[3]])
 
 
 # ------------------------------------------------------------------- growth
@@ -328,13 +497,14 @@ func _field_clear(r: Rect2i) -> bool:
 		for x in range(r.position.x, r.end.x):
 			if tiles.has(Vector2i(x, z)):
 				return false
-			var h := world.height_at(x, z)
+			var h := _ground_y(x, z)
 			if h < 0:
 				return false
 			var top := world.get_voxel(Vector3i(x, h, z))
 			if top != VoxelTypes.GRASS and top != VoxelTypes.DIRT:
 				return false
-			if world.is_solid(Vector3i(x, h + 1, z)):
+			if world.is_solid(Vector3i(x, h + 1, z)) \
+					and not VoxelTypes.is_cover(world.get_voxel(Vector3i(x, h + 1, z))):
 				return false
 			# Flat enough to plough. A field down a hillside is a landslide.
 			if base < 0:
