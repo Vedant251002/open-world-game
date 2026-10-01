@@ -20,6 +20,10 @@ const LEADERS := ["Osric", "Maud", "Halvard", "Ygraine", "Tancred", "Berthe", "A
 ## How far out of town the road to a neighbour starts, in metres.
 const EDGE_M := 32.0
 const CARAVAN_UNITS := 200
+## What a leader is like in a room. Drawn from the town's name, not from the
+## generator's random stream, so it neither shifts the towns a seed already
+## makes nor needs a save to remember it (see ensure_fields).
+const PERSONALITIES := ["proud", "shrewd", "warm", "blunt", "wary", "pious"]
 
 var realm: Realm
 var towns: Array[Dictionary] = []
@@ -32,6 +36,7 @@ func setup(r: Realm) -> void:
 	realm = r
 	_rng.seed = hash("neighbours:%d" % (realm.village.seed_value if realm.village != null else 7))
 	_generate()
+	ensure_fields()
 	if realm.warfare != null:
 		realm.warfare.raid_over.connect(_on_raid_over)
 		realm.warfare.raid_began.connect(_on_raid_began)
@@ -133,6 +138,51 @@ func mood_word(town: Dictionary) -> String:
 	return "hostile"
 
 
+## Fills in what older saves and the generator leave out: a personality and a
+## banner, both derived from the name so they are stable.
+func ensure_fields() -> void:
+	for town: Dictionary in towns:
+		var n := str(town["name"])
+		if not town.has("personality"):
+			town["personality"] = PERSONALITIES[absi(hash(n + ":temper")) % PERSONALITIES.size()]
+		if not town.has("colour"):
+			town["colour"] = absi(hash(n + ":colour")) % VillageIdentity.COLOURS.size()
+		if not town.has("emblem"):
+			town["emblem"] = absi(hash(n + ":emblem")) % VillageIdentity.EMBLEMS.size()
+
+
+## The mood as a 0..1 meter for display (0 hostile, 1 devoted).
+func attitude(town: Dictionary) -> float:
+	return clampf((float(town["disposition"]) + 1.0) * 0.5, 0.0, 1.0)
+
+
+func banner_colour(town: Dictionary) -> Color:
+	return VillageIdentity.COLOURS[clampi(int(town.get("colour", 0)), 0, VillageIdentity.COLOURS.size() - 1)]
+
+
+func banner_emblem(town: Dictionary) -> String:
+	return str(VillageIdentity.EMBLEMS[clampi(int(town.get("emblem", 0)), 0, VillageIdentity.EMBLEMS.size() - 1)])
+
+
+## A caravan to `town` led by a free hired hand. Returns "" when it set off, or
+## why it could not.
+func start_caravan(town: Dictionary) -> String:
+	if realm.crew == null:
+		return "There is nobody to send."
+	for m: Dictionary in _missions:
+		if str(m["town"]) == str(town["name"]) and str(m["kind"]) == "trade":
+			return "A caravan is already on the road to %s." % town["name"]
+	for w: Worker in realm.crew.hired():
+		if not w.busy() and w.role != null:
+			_send(w, town, "trade")
+			return ""
+	return "Nobody is free to lead a caravan just now."
+
+
+func missions() -> Array[Dictionary]:
+	return _missions
+
+
 ## Where the road to a neighbour leaves the town: a standable point out past
 ## the plots in its direction.
 func edge_point(town: Dictionary) -> Vector3:
@@ -164,13 +214,27 @@ func on_day(day: int) -> void:
 			realm.town.coins += due
 			realm.note("tribute", "%s paid %d coins in tribute." % [town["name"], due])
 		# Enemies send riders on their own account, when the field is clear.
-		if str(town["treaty"]) == "war" and realm.warfare != null and not realm.warfare._raid_active \
-				and _raid_from == "" and _rng.randf() < 0.3:
+		# A town merely sour on us (no treaty, deep ill will) does so rarely;
+		# a treaty of peace, trade or alliance keeps its riders home.
+		if realm.warfare != null and not realm.warfare._raid_active \
+				and _raid_from == "" and _rng.randf() < raid_chance(town):
 			var n := clampi(int(town["strength"]) / 8, 2, 9)
 			_raid_from = str(town["name"])
 			realm.say("Riders from %s!" % town["name"])
 			realm.note("raid", "%s sent %d riders against us." % [town["name"], n])
 			realm.warfare.raid(n)
+
+
+## Chance per day that this town sends riders: the whole of "provoke or ease
+## raids" in one place. War is 0.3 as ever; plain ill will a little; any treaty
+## of friendship none.
+func raid_chance(town: Dictionary) -> float:
+	var treaty := str(town["treaty"])
+	if treaty == "war":
+		return 0.3
+	if treaty in ["peace", "trade", "alliance", "vassal"]:
+		return 0.0
+	return 0.08 if float(town["disposition"]) < -0.6 else 0.0
 
 
 func _on_raid_began(_count: int) -> void:
@@ -236,14 +300,28 @@ func _return(m: Dictionary) -> void:
 	if w != null:
 		# A stroll back to the well, interruptible like any idle wander.
 		w.walk_to(realm.village.well_pos, "idle")
+	var line := resolve(town, str(m["kind"]), int(m.get("coins", 0)))
+	if w != null:
+		w.speak(line)
+	else:
+		realm.say(line)
+	realm.note("neighbours", line)
+
+
+
+## What a town makes of an errand that has reached it: the treaty, the mood and
+## the purse change, and the line that says so comes back. Shared by the envoy
+## who walks there (_return) and by talks held in the Diplomacy screen, so the
+## two cannot disagree about what a gift or a demand does.
+func resolve(town: Dictionary, kind: String, coins: int = 0) -> String:
 	var d := float(town["disposition"])
 	var line := ""
-	match str(m["kind"]):
+	match kind:
 		"envoy":
 			town["disposition"] = clampf(d + 0.1, -1.0, 1.0)
 			line = "%s of %s received me. They are %s." % [town["leader"], town["name"], mood_word(town)]
 		"gift":
-			town["disposition"] = clampf(d + 0.15 + float(m["coins"]) / 1000.0, -1.0, 1.0)
+			town["disposition"] = clampf(d + 0.15 + float(coins) / 1000.0, -1.0, 1.0)
 			line = "%s took the gift well. %s is %s now." % [town["leader"], town["name"], mood_word(town)]
 		"peace":
 			if d > -0.3 or str(town["treaty"]) != "war":
@@ -273,12 +351,7 @@ func _return(m: Dictionary) -> void:
 				line = "%s laughed at the demand. %s is not friendlier for it." % [town["leader"], town["name"]]
 		"trade":
 			line = _settle_caravan(town)
-	if w != null:
-		w.speak(line)
-	else:
-		realm.say(line)
-	realm.note("neighbours", line)
-
+	return line
 
 ## We sell what they pay dear for and buy what they sell cheap, a cart-load
 ## either way, at a spread that rewards knowing who wants what.
@@ -457,3 +530,4 @@ func restore(d: Dictionary) -> void:
 		if m is Dictionary:
 			_missions.append(m)
 	_raid_from = str(d.get("raid_from", ""))
+	ensure_fields()

@@ -55,7 +55,13 @@ static func build(raw_spec: Dictionary, world_seed: int, plot: Plot, ctx: Dictio
 		return {"ok": false, "error": err}
 
 	var g := BuildingGenerator.new()
-	return g._run(spec, world_seed, plot, ctx)
+	var res: Dictionary = g._run(spec, world_seed, plot, ctx)
+	# Remember how this patch was made, so the town register (and from it a
+	# shared village code, scripts/sim/village_export.gd) can make it again.
+	if bool(res.get("ok", false)) and res.get("patch", null) is VoxelPatch:
+		(res["patch"] as VoxelPatch).set_meta("spec", spec.duplicate(true))
+		(res["patch"] as VoxelPatch).set_meta("gen_seed", world_seed)
+	return res
 
 
 # ---------------------------------------------------------------- state
