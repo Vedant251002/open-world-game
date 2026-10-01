@@ -30,6 +30,7 @@ var healer_id := ""
 var fed_day := 0                 ## the last day the player ate
 var _regen_t := 0.0
 var _rng := RandomNumberGenerator.new()
+var no_new_cases := false        ## tests: nobody falls ill unless infect() says so
 var _jobs: Array[Dictionary] = []   ## {worker_id, patients: Array[String], done_at}
 
 
@@ -118,7 +119,7 @@ func on_day(day: int) -> void:
 	var weather: Node = realm.system("Weather")
 	var cold := weather != null and weather.has_method("temperature") and float(weather.call("temperature")) < 4.0
 	for w: Worker in realm.crew.workers:
-		if not is_instance_valid(w) or sick.has(w.memory.worker_id):
+		if no_new_cases or not is_instance_valid(w) or sick.has(w.memory.worker_id):
 			continue
 		var c := pop.for_worker(w)
 		var roll := chance
