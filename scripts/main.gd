@@ -41,6 +41,11 @@ var audio: AudioDirector
 var photo: PhotoMode
 var challenge: Challenge
 var challenge_screen: ChallengeScreen
+## Village identity, milestones and the guided first day (see _raise_village_life).
+var identity: VillageIdentity
+var progression: Progression
+var milestones_ui: MilestonesUi
+var tutorial: Tutorial
 
 var _world_seed := 0
 var showcase_views: Array[Dictionary] = []
@@ -85,6 +90,22 @@ func _ready() -> void:
 		var cw := Challenge.current_week()
 		_world_seed = int(Challenge.for_week(int(cw["year"]), int(cw["week"]))["world_seed"])
 
+	# Who is founding this village, and on what land. A save carries its own; a
+	# new game takes what the title screen left (see VillageIdentity.pending).
+	if not _save.is_empty():
+		identity = VillageIdentity.from_dict(_save.get("identity", {}))
+	elif VillageIdentity.pending != null:
+		identity = VillageIdentity.pending
+	else:
+		identity = VillageIdentity.new()
+		if _is_interactive_launch(args):
+			identity.landscape = "meadow"     # tests and tools keep the classic terrain
+	for arg3 in args:
+		if arg3.begins_with("--landscape=") and VillageIdentity.LANDSCAPES.has(arg3.substr(12)):
+			identity.landscape = arg3.substr(12)
+		elif arg3.begins_with("--vname="):
+			identity.village_name = VillageIdentity.sanitise(arg3.substr(8))
+
 	sky = SkyEnv.new()
 	add_child(sky)
 
@@ -92,6 +113,7 @@ func _ready() -> void:
 	village.build(_world_seed)
 
 	gen = WorldGen.new()
+	gen.landscape = identity.landscape
 	gen.setup(_world_seed, village)
 
 	world = VoxelWorld.new()
@@ -156,6 +178,7 @@ func _ready() -> void:
 		title.name = "Title"
 		add_child(title)
 		title.setup(player, clock)
+		title.configure(identity, gen.landscape, not _save.is_empty(), _world_seed)
 
 	town = Town.new()
 
@@ -745,9 +768,11 @@ func _raise_crew() -> void:
 	if title != null:
 		hud.visible = false
 		touch.visible = false
+		NameTag.hidden = true
 		title.begun.connect(func() -> void:
 			hud.visible = true
-			touch.visible = true)
+			touch.visible = true
+			NameTag.hidden = false)
 
 	hud.show_minimap(village, map, crew, inventory)
 	# The town trades overnight. Connected here rather than inside Town so the
@@ -768,6 +793,7 @@ func _raise_crew() -> void:
 	# building site. One hub; every system of it plugs into that.
 	if "--norealm" not in OS.get_cmdline_user_args():
 		_raise_realm()
+	_raise_village_life()
 	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
 	# assumption panel rather than a toast that scrolls away.
@@ -899,6 +925,72 @@ func _switch_world(fresh: bool, into: bool) -> void:
 	get_tree().paused = false
 	get_tree().reload_current_scene()
 
+# ------------------------------------------------------------ village life
+
+## The village's name and banner, its rank and milestones, and the guided first
+## day. Built once the HUD, dispatcher and (optionally) realm exist.
+func _raise_village_life() -> void:
+	var args := OS.get_cmdline_user_args()
+	if identity.village_name == "" and _save.is_empty():
+		identity.village_name = VillageIdentity.default_name(_world_seed)
+	map.identity = identity
+
+	progression = Progression.new()
+	progression.name = "Progression"
+	add_child(progression)
+	progression.setup(town, crew, clock, farm, realm, dispatch)
+	if not _save.is_empty():
+		# People are restored one signal at a time; nothing is paid for that.
+		progression.begin_silent()
+
+	milestones_ui = MilestonesUi.new()
+	milestones_ui.name = "MilestonesUi"
+	add_child(milestones_ui)
+	milestones_ui.setup(progression, identity, player, hud, map, inventory)
+
+	tutorial = Tutorial.new()
+	tutorial.name = "Tutorial"
+	add_child(tutorial)
+	tutorial.setup(hud, crew, dispatch, town, map, player, clock, milestones_ui)
+	tutorial.village_name = identity.village_name
+	# The first day is for a brand-new game that a person is actually playing.
+	if _save.is_empty() and (title != null or "--tutorial" in args):
+		if title != null:
+			title.begun.connect(func() -> void:
+				tutorial.village_name = identity.village_name
+				tutorial.start())
+		else:
+			tutorial.start()
+	else:
+		tutorial.complete = true
+
+	_apply_identity()
+	if title != null:
+		title.begun.connect(_apply_identity)
+
+
+## The name in the kingdom (which the villagers' prompts already read), on the
+## HUD card and on the map.
+func _apply_identity() -> void:
+	if identity.village_name == "" and _save.is_empty():
+		identity.village_name = VillageIdentity.default_name(_world_seed)
+	if realm != null and identity.village_name != "":
+		realm.kingdom_name = identity.village_name
+	if milestones_ui != null:
+		milestones_ui.refresh()
+
+
+## After the crew and realm are restored from a save.
+func _restore_village_life() -> void:
+	if progression == null:
+		return
+	if _save.has("progression"):
+		progression.restore(_save["progression"])
+	else:
+		progression.end_silent()       # an older save: no fanfare for what it already did
+	tutorial.restore(_save.get("tutorial", {}))
+	_apply_identity()
+
 
 # ------------------------------------------------------------------ saving
 
@@ -945,6 +1037,10 @@ func _run_realm_test(which: String) -> void:
 ## Everything worth keeping, as one dictionary. See SaveGame for what is and
 ## is not in it.
 func _snapshot() -> Dictionary:
+	# Pay anything already earned first, so the purse and the milestone record
+	# written below agree and a load never pays the same reward again.
+	if progression != null:
+		progression.evaluate()
 	var state := {
 		"seed": _world_seed,
 		"clock": {"day": clock.day, "hour": clock.hour},
@@ -966,6 +1062,12 @@ func _snapshot() -> Dictionary:
 	# Weekly challenge run in progress (absent from an ordinary town's save).
 	if challenge != null and not challenge.spec.is_empty():
 		state["challenge"] = challenge.snapshot()
+	if identity != null:
+		state["identity"] = identity.to_dict()
+	if progression != null:
+		state["progression"] = progression.snapshot()
+	if tutorial != null:
+		state["tutorial"] = tutorial.snapshot()
 	return state
 
 
@@ -1016,6 +1118,7 @@ func _restore_people() -> void:
 		hud.chat.restore(_save.get("chat", {}))
 	if challenge != null:
 		challenge.restore(_save.get("challenge", {}))
+	_restore_village_life()
 	var pl: Dictionary = _save.get("player", {})
 	if pl.has("pos"):
 		var at: Vector3 = pl["pos"]

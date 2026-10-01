@@ -29,6 +29,9 @@ var _role_timer := 0.0
 var _phase := randf() * TAU
 
 static var _disc: Texture2D = null
+## Off while the title screen is up: the tags of whoever stands by the camera
+## otherwise sit on top of the game's name.
+static var hidden := false
 
 
 func setup(w: Worker) -> void:
@@ -131,7 +134,7 @@ func _process(delta: float) -> void:
 	_alpha = maxf(_alpha, _focus * 0.9) if d < 40.0 else 0.0
 	# Close enough that the head is off the top of the screen: let it go.
 	_alpha *= smoothstep(0.7, 1.4, d)
-	var shown := _alpha > 0.02
+	var shown := _alpha > 0.02 and not hidden
 	_name.visible = shown
 	_role.visible = shown and _role.text != ""
 	var bubble_up: bool = worker.bubble != null and worker.bubble.visible

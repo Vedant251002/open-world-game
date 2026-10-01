@@ -12,6 +12,8 @@ class_name Hud
 signal instruction_given(worker: Worker, text: String)
 signal answer_given(worker: Worker, text: String)
 signal harvest_wanted(tile: Vector2i)
+## The player has opened the talk bar on somebody (the guided first day listens).
+signal talk_opened(worker: Worker)
 
 ## The palette now lives in UiTheme, named by role. These aliases stay so the
 ## forty-odd call sites below do not all change at once, and so a reader can
@@ -746,6 +748,7 @@ func open_for(w: Worker) -> void:
 ## waiting for words rather than for movement.
 func _open_bar(w: Worker) -> void:
 	_typing_for = w
+	talk_opened.emit(w)
 	if chat != null:
 		chat.select(w)
 	_bar.visible = true
