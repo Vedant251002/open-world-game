@@ -59,6 +59,17 @@ uniform float wave_amount : hint_range(0.0, 0.2) = 0.0;
 uniform float backlight_amount : hint_range(0.0, 1.0) = 0.0;
 // How much the albedo texture drives the emission (lava cracks, lamp glass).
 uniform float emission_from_tex : hint_range(0.0, 1.0) = 0.0;
+// Foliage recolour. One baked leaf/bark/grass tile serves every species: the
+// tile is multiplied by albedo_tint, after being blended toward its own
+// greyscale by `recolor` (1 = keep only the light/dark pattern, so brown bark
+// can become white birch). Linear light; (1,1,1) and 0 leave a material alone.
+uniform vec3 albedo_tint = vec3(1.0);
+uniform float recolor : hint_range(0.0, 1.0) = 0.0;
+// How far the tile's light/dark pattern is flattened toward its mean luminance
+// (recolor_mean) before tinting: 0 keeps every leaf vein, 1 is a flat colour.
+// Small bright things (petals, grain, bark) clip to white without it.
+uniform float recolor_flat : hint_range(0.0, 1.0) = 0.0;
+uniform float recolor_mean : hint_range(0.0, 1.0) = 0.1;
 
 group_uniforms water;
 uniform int water_mode = 0;
@@ -298,6 +309,11 @@ VoxelSurface voxel_shade(vec3 vertex_ao, vec3 camera_world) {
 			tex_albedo = mix(tex_albedo, b, m * 0.55 * antitile);
 		}
 		tex_albedo = srgb_to_lin(tex_albedo);
+		if (recolor > 0.0) {
+			float tl = dot(tex_albedo, vec3(0.3, 0.59, 0.11));
+			tex_albedo = mix(tex_albedo, vec3(mix(tl, recolor_mean, recolor_flat)), recolor);
+		}
+		tex_albedo *= albedo_tint;
 		vec3 orm = texture(orm_array, layer_uv).rgb;
 		tex_ao = mix(1.0, orm.r, ao_strength);
 		tex_rough = clamp(orm.g, 0.03, 1.0);

@@ -45,6 +45,48 @@ const PATTERN := {
 	VoxelTypes.FARMLAND: SCATTER, VoxelTypes.WET_FARMLAND: SCATTER,
 	VoxelTypes.EMBER: SCATTER,
 	VoxelTypes.IRON_ORE: MASONRY, VoxelTypes.CLAY: SCATTER,
+	VoxelTypes.BIRCH_BARK: GRAIN,
+	VoxelTypes.LEAF_LIGHT: THATCH, VoxelTypes.LEAF_BIRCH: THATCH,
+	VoxelTypes.PINE_NEEDLES: THATCH, VoxelTypes.LEAF_AUTUMN: THATCH,
+	VoxelTypes.BLOSSOM: THATCH, VoxelTypes.TALL_GRASS: SCATTER,
+	VoxelTypes.FERN: THATCH, VoxelTypes.MOSS: SCATTER,
+}
+
+## Materials that reuse another material's baked tile, recoloured in the shader
+## instead of owning texture layers: id -> [source id, recolor, target sRGB, optional flatten].
+## recolor 0 multiplies the tile by target / the tile's mean colour, so it keeps
+## its own hue variation; 1 keeps only its light/dark pattern and paints the
+## target over it (white birch bark out of brown bark, flowers out of grass).
+## Zero extra texture memory per species, which is what the web build needs.
+const RECOLOR := {
+	VoxelTypes.LEAF: [VoxelTypes.LEAF, 0.3, Color("#527e34")],
+	VoxelTypes.BARK: [VoxelTypes.BARK, 0.0, Color("#745a40")],
+	VoxelTypes.BIRCH_BARK: [VoxelTypes.BARK, 1.0, Color("#d6d1c2"), 0.3],
+	VoxelTypes.LEAF_LIGHT: [VoxelTypes.LEAF, 0.5, Color("#6c963a")],
+	VoxelTypes.LEAF_BIRCH: [VoxelTypes.LEAF, 0.5, Color("#8cac4c")],
+	VoxelTypes.PINE_NEEDLES: [VoxelTypes.LEAF, 0.45, Color("#3a6b4c")],
+	VoxelTypes.LEAF_AUTUMN: [VoxelTypes.LEAF, 0.6, Color("#d98030"), 0.2],
+	VoxelTypes.BLOSSOM: [VoxelTypes.LEAF, 0.85, Color("#f0b4c8"), 0.4],
+	VoxelTypes.FLOWER_RED: [VoxelTypes.LEAF, 1.0, Color("#d23a2e"), 0.7],
+	VoxelTypes.FLOWER_YELLOW: [VoxelTypes.LEAF, 1.0, Color("#f0c92c"), 0.7],
+	VoxelTypes.FLOWER_WHITE: [VoxelTypes.LEAF, 1.0, Color("#f2eee2"), 0.7],
+	VoxelTypes.FLOWER_PURPLE: [VoxelTypes.LEAF, 1.0, Color("#9466d4"), 0.7],
+	VoxelTypes.TALL_GRASS: [VoxelTypes.GRASS, 0.4, Color("#7f9a46")],
+	VoxelTypes.FERN: [VoxelTypes.LEAF, 0.4, Color("#4a8040")],
+	VoxelTypes.MOSS: [VoxelTypes.GRASS, 0.0, Color("#5c8a38")],
+	VoxelTypes.WHEAT_HEAD: [VoxelTypes.THATCH, 1.0, Color("#d9a63a"), 0.6],
+	VoxelTypes.CARROT_ORANGE: [VoxelTypes.THATCH, 1.0, Color("#e0711f"), 0.6],
+	VoxelTypes.WHEAT_STRAW: [VoxelTypes.THATCH, 1.0, Color("#c29a48"), 0.65],
+	VoxelTypes.CROP_GREEN: [VoxelTypes.LEAF, 0.8, Color("#5e8f33"), 0.75],
+}
+
+## Mean linear colour of each source tile in assets/tex_web (measured), and its
+## mean luminance, so a recolour lands on the colour it names.
+const SRC_MEAN := {
+	VoxelTypes.LEAF: Color(0.057, 0.125, 0.014),
+	VoxelTypes.GRASS: Color(0.031, 0.079, 0.009),
+	VoxelTypes.BARK: Color(0.058, 0.034, 0.018),
+	VoxelTypes.THATCH: Color(0.103, 0.067, 0.022),
 }
 
 static var _cache: Dictionary = {}
@@ -97,15 +139,31 @@ static func get_material(id: int) -> ShaderMaterial:
 	# The baked PBR maps. The layer is looked up by name because ORDER is the
 	# only thing that knows the layout, and the material table is indexed by id.
 	if VoxelTextures.ready():
-		var layer := VoxelTextures.layer_of(VoxelTypes.name_of(id))
+		var tex_id: int = (RECOLOR[id][0] as int) if RECOLOR.has(id) else id
+		var layer := VoxelTextures.layer_of(VoxelTypes.name_of(tex_id))
 		if layer >= 0:
 			m.set_shader_parameter("tex_layer", layer)
 			# Repeats per metre: each baked tile is authored at a natural size.
 			m.set_shader_parameter("tex_scale",
-				TEX_SCALE.get(id, 1.0) * VoxelTextures.res_scale())
-			m.set_shader_parameter("normal_strength", NORMAL_STRENGTH.get(id, 1.0))
-			m.set_shader_parameter("ao_strength", AO_STRENGTH.get(id, 1.0))
-			m.set_shader_parameter("antitile", ANTITILE.get(id, 0.0))
+				TEX_SCALE.get(tex_id, 1.0) * VoxelTextures.res_scale())
+			m.set_shader_parameter("normal_strength", NORMAL_STRENGTH.get(tex_id, 1.0))
+			m.set_shader_parameter("ao_strength", AO_STRENGTH.get(tex_id, 1.0))
+			m.set_shader_parameter("antitile", ANTITILE.get(tex_id, 0.0))
+			if RECOLOR.has(id):
+				var rc: Array = RECOLOR[id]
+				var want: Color = (rc[2] as Color).srgb_to_linear()
+				var mean: Color = SRC_MEAN[tex_id]
+				var recolor := float(rc[1])
+				# The shader desaturates the tile by `recolor` before it applies
+				# the tint, so the tint is measured against that same mix.
+				var lum := mean.r * 0.3 + mean.g * 0.59 + mean.b * 0.11
+				var base := Color(lerpf(mean.r, lum, recolor), lerpf(mean.g, lum, recolor),
+					lerpf(mean.b, lum, recolor))
+				var tint := Vector3(want.r / base.r, want.g / base.g, want.b / base.b)
+				m.set_shader_parameter("albedo_tint", tint)
+				m.set_shader_parameter("recolor", recolor)
+				m.set_shader_parameter("recolor_flat", float(rc[3]) if rc.size() > 3 else 0.0)
+				m.set_shader_parameter("recolor_mean", lum)
 		m.set_shader_parameter("albedo_array", VoxelTextures.albedo_array())
 		m.set_shader_parameter("normal_array", VoxelTextures.normal_array())
 		m.set_shader_parameter("orm_array", VoxelTextures.orm_array())
@@ -145,12 +203,16 @@ static func get_material(id: int) -> ShaderMaterial:
 		GRAIN:
 			jitter = 0.07
 			macro = 0.5
-	if id == VoxelTypes.LEAF:
+	if VoxelTypes.is_leafy(id) or id == VoxelTypes.FERN:
 		jitter = 0.30
 		macro = 1.0
 		# Leaves sway in the wind and let the sun through.
 		m.set_shader_parameter("wave_amount", 0.028)
 		m.set_shader_parameter("backlight_amount", 0.55)
+	elif VoxelTypes.is_cover(id):
+		jitter = 0.12
+		macro = 0.5
+		m.set_shader_parameter("wave_amount", 0.012)
 	if id == VoxelTypes.NEON_STRIP or id == VoxelTypes.EMBER:
 		m.set_shader_parameter("emission_from_tex", 1.0)
 
@@ -233,7 +295,7 @@ const AO_STRENGTH := {
 	VoxelTypes.FARMLAND: 0.8, VoxelTypes.WET_FARMLAND: 0.7,
 	VoxelTypes.BRICK: 0.8, VoxelTypes.STONE: 0.8, VoxelTypes.ROCK: 0.85,
 	VoxelTypes.GRANITE: 0.75, VoxelTypes.SANDSTONE: 0.75,
-	VoxelTypes.THATCH: 0.7, VoxelTypes.LEAF: 0.7, VoxelTypes.BARK: 0.8,
+	VoxelTypes.THATCH: 0.7, VoxelTypes.LEAF: 0.45, VoxelTypes.BARK: 0.8,
 	VoxelTypes.IRON_ORE: 0.8,
 	VoxelTypes.TIMBER: 0.6, VoxelTypes.PLANK: 0.6, VoxelTypes.DARK_OAK: 0.55,
 	VoxelTypes.PAINTED_WHITE: 0.35, VoxelTypes.PAINTED_RED: 0.35,

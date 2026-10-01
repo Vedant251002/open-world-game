@@ -67,7 +67,29 @@ const EMBER := 39
 const IRON_ORE := 40
 const CLAY := 41
 
-const COUNT := 42
+## --- NATURE (engine-only). Species foliage and ground cover. They borrow the
+## baked leaf / bark / grass tiles and recolour them in the shader (see
+## VoxelMaterials.RECOLOR), so a new species costs no texture memory.
+const BIRCH_BARK := 42
+const LEAF_LIGHT := 43        ## sunlit oak green, mixed through LEAF
+const LEAF_BIRCH := 44
+const PINE_NEEDLES := 45
+const LEAF_AUTUMN := 46
+const BLOSSOM := 47
+const FLOWER_RED := 48
+const FLOWER_YELLOW := 49
+const FLOWER_WHITE := 50
+const FLOWER_PURPLE := 51
+const TALL_GRASS := 52
+const FERN := 53
+const MOSS := 54
+## Crop colours, used by Farm's own crop meshes rather than by terrain.
+const WHEAT_HEAD := 55
+const CARROT_ORANGE := 56
+const WHEAT_STRAW := 57
+const CROP_GREEN := 58
+
+const COUNT := 59
 
 ## name -> id. This dictionary IS the closed enum the validator checks against.
 const NAMES := {
@@ -140,6 +162,23 @@ const PROPS := {
 	EMBER:             [Color("#ff7a2a"), 0.90, 0.0, 0.5, 1, 0, 1, false],
 	IRON_ORE:          [Color("#8a6a52"), 0.82, 0.15, 0.0, 1, 4, 75, false],
 	CLAY:              [Color("#9c6a4e"), 0.95, 0.0, 0.0, 1, 1, 14, false],
+	BIRCH_BARK:        [Color("#d9d5c8"), 0.92, 0.0, 0.0, 1, 0, 12, false],
+	LEAF_LIGHT:        [Color("#6d9a38"), 0.98, 0.0, 0.0, 1, 0, 2, false],
+	LEAF_BIRCH:        [Color("#92b248"), 0.98, 0.0, 0.0, 1, 0, 2, false],
+	PINE_NEEDLES:      [Color("#2f6244"), 0.98, 0.0, 0.0, 1, 0, 2, false],
+	LEAF_AUTUMN:       [Color("#cf7a2a"), 0.98, 0.0, 0.0, 1, 0, 2, false],
+	BLOSSOM:           [Color("#eeaec4"), 0.98, 0.0, 0.0, 1, 0, 2, false],
+	FLOWER_RED:        [Color("#cf3a2f"), 0.90, 0.0, 0.0, 1, 0, 1, false],
+	FLOWER_YELLOW:     [Color("#ecc72e"), 0.90, 0.0, 0.0, 1, 0, 1, false],
+	FLOWER_WHITE:      [Color("#efebde"), 0.90, 0.0, 0.0, 1, 0, 1, false],
+	FLOWER_PURPLE:     [Color("#8f60cc"), 0.90, 0.0, 0.0, 1, 0, 1, false],
+	TALL_GRASS:        [Color("#86a244"), 0.98, 0.0, 0.0, 1, 0, 1, false],
+	FERN:              [Color("#3a7a34"), 0.98, 0.0, 0.0, 1, 0, 1, false],
+	MOSS:              [Color("#587f36"), 1.00, 0.0, 0.0, 1, 0, 6, false],
+	WHEAT_HEAD:        [Color("#d9a93a"), 0.92, 0.0, 0.0, 1, 0, 1, false],
+	CARROT_ORANGE:     [Color("#e37424"), 0.85, 0.0, 0.0, 1, 0, 1, false],
+	WHEAT_STRAW:       [Color("#c9a24e"), 0.92, 0.0, 0.0, 1, 0, 1, false],
+	CROP_GREEN:        [Color("#6f9a3a"), 0.92, 0.0, 0.0, 1, 0, 1, false],
 }
 
 ## Surface grain scale for the procedural detail shader — how big the noise
@@ -156,6 +195,8 @@ const GRAIN := {
 	WATER: 2.0, STONE: 0.8, ROCK: 0.7, LEAF: 0.14, BARK: 0.22,
 	FARMLAND: 0.22, WET_FARMLAND: 0.22, EMBER: 0.12,
 	IRON_ORE: 0.34, CLAY: 0.40,
+	BIRCH_BARK: 0.22, LEAF_LIGHT: 0.14, LEAF_BIRCH: 0.14, PINE_NEEDLES: 0.14,
+	LEAF_AUTUMN: 0.14, BLOSSOM: 0.14, TALL_GRASS: 0.14, FERN: 0.14, MOSS: 0.4,
 }
 
 
@@ -182,7 +223,35 @@ static func name_of(id: int) -> String:
 		EMBER: return "ember"
 		IRON_ORE: return "iron_ore"
 		CLAY: return "clay"
+		BIRCH_BARK: return "birch_bark"
+		LEAF_LIGHT: return "leaf_light"
+		LEAF_BIRCH: return "leaf_birch"
+		PINE_NEEDLES: return "pine_needles"
+		LEAF_AUTUMN: return "leaf_autumn"
+		BLOSSOM: return "blossom"
+		FLOWER_RED: return "flower_red"
+		FLOWER_YELLOW: return "flower_yellow"
+		FLOWER_WHITE: return "flower_white"
+		FLOWER_PURPLE: return "flower_purple"
+		TALL_GRASS: return "tall_grass"
+		FERN: return "fern"
+		MOSS: return "moss"
+		WHEAT_HEAD: return "wheat_head"
+		CARROT_ORANGE: return "carrot_orange"
+		WHEAT_STRAW: return "wheat_straw"
+		CROP_GREEN: return "crop_green"
 	return "id_%d" % id
+
+
+## Foliage that is leaves rather than wood: what a woodcutter takes as leaf.
+static func is_leafy(id: int) -> bool:
+	return id == LEAF or (id >= LEAF_LIGHT and id <= BLOSSOM)
+
+
+## Small ground cover that stands one to three voxels over the soil: flowers,
+## tufts, ferns. Soft, so a field may be ploughed straight through it.
+static func is_cover(id: int) -> bool:
+	return id >= FLOWER_RED and id <= FERN
 
 
 static func is_transparent(id: int) -> bool:
