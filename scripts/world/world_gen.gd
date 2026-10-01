@@ -28,6 +28,12 @@ var _ridged := FastNoiseLite.new()
 var _forest := FastNoiseLite.new()
 var _ore := FastNoiseLite.new()
 
+## The starting landscape, chosen on the title screen (VillageIdentity): "meadow",
+## "coast", "forest" or "hills". The empty string is the classic, unbiased terrain
+## that every older save and every test was made with. A preset only reshapes
+## the land *outside* the village shelf, so the town itself always fits.
+var landscape := ""
+
 var _sea_v := 0
 var _bedrock_v := 0
 var _max_v := 0
@@ -92,15 +98,34 @@ func height_at(vx: int, vz: int) -> int:
 	var wz := vz * V
 
 	var cont := _continent.get_noise_2d(wx, wz)             # -1..1
+	# Landscape preset (see `landscape`): `away` is 0 on the village shelf and 1
+	# from ~25 m beyond its edge, so the town itself is never reshaped.
+	var away := 0.0
+	if landscape != "":
+		away = smoothstep(0.0, 25.0, _edge_distance_m(vx, vz))
+		match landscape:
+			"meadow":
+				cont = maxf(cont, 0.12 * away)              # dry country, with ponds in the hollows
+			"coast":
+				cont = maxf(cont, 0.3 * away)
+				var south := (vz - (village.bounds_v.position.y + village.bounds_v.size.y)) * V
+				cont -= 1.6 * smoothstep(12.0, 60.0, south)  # the sea to the south
+			_:
+				cont = maxf(cont, 0.3 * away)               # forest, hills: dry ground all round
 	var land := smoothstep(-0.22, 0.30, cont)               # 0 sea, 1 inland
 
 	var h := SEA_LEVEL - 5.0 + land * 9.0
 
 	var hill := _hills.get_noise_2d(wx, wz)
-	h += hill * 6.5 * land
+	if landscape == "hills":
+		h += (hill * 6.5 * 1.8 + 4.0 * away) * land
+	else:
+		h += hill * 6.5 * land
 
 	# Ridged noise, gated so mountains appear in bands rather than everywhere.
 	var mountain := smoothstep(0.35, 0.85, _continent.get_noise_2d(wx * 0.6, wz * 0.6) * 0.5 + 0.5)
+	if landscape == "hills":
+		mountain = maxf(mountain, 0.55 * away)
 	h += maxf(_ridged.get_noise_2d(wx, wz), 0.0) * 26.0 * mountain * land
 
 	h += _detail.get_noise_2d(wx, wz) * 0.9 * land
@@ -114,6 +139,14 @@ func height_at(vx: int, vz: int) -> int:
 		h = Village.FLOOR_HEIGHT
 
 	return clampi(int(round(h / V)), _bedrock_v + 1, _max_v)
+
+
+## Metres beyond the edge of the village shelf (0 inside it).
+func _edge_distance_m(vx: int, vz: int) -> float:
+	var b := village.bounds_v
+	var dx := maxf(float(b.position.x - vx), float(vx - (b.position.x + b.size.x)))
+	var dz := maxf(float(b.position.y - vz), float(vz - (b.position.y + b.size.y)))
+	return maxf(maxf(dx, dz), 0.0) * V
 
 
 func is_submerged(vx: int, vz: int) -> bool:
@@ -258,6 +291,10 @@ func _big_feature(vx: int, vz: int, h: int, hsh: int) -> Dictionary:
 	var g := _grove.get_noise_2d(vx * V, vz * V)
 	var roll := _rf(hsh, 21)
 	var p_tree := clampf(0.10 + (w + 0.2) * 0.9, 0.04, 0.78)
+	if landscape == "forest":
+		p_tree = clampf(0.55 + (w + 0.2) * 0.6, 0.45, 0.92)
+	elif landscape == "hills":
+		p_tree *= 0.55
 
 	if roll < p_tree:
 		var alt := float(h) * V

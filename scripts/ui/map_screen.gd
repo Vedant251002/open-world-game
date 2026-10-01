@@ -23,6 +23,8 @@ var village: Village
 var player: Player
 
 var open := false
+## The village's name and banner (VillageIdentity), set by Main; drawn on the title plate.
+var identity: VillageIdentity = null
 var centre := Vector2.ZERO         ## world metres
 var span := 300.0                  ## metres across the viewport
 
@@ -527,9 +529,22 @@ func _draw_hud() -> void:
 	plate.shadow_color = Color(0, 0, 0, 0.25)
 	plate.shadow_size = 8
 	plate.anti_aliasing = true
-	_hud.draw_style_box(plate, Rect2(16, 16, 268, 66))
-	_hud.draw_string(UiTheme.display(800), Vector2(32, 47), "THE TOWN",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 24, C_INK)
+	var title_text := "THE TOWN"
+	var plate_w := 268.0
+	if identity != null and identity.village_name != "":
+		title_text = identity.village_name.to_upper()
+		plate_w = clampf(76.0 + title_text.length() * 17.0, 268.0, 520.0)
+	_hud.draw_style_box(plate, Rect2(16, 16, plate_w, 66))
+	_hud.draw_string(UiTheme.display(800), Vector2(32, 47), title_text,
+		HORIZONTAL_ALIGNMENT_LEFT, plate_w - 70.0, 24, C_INK)
+	if identity != null:
+		# The banner: a small pennant at the plate's right-hand end.
+		var bx := 16.0 + plate_w - 34.0
+		_hud.draw_rect(Rect2(bx, 22, 24, 3), Color("#8c6a3c"))
+		var pennant := PackedVector2Array([Vector2(bx + 2, 25), Vector2(bx + 22, 25),
+			Vector2(bx + 22, 70), Vector2(bx + 12, 63), Vector2(bx + 2, 70)])
+		_hud.draw_colored_polygon(pennant, identity.colour())
+		BannerIcon.draw_emblem(_hud, Vector2(bx + 12, 43), 6.5, identity.emblem(), C_PAPER)
 	var sub := "%d buildings   -   %d plots free" % [buildings.size(), _free_plots()]
 	_hud.draw_string(_font, Vector2(32, 68), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 13,
 		Color(C_INK, 0.72))
