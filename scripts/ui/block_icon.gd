@@ -61,10 +61,43 @@ const SCATTER: Array[Vector2] = [
 ]
 
 
+## The albedo each material is rendered with in the world, shrunk to icon size.
+## Cached, because the stores draw all forty of them every frame.
+static var _tex: Dictionary = {}
+
+
+## The material's own albedo texture, filtered down to icon size and lifted to a
+## readable brightness (the in-world albedos are authored dark so the lighting
+## has headroom). Null for things that are not voxels, which fall back to the
+## painted surfaces below.
+static func texture_of(mat: String) -> Texture2D:
+	if _tex.has(mat):
+		return _tex[mat]
+	var out: Texture2D = null
+	var path := "res://assets/tex_web/%s_a.png" % mat
+	if ResourceLoader.exists(path):
+		var src := load(path) as Texture2D
+		var img: Image = src.get_image() if src != null else null
+		if img != null:
+			if img.is_compressed():
+				img.decompress()
+			img.convert(Image.FORMAT_RGBA8)
+			img.resize(96, 96, Image.INTERPOLATE_LANCZOS)
+			var avg := img.duplicate() as Image
+			avg.resize(1, 1, Image.INTERPOLATE_LANCZOS)
+			var c := avg.get_pixel(0, 0)
+			var lum := maxf(c.get_luminance(), 0.05)
+			img.adjust_bcs(clampf(0.56 / lum, 1.0, 2.4), 1.08, 1.05)
+			out = ImageTexture.create_from_image(img)
+	_tex[mat] = out
+	return out
+
+
 ## One cube, centred on `at`, `w` wide. `fade` dims the whole thing for a
-## material the stores have none of, or none the town can work.
+## material the stores have none of, or none the town can work. `tint` washes
+## it toward a colour (the locked tiers go cold and grey rather than black).
 static func draw(on: CanvasItem, at: Vector2, w: float, mat: String,
-		base: Color, fade: float) -> void:
+		base: Color, fade: float, tint: Color = Color.WHITE) -> void:
 	var hw := w * 0.5
 	var qh := w * 0.25            ## the 2:1 squash that makes it isometric
 	var bh := w * 0.62            ## how tall the body stands
@@ -77,6 +110,38 @@ static func draw(on: CanvasItem, at: Vector2, w: float, mat: String,
 	var bot := at + Vector2(0.0, bh * 0.5)
 	var lb := at + Vector2(-hw, bh * 0.5 - qh)
 
+	# A contact shadow, so the block sits on the slot rather than floating in it.
+	var sh := PackedVector2Array()
+	for i in 20:
+		var ang := TAU * i / 20.0
+		sh.append(at + Vector2(cos(ang) * hw * 1.05, bh * 0.5 + sin(ang) * qh * 0.7 - qh * 0.2))
+	on.draw_colored_polygon(sh, Color(0, 0, 0, 0.30 * fade))
+
+	var tex := texture_of(mat)
+	var line := maxf(w * 0.028, 0.9)
+	var ink := Color(0.04, 0.03, 0.03, 0.7 * fade)
+	if tex != null:
+		# Light from the upper left: the top face catches it, the right falls away.
+		var shades := [Color(1.0, 0.99, 0.95), Color(0.80, 0.78, 0.78), Color(0.52, 0.52, 0.56)]
+		for i in 3:
+			var col: Color = shades[i] * tint
+			col.a = fade
+			shades[i] = col
+		on.draw_colored_polygon(PackedVector2Array([t, rt, mid, lt]), shades[0],
+			PackedVector2Array([Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]), tex)
+		on.draw_colored_polygon(PackedVector2Array([lt, mid, bot, lb]), shades[1],
+			PackedVector2Array([Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]), tex)
+		on.draw_colored_polygon(PackedVector2Array([mid, rt, rb, bot]), shades[2],
+			PackedVector2Array([Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]), tex)
+		# Bevel: a bright lip along the two upper edges and the front corner.
+		var hi := Color(1, 1, 1, 0.42 * fade)
+		on.draw_polyline(PackedVector2Array([lt, t, rt]), hi, line * 0.9)
+		on.draw_line(mid, bot, Color(1, 1, 1, 0.14 * fade), line * 0.8)
+		on.draw_polyline(PackedVector2Array([t, rt, rb, bot, lb, lt, t]), ink, line * 1.1)
+		on.draw_polyline(PackedVector2Array([lt, mid, rt]), Color(ink, ink.a * 0.55), line * 0.8)
+		on.draw_line(mid, bot, Color(ink, ink.a * 0.55), line * 0.8)
+		return
+
 	var a := base.a
 	var top := base.lightened(0.20)
 	var left := base.darkened(0.14)
@@ -86,7 +151,6 @@ static func draw(on: CanvasItem, at: Vector2, w: float, mat: String,
 	right.a = a * fade
 
 	var surface := str(SURFACE.get(mat, "plain"))
-	var line := maxf(w * 0.028, 0.9)
 
 	# Top face: origin at the left corner, across to the back and to the front.
 	on.draw_colored_polygon(PackedVector2Array([t, rt, mid, lt]), top)
@@ -99,7 +163,7 @@ static func draw(on: CanvasItem, at: Vector2, w: float, mat: String,
 	_paint(on, mid, rt - mid, bot - mid, surface, right, fade, line, false)
 
 	# The silhouette last, over the pattern, so nothing runs off an edge.
-	var ink := Color(0.04, 0.03, 0.03, 0.6 * fade)
+	on.draw_polyline(PackedVector2Array([lt, t, rt]), Color(1, 1, 1, 0.3 * fade), line * 0.9)
 	on.draw_polyline(PackedVector2Array([t, rt, rb, bot, lb, lt, t]), ink, line * 1.2)
 	on.draw_polyline(PackedVector2Array([lt, mid, rt]), ink, line)
 	on.draw_line(mid, bot, ink, line)
