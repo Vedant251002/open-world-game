@@ -45,6 +45,10 @@ var challenge_screen: ChallengeScreen
 var identity: VillageIdentity
 var progression: Progression
 var milestones_ui: MilestonesUi
+## The Village Crier (daily paper) and daily villager requests (see _raise_crier).
+var crier: Crier
+var crier_screen: CrierScreen
+var requests: Requests
 var tutorial: Tutorial
 
 var _world_seed := 0
@@ -835,6 +839,7 @@ func _raise_crew() -> void:
 		dispatch.describe_ai()])
 	_raise_audio()
 	_raise_extras()
+	_raise_crier()
 
 
 ## Sound (scripts/audio/): hands the audio director the finished game.
@@ -945,6 +950,57 @@ func _switch_world(fresh: bool, into: bool) -> void:
 		Challenge.leave()
 	get_tree().paused = false
 	get_tree().reload_current_scene()
+
+# ------------------------------------------------------------ the crier
+
+## The Village Crier (key N, HUD badge, pause menu) and the day's villager
+## requests (HUD list). Both are self-contained; this only wires them up.
+func _raise_crier() -> void:
+	if realm == null:
+		return
+	crier = Crier.new()
+	crier.name = "Crier"
+	add_child(crier)
+	crier.setup(clock, town, crew, realm, identity, farm, dispatch.llm)
+	if _save.is_empty():
+		crier.ensure_first()
+	crier_screen = CrierScreen.new()
+	crier_screen.name = "CrierScreen"
+	add_child(crier_screen)
+	crier_screen.setup(crier, player, hud, map, inventory)
+	hud.crier_badge.bind(crier)
+	hud.crier_badge.visible = true
+	hud.crier_badge.pressed.connect(func() -> void:
+		if crier_screen.open:
+			crier_screen.set_open(false)
+		elif player.input_enabled:
+			crier_screen.set_open(true))
+	pause_menu.crier_requested.connect(func() -> void:
+		pause_menu.set_open(false)
+		crier_screen.open_screen())
+	crier.issue_printed.connect(func(issue: Dictionary) -> void:
+		if str(issue.get("source", "")) != "llm" and not crier_screen.open:
+			Sfx.page()
+			hud.toast("The Crier, day %d: %s" % [int(issue["day"]), str(issue["headline"]).capitalize()], 5.0))
+
+	requests = Requests.new()
+	requests.name = "Requests"
+	add_child(requests)
+	requests.setup(clock, town, crew, realm, hud, dispatch.llm)
+	hud.requests_card.bind(requests, clock)
+	requests.issued.connect(func(req: Dictionary) -> void:
+		hud.toast("%s asks for %s" % [str(req["name"]), str(req["text"])], 5.0))
+
+
+## After a save is read back (an older save has neither and simply starts them).
+func _restore_crier() -> void:
+	if crier == null:
+		return
+	crier.restore(_save.get("crier", {}))
+	crier.ensure_first()
+	requests.restore(_save.get("requests", {}))
+	hud.crier_badge.refresh()
+
 
 # ------------------------------------------------------------ village life
 
@@ -1089,6 +1145,9 @@ func _snapshot() -> Dictionary:
 		state["progression"] = progression.snapshot()
 	if tutorial != null:
 		state["tutorial"] = tutorial.snapshot()
+	if crier != null:
+		state["crier"] = crier.snapshot()
+		state["requests"] = requests.snapshot()
 	return state
 
 
@@ -1140,6 +1199,7 @@ func _restore_people() -> void:
 	if challenge != null:
 		challenge.restore(_save.get("challenge", {}))
 	_restore_village_life()
+	_restore_crier()
 	var pl: Dictionary = _save.get("player", {})
 	if pl.has("pos"):
 		var at: Vector3 = pl["pos"]

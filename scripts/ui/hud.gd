@@ -67,6 +67,11 @@ var _crew_tint: Array[Color] = []
 var minimap: Minimap
 ## The weekly challenge's objective, bound by main.gd.
 var challenge_card: ChallengeCard
+## The Village Crier badge and the daily requests list, bound by main.gd
+## (scripts/ui/crier_screen.gd, scripts/ui/requests_ui.gd).
+var crier_badge: CrierScreen.Badge
+var requests_card: RequestsCard
+var _side: VBoxContainer           ## holds the two above, top right
 var _typing_for: Worker = null
 var _root: Control
 ## The crosshair and its target dot. The dot is the cheapest useful signal in
@@ -277,6 +282,25 @@ func _build_topleft() -> void:
 	# The weekly challenge objective (hidden unless a run is under way).
 	challenge_card = ChallengeCard.new()
 	_stack.add_child(challenge_card)
+
+	# Village Crier badge and the day's requests (hidden until bound/issued).
+	# Top right, clear of the roster column and the minimap.
+	var side := VBoxContainer.new()
+	side.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	side.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	side.offset_right = -24
+	side.offset_top = 20
+	_side = side
+	side.add_theme_constant_override("separation", int(8 * k))
+	side.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(side)
+	crier_badge = CrierScreen.Badge.new()
+	crier_badge.visible = false
+	crier_badge.size_flags_horizontal = Control.SIZE_SHRINK_END
+	side.add_child(crier_badge)
+	requests_card = RequestsCard.new()
+	requests_card.size_flags_horizontal = Control.SIZE_SHRINK_END
+	side.add_child(requests_card)
 
 	# Key hints, said once and left there. The phone build has buttons instead.
 	if not _touch:
@@ -570,6 +594,9 @@ func _process(delta: float) -> void:
 	if _chat_button != null and player != null:
 		_chat_button.mouse_filter = Control.MOUSE_FILTER_IGNORE \
 			if player.input_enabled else Control.MOUSE_FILTER_STOP
+	# Crier/requests column steps down while a held-plan panel is up top right.
+	if _side != null:
+		_side.offset_top = (_assume.size.y + 32.0) if _assume != null and _assume.visible else 20.0
 	if clock != null:
 		var h := int(clock.hour)
 		var tt := "%02d:%02d" % [h, int((clock.hour - h) * 60.0)]
