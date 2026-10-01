@@ -633,6 +633,11 @@ func _process(delta: float) -> void:
 		if _time_label.text != tt:
 			_time_label.text = tt
 		var dt := "DAY %d" % clock.day
+		# --- seasons: "DAY 14  ·  AUTUMN 3/12" (Seasons system, scripts/realm/seasons.gd)
+		if realm != null:
+			var seasons: Node = realm.system("Seasons") if realm.has_method("system") else null
+			if seasons != null and seasons.has_method("hud_label"):
+				dt = "DAY %d  ·  %s" % [clock.day, str(seasons.call("hud_label"))]
 		if _day_label.text != dt:
 			_day_label.text = dt
 		# Sun by day, moon from dusk to dawn; a warm tint near the horizon.

@@ -40,6 +40,9 @@ var crops_root: Node3D
 
 ## Vector2i(voxel x, voxel z) -> {kind, stage, growth, wet, node, y}
 var tiles: Dictionary = {}
+## Seasons that matter (set daily by the Seasons system): 1.0 is a plain day,
+## 0.0 means nothing grows (winter). Multiplies every crop's daily growth.
+var season_rate := 1.0
 var _wet_cache: Dictionary = {}      ## Vector2i(metre) -> bool
 
 
@@ -334,6 +337,23 @@ func _on_day(_day: int) -> void:
 	advance_days(1.0)
 
 
+## The first frost: every crop still standing in the field dies, ripe or not.
+## Returns how many plants were lost. (Called by the Seasons system.)
+func frost_kill() -> int:
+	var lost := 0
+	for key: Vector2i in tiles:
+		var t: Dictionary = tiles[key]
+		if str(t["kind"]) == "":
+			continue
+		t["kind"] = ""
+		t["stage"] = -1
+		t["growth"] = 0.0
+		_show_stage(key, t)
+		tiles[key] = t
+		lost += 1
+	return lost
+
+
 ## Advances every crop. Split out so a test can push a season through in a frame.
 func advance_days(days: float) -> void:
 	for key: Vector2i in tiles:
@@ -347,7 +367,7 @@ func advance_days(days: float) -> void:
 		var watered := float(t.get("watered", 0.0))
 		if watered > 0.0:
 			t["watered"] = maxf(watered - days, 0.0)
-		var rate: float = 1.0 if bool(t["wet"]) or watered > 0.0 else DRY_PENALTY
+		var rate: float = (1.0 if bool(t["wet"]) or watered > 0.0 else DRY_PENALTY) * season_rate
 		t["growth"] = float(t["growth"]) + days * rate
 		var want := int(float(t["growth"]) / DAYS_PER_STAGE)
 		if want == int(t["stage"]):

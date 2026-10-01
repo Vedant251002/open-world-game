@@ -1116,6 +1116,14 @@ func _raise_realm() -> void:
 	hud.realm = realm
 	# The map's directory of buildings and people reads from the realm.
 	map.realm = realm
+	# --- crisis banner: fire / raid / wolves / hunger / sickness / storm status
+	# and the one suggested order, across the top (scripts/ui/crisis_banner.gd).
+	var crisis_sys: Node = realm.system("Crisis")
+	if crisis_sys != null:
+		var banner := CrisisBanner.new()
+		banner.name = "CrisisBanner"
+		hud.add_child(banner)
+		banner.bind(crisis_sys)
 
 
 func _run_realm_test(which: String) -> void:
