@@ -476,7 +476,7 @@ func _begin(key: String, kind: String, title: String, status: String, action: St
 		Sfx.alert()
 		_shout(key, "begin")
 		realm.say(_toast_for(c))
-		realm.note("crisis", "%s." % title.capitalize())
+		realm.note("crisis", "%s." % _title_case(title))
 	began.emit(c)
 	changed.emit()
 
@@ -489,7 +489,7 @@ func _update(key: String, status: String, action: String, severity: float) -> vo
 
 
 func _toast_for(c: Dictionary) -> String:
-	return "%s  --  %s" % [str(c["title"]).capitalize(), str(c["action"])]
+	return "%s  --  %s" % [_title_case(str(c["title"])), str(c["action"])]
 
 
 ## It is over: work out what it cost and say so.
@@ -901,7 +901,7 @@ func situation() -> String:
 	var bits: Array[String] = []
 	for k: String in active:
 		var c: Dictionary = active[k]
-		bits.append("%s (%s) -- suggested order: %s" % [str(c["title"]).capitalize(), c["status"], c["action"]])
+		bits.append("%s (%s) -- suggested order: %s" % [_title_case(str(c["title"])), c["status"], c["action"]])
 	return "CRISIS: " + "; ".join(bits) + "."
 
 
@@ -913,7 +913,7 @@ func try_answer(_worker: Worker, text: String) -> String:
 		if active.is_empty():
 			return "Nothing is wrong that I know of."
 		var b := banner()
-		return "%s. %s. %s." % [str(b["title"]).capitalize(), b["status"], b["action"]]
+		return "%s. %s. %s." % [_title_case(str(b["title"])), b["status"], b["action"]]
 	return ""
 
 
@@ -935,3 +935,10 @@ func restore(d: Dictionary) -> void:
 	_storm_damage_day = int(d.get("storm_day", 0))
 	active.clear()
 	_silent_scan = true       # what was already going on at save time is not news again
+
+
+## A banner title ("FIRE AT THE BAKERY") as a sentence: "Fire at the bakery".
+## String.capitalize() made every word a capital, which reads as a headline
+## in the middle of a line.
+static func _title_case(t: String) -> String:
+	return Answers._sentence(t.to_lower())

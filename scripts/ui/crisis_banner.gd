@@ -30,6 +30,9 @@ var _shown := ""
 var _t := 0.0
 var _slide := 0.0
 var _poll := 0.0
+## Where the banner ends on screen, 0 while it is hidden, so other top-centre
+## popups (the milestone banner) can sit under it instead of on it.
+static var bottom := 0.0
 
 
 func bind(c: Node) -> void:
@@ -142,6 +145,7 @@ func _process(delta: float) -> void:
 		_poll = 0.0
 		refresh()
 	if not _panel.visible:
+		bottom = 0.0
 		return
 	# Slides down into place, then (for an alarm) pulses its edge.
 	_slide = minf(_slide + delta * 3.5, 1.0)
@@ -149,6 +153,7 @@ func _process(delta: float) -> void:
 	# Below the village card that sits at the top centre of the HUD.
 	var top := 98.0 if get_viewport_rect().size.x >= 900.0 else 150.0
 	_panel.position.y = lerpf(-_panel.size.y - 10.0, top, ease_t)
+	bottom = top + _panel.size.y
 	if _tone == "alert":
 		var pulse := 0.65 + 0.35 * sin(_t * 6.0)
 		_style.border_color = Color(UiTheme.ALERT.r, UiTheme.ALERT.g * (0.8 + 0.2 * pulse), UiTheme.ALERT.b, 1.0)
