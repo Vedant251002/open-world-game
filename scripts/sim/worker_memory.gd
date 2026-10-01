@@ -34,6 +34,9 @@ var learned_preferences: Array[Dictionary] = []
 var episodic: Array[Dictionary] = []
 var open_questions: Array[Dictionary] = []
 var skills := {"carpentry": 0, "masonry": 0, "machining": 0, "piloting": 0}
+## How they feel about the player, kept by Relationships (scripts/sim/relationships.gd):
+## affection, per-kind counts and the per-day caps. Empty until something happens.
+var relationship: Dictionary = {}
 
 var _next_event := 1
 
@@ -94,7 +97,10 @@ func will_ask(ambiguity: float) -> bool:
 func work_rate() -> float:
 	var s: float = traits["speed"]
 	var morale: float = disposition["morale"]
-	return (0.55 + s * 0.95) * (0.6 + morale * 0.55)
+	# Relationship + temperament (features wave 2): resentful is slower, a
+	# friend faster, a meticulous hand a little slower. Both are 1.0 by default.
+	return (0.55 + s * 0.95) * (0.6 + morale * 0.55) \
+		* Relationships.work_factor(self) * Personality.pace(self)
 
 
 ## Optional modules get dropped when a worker is unhappy with you.
@@ -282,6 +288,7 @@ func to_dict() -> Dictionary:
 		"open_questions": open_questions,
 		"skills": skills,
 		"next_event": _next_event,
+		"relationship": relationship,
 	}
 
 
@@ -292,6 +299,8 @@ func from_dict(d: Dictionary) -> void:
 	disposition = d.get("disposition", disposition)
 	skills = d.get("skills", skills)
 	_next_event = int(d.get("next_event", 1))
+	var rel: Variant = d.get("relationship", {})
+	relationship = (rel as Dictionary) if rel is Dictionary else {}
 
 	learned_preferences.clear()
 	for p: Variant in d.get("learned_preferences", []):

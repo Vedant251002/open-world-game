@@ -127,6 +127,8 @@ func system_for(w: Worker, town: Town, clock: GameClock, realm: Node) -> String:
 	lines.append("")
 	lines.append("HOW YOU FEEL ABOUT THEM")
 	lines.append(_feeling(mem))
+	# Relationship (features wave 2): the standing built from what they have done.
+	lines.append(Relationships.prompt_line(mem))
 	var past := mem.recent(8)
 	if not past.is_empty():
 		lines.append("What you remember of them lately:")

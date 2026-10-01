@@ -415,6 +415,11 @@ func _on_quick_decided(worker_id: String, plan: Dictionary) -> void:
 ## right most of the time and costs a round trip, and for "how many bricks
 ## have we got" that is the wrong trade in both directions.
 func _answer(worker: Worker, question: String) -> void:
+	# Personality: a careless hand owns up if asked about corners (see Personality).
+	var admit := Personality.admission(worker.memory, question)
+	if admit != "":
+		worker.speak(admit, "talk")
+		return
 	# About themselves first. "What do you do" has one right answer and the
 	# role holds it; the records and the model are for everything else.
 	var about := _answer_about_role(worker, question)
@@ -551,6 +556,9 @@ func converse(worker: Worker, heard: String, situation: String = "",
 		return
 	if fallback == "":
 		fallback = "Mm." if heard != "" else "…"
+	# Relationships: stock lines are warmer for a friend and curter for somebody
+	# who resents you. (The model gets the relationship in its prompt instead.)
+	fallback = Relationships.tint(worker.memory, fallback, kind)
 	if llm == null or not llm.available():
 		worker.speak(fallback, kind)
 		return
@@ -813,6 +821,33 @@ func _on_plan_ready(worker_id: String, plan: Dictionary) -> void:
 
 	_open.erase(worker_id)
 	worker.stop_thinking()
+
+	# --- PERSONALITY (features wave 2) ---------------------------------------
+	# Who is doing the work changes what gets made: a proud hand adds a flourish,
+	# a careless one cuts a corner, a meticulous one squares everything up. Done
+	# here, after the plan was accepted and before anything starts, on a copy of
+	# each build spec; if the changed plan no longer validates the original is
+	# used unchanged. What changed is explained in the assumptions panel below.
+	var quirk_notes: Array = []
+	var quirk := {}
+	var original_steps := steps          # untouched; the working copy below is edited
+	steps = steps.duplicate(true)       # never edit what the plan cache may hold
+	for st: Variant in steps:
+		var sd: Dictionary = st
+		if str(sd.get("do", "")) == "build" and sd.get("spec", null) is Dictionary:
+			var pr := Personality.apply(sd["spec"], worker.memory)
+			quirk_notes.append_array(pr["notes"])
+			if str(pr["quirk"]) != "":
+				sd["spec"] = pr["spec"]
+				quirk = pr
+	if not quirk.is_empty() and not Validator.check_plan(steps, plot, _ctx(worker)).is_empty():
+		steps = original_steps
+		quirk = {}
+		quirk_notes = []
+	if not quirk.is_empty():
+		Personality.note_quirk(worker.memory, clock.day, str(quirk["quirk"]), str(quirk["detail"]))
+	assumptions = assumptions + quirk_notes
+	# --- end personality -------------------------------------------------------
 
 	# A morning order is the routine, not a decision of yours; the panel is
 	# for things you asked for. The worker still says their line.
@@ -2596,6 +2631,7 @@ func _try_roles(worker: Worker, instruction: String) -> bool:
 			conversation.call("forget", worker.memory.worker_id)
 			crew.dismiss(worker)
 			worker.memory.remember(clock.day, "Let go.", -0.3)
+			Relationships.record(worker.memory, "dismissed", clock.day, {"quiet": true})
 			converse(worker, "", "The person you worked for has just let you go. You are back to being an ordinary resident of the town.",
 				"", "Right. I will be about, if you change your mind.")
 		return true

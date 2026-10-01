@@ -108,6 +108,10 @@ var _touch := false
 var _web: WebInput = null
 
 
+## The villager card (see VillagerCard). Null until built.
+var villager_card: VillagerCard
+
+
 func setup(p: Player, c: Crew, gc: GameClock, t: Town) -> void:
 	player = p
 	crew = c
@@ -216,6 +220,15 @@ func _build() -> void:
 	chat.sent.connect(_on_chat_sent)
 	chat.closed.connect(_on_chat_closed)
 	add_child(chat)
+
+	# Villager card (features wave 2): V / Tab on whoever you look at, or click a
+	# crew card. Voices also need to know who is listening.
+	villager_card = VillagerCard.new()
+	villager_card.name = "VillagerCard"
+	villager_card.setup(clock, _touch)
+	villager_card.closed.connect(_on_card_closed)
+	add_child(villager_card)
+	Voice.listener = player
 
 
 ## The top-left stack: time and purse in one card, a card per crew member, the
@@ -367,6 +380,16 @@ func _add_crew_row() -> void:
 	var st := _label("", int(13 * k), DIM, 500)
 	st.clip_text = true
 	col.add_child(st)
+	# Clicking a crew card opens that person's villager card (only while the
+	# pointer is free; see _process).
+	var row_i := _crew_rows.size()
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.gui_input.connect(func(ev: InputEvent) -> void:
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed \
+				and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			var hired_now: Array[Worker] = crew.hired()
+			if row_i < hired_now.size():
+				open_card(hired_now[row_i]))
 	_crew_rows.append({"card": card, "dot": dot, "name": nm, "role": role, "status": st,
 		"tint": Color.BLACK, "text": ""})
 
@@ -597,6 +620,13 @@ func _process(delta: float) -> void:
 	# Crier/requests column steps down while a held-plan panel is up top right.
 	if _side != null:
 		_side.offset_top = (_assume.size.y + 32.0) if _assume != null and _assume.visible else 20.0
+	# Crew cards are clickable (they open the villager card) only while the
+	# pointer is free, for the same reason as the chat word above.
+	if player != null:
+		var free := not player.input_enabled
+		for r: Dictionary in _crew_rows:
+			(r["card"] as Control).mouse_filter = Control.MOUSE_FILTER_STOP \
+				if free else Control.MOUSE_FILTER_IGNORE
 	if clock != null:
 		var h := int(clock.hour)
 		var tt := "%02d:%02d" % [h, int((clock.hour - h) * 60.0)]
@@ -721,7 +751,27 @@ func _process(delta: float) -> void:
 		_prompt_role.add_theme_color_override("font_color", pcol if pcol != INK else UiTheme.GOLD)
 
 
+## Tab opens the card too, but the inventory also answers to Tab, so this runs
+## before it (_input) and only when somebody is under the crosshair.
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and (event as InputEventKey).pressed and not (event as InputEventKey).echo \
+			and (event as InputEventKey).keycode == KEY_TAB and _typing_for == null \
+			and villager_card != null and (_target != null or villager_card.open):
+		toggle_card()
+		get_viewport().set_input_as_handled()
+
+
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and (event as InputEventKey).pressed and not (event as InputEventKey).echo \
+			and (event as InputEventKey).keycode == KEY_V and _typing_for == null \
+			and (chat == null or not chat.open) and villager_card != null:
+		toggle_card()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("menu") and villager_card != null and villager_card.open:
+		villager_card.hide_card()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("talk") and _typing_for == null and _target != null:
 		_open_bar(_target)
 		get_viewport().set_input_as_handled()
@@ -739,6 +789,36 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("menu") and chat != null and chat.open:
 		chat.hide_panel()
 		get_viewport().set_input_as_handled()
+
+
+## The villager card: whoever is under the crosshair, or close it.
+func toggle_card() -> void:
+	if villager_card == null:
+		return
+	if villager_card.open:
+		villager_card.hide_card()
+	elif _target != null:
+		open_card(_target)
+
+
+func open_card(w: Worker) -> void:
+	if villager_card == null or w == null or not is_instance_valid(w):
+		return
+	if _typing_for != null:
+		_close_bar()
+	if chat != null and chat.open:
+		chat.hide_panel()
+	villager_card.show_for(w)
+	if minimap != null:
+		minimap.visible = false
+	player.set_input_enabled(false)
+
+
+func _on_card_closed() -> void:
+	if minimap != null and _typing_for == null:
+		minimap.visible = true
+	if _typing_for == null and (chat == null or not chat.open):
+		player.set_input_enabled(true)
 
 
 ## The chat panel owns the pointer while it is up, like the bar does.
@@ -782,6 +862,7 @@ func open_for(w: Worker) -> void:
 ## waiting for words rather than for movement.
 func _open_bar(w: Worker) -> void:
 	_typing_for = w
+	Voice.focus_id = w.memory.worker_id      # voiced even from across the square
 	talk_opened.emit(w)
 	if chat != null:
 		chat.select(w)
@@ -816,6 +897,7 @@ func _open_bar(w: Worker) -> void:
 
 func _close_bar() -> void:
 	_typing_for = null
+	Voice.focus_id = ""
 	_bar.visible = false
 	if minimap != null:
 		minimap.visible = true

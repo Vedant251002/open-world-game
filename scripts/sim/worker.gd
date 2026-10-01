@@ -1392,6 +1392,11 @@ func take_job(plot: Plot, spec: Dictionary, patch: VoxelPatch,
 
 	job_construction = Construction.new(patch, world, props_root)
 	job_construction.voxels_per_hour = 2200.0 * memory.work_rate()
+	# Relationships (features wave 2): somebody who resents you mutters, a
+	# confidant is glad to. At most once a day, "" the rest of the time.
+	var mutter := Relationships.grumble(memory, clock.day)
+	if mutter != "":
+		_say(mutter, "talk")
 	job_eta_hours = float(patch.build_order.size()) / maxf(job_construction.voxels_per_hour, 1.0)
 
 	_holding = false
@@ -1822,6 +1827,8 @@ func _say(line: String, kind: String) -> void:
 		# Long lines stay up longer, at roughly reading speed.
 		bubble.say(line, kind, clampf(2.2 + line.length() * 0.04, 2.8, 8.0))
 	said.emit(self, line, kind)
+	# Voices (features wave 2): spoken aloud if enabled, near, and supported.
+	Voice.speak(self, memory.worker_id, line, kind)
 
 
 func speak(line: String, kind: String = "talk") -> void:
