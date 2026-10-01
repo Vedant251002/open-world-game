@@ -36,6 +36,7 @@ var livestock: Livestock
 var wildlife: Wildlife
 var warfare: Warfare
 var realm: Realm
+var audio: AudioDirector
 
 var _world_seed := 0
 var showcase_views: Array[Dictionary] = []
@@ -129,6 +130,13 @@ func _ready() -> void:
 	clock = GameClock.new()
 	clock.name = "Clock"
 	add_child(clock)
+
+	# Sound (scripts/audio/): created here so the title screen's buttons click;
+	# bound to the game's systems in _raise_audio() once they exist.
+	if "--nosound" not in args:
+		audio = AudioDirector.new()
+		audio.name = "Audio"
+		add_child(audio)
 
 	# The front door, only on a plain interactive launch: no test, bench, shot
 	# or other dev flag. It holds the clock and the player until "Begin".
@@ -543,6 +551,13 @@ func _on_world_ready(t0: int) -> void:
 		iv.town = town
 		add_child(iv)
 		return
+	if "--audiotest" in args:
+		# Sound: the soundscape driven through a day, a storm and a night.
+		var aut := AudioTest.new()
+		aut.main = self
+		add_child(aut)
+		aut.begin()
+		return
 	if "--walktest" in args:
 		var wt := WalkTest.new()
 		wt.world = world
@@ -742,6 +757,16 @@ func _raise_crew() -> void:
 
 	print("[delegate] crew: %s   (AI: %s)" % [", ".join(crew.by_id.keys()),
 		dispatch.describe_ai()])
+	_raise_audio()
+
+
+## Sound (scripts/audio/): hands the audio director the finished game.
+func _raise_audio() -> void:
+	if audio == null:
+		return
+	audio.bind({"player": player, "world": world, "clock": clock, "realm": realm,
+		"crew": crew, "livestock": livestock, "warfare": warfare, "map": map,
+		"inventory": inventory, "pause_menu": pause_menu, "town": town})
 
 
 ## A field already in the ground, ripened, for screenshots and for anyone who

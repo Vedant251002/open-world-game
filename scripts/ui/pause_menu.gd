@@ -103,6 +103,9 @@ func _build() -> void:
 			_label_screen_button())
 		col.add_child(_screen_button)
 
+	# Sound: volume sliders and mute (scripts/audio/sound_panel.gd).
+	col.add_child(SoundPanel.build())
+
 	col.add_child(_rule())
 	# A quick reminder of the controls, since this is where a player goes when
 	# they are stuck.
