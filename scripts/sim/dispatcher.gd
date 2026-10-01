@@ -1240,7 +1240,7 @@ func _step_works(run: Dictionary, step: Dictionary) -> String:
 					town.unregister(rec, plot)
 					plot.reserved = false
 				town.refund(salvage)
-				worker.speak("%s is down. Salvaged %s." % [where.capitalize(),
+				worker.speak("%s is down. Salvaged %s." % [Answers._sentence(where),
 					Resources.describe(salvage) if not salvage.is_empty() else "nothing worth keeping"],
 					"done")
 

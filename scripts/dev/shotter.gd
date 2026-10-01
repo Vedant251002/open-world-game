@@ -18,6 +18,16 @@ var _placed := false
 
 func _ready() -> void:
 	_t_start = Time.get_ticks_msec()
+	# --shotdir=/abs/path writes somewhere other than user://shots, and
+	# --view=crew,night keeps only the named views: a frame takes seconds on a
+	# software renderer, and two runs in parallel would share user://.
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--shotdir="):
+			out_dir = a.substr(10)
+		elif a.begins_with("--view="):
+			var keep := a.substr(7).split(",", false)
+			views = views.filter(func(v: Dictionary) -> bool:
+				return str(v.get("name", "")) in keep)
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Engine.max_fps = 0
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(out_dir))

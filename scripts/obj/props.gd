@@ -512,34 +512,10 @@ static func radius(type_name: String) -> float:
 ## texture arrays, so a blanket gets thatch and a chest gets oak grain the same
 ## way the walls do.
 ##
-## The one thing that genuinely differs from the world is scale. A prop voxel
-## is 0.05 m against the world's 0.25 m — five times finer — so the same repeat
-## count that reads as brickwork on a wall reads as a photographic blow-up on a
-## blanket. The scale below is the world table's divided by roughly that factor
-## and then re-tuned, which is why it is written out rather than derived.
+## Texture scale is the world's own (VoxelMaterials.TEX_SCALE, repeats per
+## metre): the baked tiles are authored at their natural size, so the same
+## number is right for a wall and for the table standing against it.
 const PROP_SHADER := preload("res://scripts/core/voxel.gdshader")
-
-## Repeat count per prop face (one prop face is 0.05 m).
-const PROP_TEX_SCALE := {
-	VoxelTypes.TIMBER: 0.55, VoxelTypes.PLANK: 0.60, VoxelTypes.DARK_OAK: 0.55,
-	VoxelTypes.BARK: 0.85,
-	VoxelTypes.BRICK: 0.50, VoxelTypes.SANDSTONE: 0.40, VoxelTypes.GRANITE: 0.35,
-	VoxelTypes.COBBLE: 0.60, VoxelTypes.STONE: 0.45, VoxelTypes.ROCK: 0.40,
-	VoxelTypes.CONCRETE: 0.30, VoxelTypes.REBAR_CONCRETE: 0.30,
-	VoxelTypes.CONCRETE_SLAB: 0.45,
-	VoxelTypes.STEEL_FRAME: 0.30, VoxelTypes.CORRUGATED_STEEL: 0.50,
-	VoxelTypes.SHEET_METAL: 0.30, VoxelTypes.PLASTIC_PANEL: 0.30,
-	VoxelTypes.CARBON_COMPOSITE: 1.0, VoxelTypes.SOLAR_PANEL: 0.25,
-	VoxelTypes.THATCH: 0.75, VoxelTypes.CLAY_TILE: 0.65,
-	VoxelTypes.ASPHALT_SHINGLE: 0.60,
-	VoxelTypes.GRAVEL: 1.0, VoxelTypes.GRASS: 0.85, VoxelTypes.SAND: 0.70,
-	VoxelTypes.DIRT: 0.65, VoxelTypes.CLAY: 0.60, VoxelTypes.LEAF: 0.80,
-	VoxelTypes.FARMLAND: 0.65, VoxelTypes.WET_FARMLAND: 0.65,
-	VoxelTypes.IRON_ORE: 0.60, VoxelTypes.ASPHALT: 0.40, VoxelTypes.EMBER: 0.75,
-	VoxelTypes.PAINTED_WHITE: 0.30, VoxelTypes.PAINTED_RED: 0.30,
-	VoxelTypes.CHROME: 0.30, VoxelTypes.MATTE_BLACK: 0.30,
-	VoxelTypes.NEON_STRIP: 0.50,
-}
 
 ## How hard the normal map pushes. Props are looked at from closer than walls —
 ## a bed two paces away rather than a house across the square — so their relief
@@ -598,8 +574,10 @@ static func material_for(mat_id: int) -> Material:
 			# material in the wall next to it, which is the thing that makes
 			# two objects in one room look like they came from the same world.
 			m.set_shader_parameter("tex_layer", layer)
+			# Repeats per metre, the same as the wall's: the baked tiles are
+			# authored at a natural size now, so a table's planks are planks.
 			m.set_shader_parameter("tex_scale",
-				PROP_TEX_SCALE.get(mat_id, 0.5) * VoxelTextures.res_scale())
+				float(VoxelMaterials.TEX_SCALE.get(mat_id, 1.0)) * VoxelTextures.res_scale())
 			m.set_shader_parameter("normal_strength",
 				PROP_NORMAL_STRENGTH.get(mat_id, 0.8))
 			m.set_shader_parameter("ao_strength", PROP_AO_STRENGTH.get(mat_id, 0.5))

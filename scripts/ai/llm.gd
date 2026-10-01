@@ -316,6 +316,14 @@ func _finish_body(body: Dictionary, tokens: int) -> void:
 	body[AIProvider.token_field(provider)] = tokens
 	if AIProvider.wants_reasoning(provider):
 		body["reasoning"] = {"exclude": true}
+	# gpt-oss on Groq reasons before it answers, and the reasoning counts
+	# against the same cap as the answer. At the 220-260 tokens a line of talk
+	# or an answer gets, medium effort could spend the whole budget thinking
+	# and return no sentence at all; low effort costs a fraction and a line of
+	# dialogue does not need more. Plans keep the default.
+	if provider == "groq" and str(body.get("model", model)).find("gpt-oss") >= 0 \
+			and tokens <= TALK_TOKENS:
+		body["reasoning_effort"] = "low"
 
 
 ## Where a request goes, and with what on it.

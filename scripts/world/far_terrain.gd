@@ -51,6 +51,10 @@ func _make_material() -> StandardMaterial3D:
 	# The palette is sRGB; without this Godot reads the vertex colours as linear
 	# and the distant land comes out pale beside the voxels.
 	m.vertex_color_is_srgb = true
+	# The palette is authored bright for a flat, unshadowed, AO-free mesh; on
+	# its own it read as a pale glow next to the textured voxels (mint by day,
+	# teal under the moon), so it is taken down to sit in the same range.
+	m.albedo_color = Color(0.68, 0.70, 0.66)
 	m.roughness = 0.95
 	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 	m.cull_mode = BaseMaterial3D.CULL_BACK

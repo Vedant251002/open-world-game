@@ -22,17 +22,17 @@ class_name InventoryScreen
 const V := VoxelChunk.VOXEL_M
 
 # --- palette, in the same brown-paper key as the rest of the interface ---
-const C_SHADE := Color(0.03, 0.03, 0.04, 0.72)     ## the world, dimmed behind
-const C_PANEL := Color(0.11, 0.10, 0.09, 0.97)
-const C_EDGE := Color(1, 1, 1, 0.16)
-const C_SLOT := Color(0.06, 0.055, 0.05, 0.9)
-const C_SLOT_LIT := Color(0.17, 0.15, 0.12, 0.95)
-const C_BEVEL_HI := Color(1, 1, 1, 0.10)
+const C_SHADE := Color(0.03, 0.02, 0.02, 0.68)     ## the world, dimmed behind
+const C_PANEL := UiTheme.PANEL_SOLID
+const C_EDGE := UiTheme.EDGE_STRONG
+const C_SLOT := Color(0.045, 0.038, 0.030, 0.85)
+const C_SLOT_LIT := Color(0.20, 0.16, 0.10, 0.95)
+const C_BEVEL_HI := Color(1, 0.95, 0.8, 0.08)
 const C_BEVEL_LO := Color(0, 0, 0, 0.45)
-const C_INK := Color(0.94, 0.92, 0.87)
-const C_DIM := Color(0.66, 0.64, 0.60)
-const C_FAINT := Color(0.42, 0.41, 0.38)
-const C_COIN := Color(0.98, 0.83, 0.42)
+const C_INK := UiTheme.INK
+const C_DIM := UiTheme.DIM
+const C_FAINT := UiTheme.FAINT
+const C_COIN := UiTheme.ACCENT
 const C_LOCK := Color(0.85, 0.62, 0.36)
 
 ## The sections, in the order a builder would think of them. Taken from the
@@ -71,6 +71,7 @@ var _sheet: Control                 ## the grid, drawn in one pass
 var _font: Font
 var _touch := false
 var _slot := 74.0
+var _slot_base := 74.0
 var _slots: Array[Dictionary] = []  ## {rect, mat, larder} in draw order
 var _hover := -1
 var _picked := -1                   ## what the detail column is describing
@@ -81,9 +82,10 @@ func setup(t: Town, p: Player, m: MapScreen) -> void:
 	player = p
 	map = m
 	layer = 21                      ## over the map, which is 20
-	_font = ThemeDB.fallback_font
+	_font = UiTheme.font(600)
 	_touch = Platform.has_touch() or "--touchui" in OS.get_cmdline_user_args()
-	_slot = 82.0 if _touch else 74.0
+	_slot_base = 82.0 if _touch else 74.0
+	_slot = _slot_base
 	_build()
 	visible = false
 	set_process(true)
@@ -94,6 +96,7 @@ func _build() -> void:
 	_root = Control.new()
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP
+	UiTheme.apply(_root)
 	add_child(_root)
 
 	var backdrop := ColorRect.new()
@@ -185,6 +188,12 @@ func _draw_sheet() -> void:
 	var view := _sheet.size
 	var gap := 6.0
 	var cols := 8
+	# Shrink the slots on a short screen so the whole sheet fits.
+	var rows_total := 0
+	for sec0: Dictionary in SECTIONS:
+		rows_total += maxi(int(ceil(float(_names_in(str(sec0["of"])).size()) / float(cols))), 1)
+	var fixed_h := 92.0 + 16.0 + 42.0 + 30.0 * SECTIONS.size() + 60.0
+	_slot = clampf((view.y - 24.0 - fixed_h) / float(rows_total) - gap, 46.0, _slot_base)
 	var grid_w := cols * _slot + (cols - 1) * gap
 	var side_w := 380.0 if not _touch else 420.0
 	var pad := 26.0
@@ -204,8 +213,9 @@ func _draw_sheet() -> void:
 		(view.x - panel_w) * 0.5,
 		maxf((view.y - body_h) * 0.5, 12.0))
 	var panel := Rect2(origin, Vector2(panel_w, minf(body_h, view.y - 24.0)))
-	_sheet.draw_rect(panel, C_PANEL)
-	_sheet.draw_rect(panel, C_EDGE, false, 2.0)
+	var psb := UiTheme.panel_menu()
+	psb.set_content_margin_all(0)
+	_sheet.draw_style_box(psb, panel)
 
 	_draw_header(Rect2(origin + Vector2(pad, pad), Vector2(panel_w - pad * 2, head_h)))
 
@@ -213,7 +223,9 @@ func _draw_sheet() -> void:
 	var x0 := origin.x + pad
 	for sec: Dictionary in SECTIONS:
 		var names := _names_in(str(sec["of"]))
-		_text(Vector2(x0, y + 20.0), str(sec["title"]), 15, C_FAINT)
+		_text(Vector2(x0, y + 20.0), str(sec["title"]).to_upper(), 14, UiTheme.GOLD, UiTheme.display(700))
+		_sheet.draw_line(Vector2(x0 + 150.0, y + 15.0), Vector2(x0 + grid_w, y + 15.0),
+			Color(UiTheme.GOLD, 0.18), 1.0)
 		y += 30.0
 		for i in names.size():
 			var cell := Rect2(
@@ -233,7 +245,7 @@ func _draw_sheet() -> void:
 		Vector2(side_w, panel.end.y - (origin.y + pad + head_h) - pad)))
 
 	_text(Vector2(x0, panel.end.y - 16.0),
-		"[I] or [Esc] to close      a unit is about a metre and a half of wall",
+		"I or Esc to close      a unit is about a metre and a half of wall",
 		15, C_FAINT)
 
 
@@ -267,11 +279,11 @@ func _names_in(group: String) -> PackedStringArray:
 
 
 func _draw_header(r: Rect2) -> void:
-	_text(r.position + Vector2(0, 30), "THE STORES", 30, C_INK)
+	_text(r.position + Vector2(0, 30), "THE STORES", 30, UiTheme.ACCENT, UiTheme.display(700))
 
 	var purse := "%s coins" % town.coin_line()
 	var w := _font.get_string_size(purse, HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
-	_text(Vector2(r.end.x - w, r.position.y + 30), purse, 30, C_COIN)
+	_text(Vector2(r.end.x - w, r.position.y + 30), purse, 30, C_COIN, UiTheme.font(800))
 	var worth := "the yard is worth about %s      tier %d" % [
 		Town.grouped(town.stock_worth()), town.tier]
 	var w2 := _font.get_string_size(worth, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
@@ -293,16 +305,14 @@ func _draw_slot(i: int) -> void:
 	var known := town.knows(mat)
 	var lit := i == _hover or i == _picked
 
-	_sheet.draw_rect(r, C_SLOT_LIT if lit else C_SLOT)
-	# Two lines instead of a border: a slot with a lit top-left edge and a dark
-	# bottom-right one reads as a recess, which is what makes a grid of these
-	# look like somewhere things are kept rather than like a spreadsheet.
-	_sheet.draw_line(r.position, Vector2(r.end.x, r.position.y), C_BEVEL_LO, 2.0)
-	_sheet.draw_line(r.position, Vector2(r.position.x, r.end.y), C_BEVEL_LO, 2.0)
-	_sheet.draw_line(Vector2(r.position.x, r.end.y), r.end, C_BEVEL_HI, 1.0)
-	_sheet.draw_line(Vector2(r.end.x, r.position.y), r.end, C_BEVEL_HI, 1.0)
-	if lit:
-		_sheet.draw_rect(r, C_EDGE, false, 1.0)
+	# A rounded recess: dark well, faint lit lower lip; gold rim when picked.
+	var ssb := StyleBoxFlat.new()
+	ssb.bg_color = C_SLOT_LIT if lit else C_SLOT
+	ssb.set_corner_radius_all(8)
+	ssb.set_border_width_all(1)
+	ssb.border_color = Color(UiTheme.GOLD, 0.7) if lit else Color(1, 0.9, 0.7, 0.07)
+	ssb.anti_aliasing = true
+	_sheet.draw_style_box(ssb, r)
 
 	var fade := 1.0
 	if not known:
@@ -360,8 +370,13 @@ func _colour_of(mat: String) -> Color:
 ## use out loud. Not a stat block: the useful facts are how much there is, what
 ## it is for, and — when there is none — who would have to go where.
 func _draw_detail(r: Rect2) -> void:
-	_sheet.draw_rect(r, Color(0, 0, 0, 0.22))
-	_sheet.draw_rect(r, C_EDGE, false, 1.0)
+	var dsb := StyleBoxFlat.new()
+	dsb.bg_color = Color(0, 0, 0, 0.26)
+	dsb.border_color = Color(UiTheme.GOLD, 0.2)
+	dsb.set_border_width_all(1)
+	dsb.set_corner_radius_all(10)
+	dsb.anti_aliasing = true
+	_sheet.draw_style_box(dsb, r)
 	var x := r.position.x + 16.0
 	var y := r.position.y + 34.0
 	var wrap := r.size.x - 32.0
@@ -380,7 +395,7 @@ func _draw_detail(r: Rect2) -> void:
 
 	_draw_cube(Vector2(r.end.x - 52.0, r.position.y + 52.0), 58.0, mat,
 		_colour_of(mat), 1.0 if town.knows(mat) else 0.3)
-	_text(Vector2(x, y), mat.replace("_", " ").capitalize(), 24, C_INK)
+	_text(Vector2(x, y), mat.replace("_", " ").capitalize(), 24, C_INK, UiTheme.font(800))
 	y += 34.0
 
 	if not town.knows(mat):
@@ -462,10 +477,11 @@ func _larder_note(mat: String) -> String:
 
 # ----------------------------------------------------------------- text helpers
 
-func _text(at: Vector2, s: String, size: int, colour: Color) -> void:
-	_sheet.draw_string(_font, at + Vector2(1, 1), s, HORIZONTAL_ALIGNMENT_LEFT,
-		-1, size, Color(0, 0, 0, 0.7))
-	_sheet.draw_string(_font, at, s, HORIZONTAL_ALIGNMENT_LEFT, -1, size, colour)
+func _text(at: Vector2, s: String, size: int, colour: Color, f: Font = null) -> void:
+	var ft := f if f != null else _font
+	_sheet.draw_string(ft, at + Vector2(0, 1), s, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, size, Color(0, 0, 0, 0.6))
+	_sheet.draw_string(ft, at, s, HORIZONTAL_ALIGNMENT_LEFT, -1, size, colour)
 
 
 ## Word wrap by hand, because draw_string has no idea how wide the column is.

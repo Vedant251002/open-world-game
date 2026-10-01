@@ -31,7 +31,25 @@ var town: Town
 var _target: Worker = null
 var _crop: Node3D = null
 var _purse: Label
-var _keys: Label
+var _keys: Control
+var _k := 1.0                       ## type multiplier for phones
+var _status: PanelContainer
+var _sky_icon: UiIcon
+var _coin_icon: UiIcon
+var _day_label: Label
+var _time_label: Label
+var _coin_word: Label
+var _realm_card: PanelContainer
+var _crew_rows: Array[Dictionary] = []
+var _prompt_box: PanelContainer
+var _prompt_key: PanelContainer
+var _prompt_key_label: Label
+var _prompt_name: Label
+var _prompt_verb: Label
+var _prompt_state := ""
+var _toast_box: PanelContainer
+var _stack: VBoxContainer
+var _bottom: VBoxContainer          ## subtitle, toast, prompt: stacked, never overlapping
 ## What the player is holding, bottom right. Empty when unarmed.
 var _arms: Label
 var warfare: Node = null
@@ -52,7 +70,6 @@ var _root: Control
 var _crosshair: Control
 var _crosshair_dot: ColorRect
 var _prompt: Label
-var _clockline: Label
 var _crewbox: VBoxContainer
 var _bar: PanelContainer
 var _barlabel: Label
@@ -101,6 +118,7 @@ func _build() -> void:
 	_root = Control.new()
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	UiTheme.apply(_root)
 	add_child(_root)
 
 	_crosshair = UiTheme.crosshair(7.0, 3.0, 2.0)
@@ -109,77 +127,66 @@ func _build() -> void:
 	_crosshair_dot.visible = false
 	_root.add_child(_crosshair_dot)
 
-	_clockline = _label("", 32 if _touch else 18, INK)
-	_clockline.position = Vector2(22, 18)
-	_root.add_child(_clockline)
+	# Bigger on a phone, where the 1600x900 canvas is shown at under half size,
+	# but not so big the column covers a third of a landscape screen: at 1.75
+	# it did. 1.4 keeps the smallest line about 14 CSS px on a 390 px phone.
+	_k = 1.4 if _touch else 1.0
+	_build_topleft()
 
-	# The purse, and nothing else about the economy.
-	#
-	# What used to be here was "timb 620   plan 430   thatc 340   cobb 620",
-	# which is four numbers nobody can act on: the player cannot spend timber,
-	# only ask for a building, and the worker is the one who says when the
-	# stone has run out. One figure that goes up when the fields come in and
-	# down when a house goes up is the whole of what the player needs.
-	_purse = _label("", 38 if _touch else 24, COIN)
-	_purse.position = Vector2(22, 58 if _touch else 44)
-	_root.add_child(_purse)
+	# One column at the bottom centre: what was said, what happened, and what
+	# [E] will do. Hidden rows take no room, so nothing ever overlaps.
+	_bottom = VBoxContainer.new()
+	_bottom.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_bottom.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_bottom.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_bottom.alignment = BoxContainer.ALIGNMENT_END
+	_bottom.add_theme_constant_override("separation", int(10 * _k))
+	_bottom.offset_bottom = -(150 if _touch else 112)
+	_root.add_child(_bottom)
 
-	_crewbox = VBoxContainer.new()
-	_crewbox.position = Vector2(22, 100 if _touch else 70)
-	_crewbox.add_theme_constant_override("separation", 3)
-	_root.add_child(_crewbox)
-	# Rows are added as the crew grows; three to start.
-	for _i in 3:
-		_crewbox.add_child(_label("", 26 if _touch else 15, DIM))
-		_crew_tint.append(Color.BLACK)
+	# Built here so the order is subtitle, toast, prompt from top to bottom.
+	_build_subtitle()
 
-	# Whatever the kingdom wants to say about itself, under the roster.
-	_realm_box = VBoxContainer.new()
-	_realm_box.position = Vector2(22, 250 if _touch else 166)
-	_realm_box.add_theme_constant_override("separation", 2)
-	_root.add_child(_realm_box)
+	# Where a thing you are looking at is named, and what [E] will do to it.
+	_prompt_box = PanelContainer.new()
+	_prompt_box.add_theme_stylebox_override("panel", UiTheme.card(1.0, 18))
+	_prompt_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_prompt_box.visible = false
+	_bottom.add_child(_prompt_box)
+	var prow := HBoxContainer.new()
+	prow.add_theme_constant_override("separation", int(10 * _k))
+	_prompt_box.add_child(prow)
+	_prompt_key = UiTheme.key_cap("TALK" if _touch else "E", int(15 * _k))
+	_prompt_key_label = _prompt_key.get_child(0) as Label
+	prow.add_child(_prompt_key)
+	_prompt_name = _label("", int(19 * _k), INK)
+	_prompt_name.add_theme_font_override("font", UiTheme.font(800))
+	prow.add_child(_prompt_name)
+	_prompt_verb = _label("", int(17 * _k), DIM)
+	prow.add_child(_prompt_verb)
 
-	# Two keys, said once and left there. A screen nobody can find is a screen
-	# that does not exist, and neither the stores nor the map announce
-	# themselves any other way on a keyboard — the phone build has buttons for
-	# both, which is why this line is not drawn there.
-	if not _touch:
-		_keys = _label("[I] stores      [M] map      [C] chat", 14, Color(0.55, 0.53, 0.50))
-		# Below the roster, which is three lines of fifteen-point text starting
-		# at seventy and therefore finishes around a hundred and thirty.
-		_keys.position = Vector2(22, 142)
-		_root.add_child(_keys)
-
-	_prompt = _label("", 34 if _touch else 19, INK)
-	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_prompt.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_prompt.offset_left = -420
-	_prompt.offset_right = 420
-	_prompt.offset_top = -132
-	_prompt.offset_bottom = -104
-	_root.add_child(_prompt)
-
-	_toast = _label("", 30 if _touch else 16, WARN)
+	_toast_box = PanelContainer.new()
+	_toast_box.add_theme_stylebox_override("panel", UiTheme.card(1.0, 18))
+	_toast_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_toast_box.visible = false
+	_bottom.add_child(_toast_box)
+	_bottom.move_child(_toast_box, _prompt_box.get_index())
+	_toast = _label("", int(16 * _k), WARN, 600)
 	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_toast.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_toast.offset_left = -460
-	_toast.offset_right = 460
-	_toast.offset_top = -166
-	_toast.offset_bottom = -142
-	_root.add_child(_toast)
+	_toast.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_toast_box.add_child(_toast)
 
-	_arms = _label("", 30 if _touch else 18, INK)
+	_arms = _label("", int(18 * _k), INK, 700)
 	_arms.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_arms.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	_arms.offset_left = -640
-	_arms.offset_right = -24
-	_arms.offset_top = -60
-	_arms.offset_bottom = -28
+	_arms.offset_right = -28
+	_arms.offset_top = -64
+	_arms.offset_bottom = -30
 	_root.add_child(_arms)
 
 	_build_bar()
 	_build_assumptions()
-	_build_subtitle()
 	_place_minimap()
 	get_viewport().size_changed.connect(_reflow)
 	_reflow()
@@ -195,21 +202,142 @@ func _build() -> void:
 	chat.sent.connect(_on_chat_sent)
 	chat.closed.connect(_on_chat_closed)
 	add_child(chat)
-	# A way in that is not a key, for anyone who does not know [C]. The
-	# pointer is captured while walking, so this is for the moments it is
-	# free — the phone build has a button of its own.
+
+
+## The top-left stack: time and purse in one card, a card per crew member, the
+## kingdom's own lines, and a row of key hints. One column, one rhythm.
+func _build_topleft() -> void:
+	var k := _k
+	_stack = VBoxContainer.new()
+	_stack.position = Vector2(24, 20)
+	_stack.add_theme_constant_override("separation", int(8 * k))
+	_root.add_child(_stack)
+
+	# Time of day and money, side by side.
+	_status = PanelContainer.new()
+	_status.add_theme_stylebox_override("panel", UiTheme.card())
+	_stack.add_child(_status)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", int(12 * k))
+	_status.add_child(row)
+	_sky_icon = UiIcon.make("sun", 30.0 * k, Color("#ffd27a"))
+	_sky_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(_sky_icon)
+	var tcol := VBoxContainer.new()
+	tcol.add_theme_constant_override("separation", 0)
+	row.add_child(tcol)
+	_day_label = UiTheme.title("DAY 1", int(13 * k), UiTheme.GOLD)
+	tcol.add_child(_day_label)
+	_time_label = _label("07:00", int(24 * k), INK, 800)
+	tcol.add_child(_time_label)
+	var sep := ColorRect.new()
+	sep.color = UiTheme.EDGE
+	sep.custom_minimum_size = Vector2(1, 34 * k)
+	sep.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(sep)
+	_coin_icon = UiIcon.make("coin", 24.0 * k, COIN)
+	_coin_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(_coin_icon)
+	var pcol := VBoxContainer.new()
+	pcol.add_theme_constant_override("separation", 0)
+	row.add_child(pcol)
+	_purse = _label("0", int(24 * k), COIN, 800)
+	pcol.add_child(_purse)
+	_coin_word = UiTheme.title("COINS", int(12 * k), UiTheme.DIM)
+	pcol.add_child(_coin_word)
+
+	# Crew cards are added as the crew grows; three to start.
+	for _i in 3:
+		_add_crew_row()
+
+	# What the kingdom has to say for itself.
+	_realm_card = PanelContainer.new()
+	_realm_card.add_theme_stylebox_override("panel", UiTheme.card(0.8))
+	_realm_card.visible = false
+	_stack.add_child(_realm_card)
+	var rrow := HBoxContainer.new()
+	rrow.add_theme_constant_override("separation", int(10 * k))
+	_realm_card.add_child(rrow)
+	var pi := UiIcon.make("people", 20.0 * k, UiTheme.DIM)
+	pi.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	rrow.add_child(pi)
+	_realm_box = VBoxContainer.new()
+	_realm_box.add_theme_constant_override("separation", 1)
+	rrow.add_child(_realm_box)
+
+	# Key hints, said once and left there. The phone build has buttons instead.
 	if not _touch:
+		var pill := PanelContainer.new()
+		pill.add_theme_stylebox_override("panel", UiTheme.card(0.7, 14))
+		pill.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		_stack.add_child(pill)
+		var hints := HBoxContainer.new()
+		hints.add_theme_constant_override("separation", 14)
+		_keys = hints
+		pill.add_child(hints)
+		hints.add_child(UiTheme.chip("I", "stores"))
+		hints.add_child(UiTheme.chip("M", "map"))
+		var ch := HBoxContainer.new()
+		ch.add_theme_constant_override("separation", 6)
+		ch.add_child(UiTheme.key_cap("C"))
 		_chat_button = Button.new()
-		_chat_button.text = "chat  [C]"
+		_chat_button.text = "chat"
+		_chat_button.flat = true
 		_chat_button.focus_mode = Control.FOCUS_NONE
-		_chat_button.add_theme_font_size_override("font_size", 14)
-		_chat_button.set_anchors_preset(Control.PRESET_CENTER_LEFT)
-		_chat_button.offset_left = 14
-		_chat_button.offset_right = 96
-		_chat_button.offset_top = -16
-		_chat_button.offset_bottom = 16
+		_chat_button.add_theme_font_override("font", UiTheme.font(600))
+		_chat_button.add_theme_font_size_override("font_size", UiTheme.fs(13))
+		_chat_button.add_theme_color_override("font_color", UiTheme.DIM)
+		_chat_button.add_theme_color_override("font_hover_color", UiTheme.ACCENT)
+		var empty := StyleBoxEmpty.new()
+		for n: String in ["normal", "hover", "pressed", "focus"]:
+			_chat_button.add_theme_stylebox_override(n, empty)
 		_chat_button.pressed.connect(toggle_chat)
-		add_child(_chat_button)
+		ch.add_child(_chat_button)
+		hints.add_child(ch)
+
+
+func _add_crew_row() -> void:
+	var k := _k
+	var card := PanelContainer.new()
+	var sb := UiTheme.card(0.86)
+	sb.content_margin_top = UiTheme.px(7)
+	sb.content_margin_bottom = UiTheme.px(7)
+	card.add_theme_stylebox_override("panel", sb)
+	card.custom_minimum_size = Vector2(300 * k, 0)
+	card.visible = false
+	_stack.add_child(card)
+	# Crew sit between the status card and the realm card.
+	_stack.move_child(card, 1 + _crew_rows.size())
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", int(10 * k))
+	card.add_child(row)
+	var dot := UiIcon.make("dot", 14.0 * k, DIM)
+	dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(dot)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 0)
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(col)
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", int(8 * k))
+	col.add_child(head)
+	var nm := _label("", int(16 * k), INK, 800)
+	head.add_child(nm)
+	var role := _label("", int(12 * k), UiTheme.GOLD, 700)
+	role.size_flags_vertical = Control.SIZE_SHRINK_END
+	head.add_child(role)
+	var st := _label("", int(13 * k), DIM, 500)
+	st.clip_text = true
+	col.add_child(st)
+	_crew_rows.append({"card": card, "dot": dot, "name": nm, "role": role, "status": st,
+		"tint": Color.BLACK, "text": ""})
+
+
+## Width a label needs for its text, so a one-liner is a pill and not a banner.
+static func _fit(l: Label, text: String, max_w: float, size: int, weight: int = 500) -> void:
+	var w := UiTheme.font(weight).get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1,
+		UiTheme.fs(size)).x + 6.0
+	l.custom_minimum_size = Vector2(clampf(w, 30.0, max_w), 0)
 
 
 static func _ignore_mouse(node: Node) -> void:
@@ -237,7 +365,9 @@ func _build_bar() -> void:
 	_bar = PanelContainer.new()
 	_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_bar.offset_bottom = -22
-	_bar.add_theme_stylebox_override("panel", _panel_style())
+	var bsb := UiTheme.panel_active()
+	bsb.set_corner_radius_all(int(UiTheme.px(UiTheme.R_LG)))
+	_bar.add_theme_stylebox_override("panel", bsb)
 	_bar.visible = false
 	_root.add_child(_bar)
 
@@ -245,7 +375,7 @@ func _build_bar() -> void:
 	col.add_theme_constant_override("separation", 6)
 	_bar.add_child(col)
 
-	_barlabel = _label("", 28 if _touch else 15, DIM)
+	_barlabel = _label("", 28 if _touch else 16, UiTheme.ACCENT, 700)
 	col.add_child(_barlabel)
 
 	# Tappable phrases, above the field.
@@ -264,7 +394,7 @@ func _build_bar() -> void:
 	_entry = LineEdit.new()
 	_entry.placeholder_text = "tell them what to do, or ask them something…"
 	_entry.custom_minimum_size = Vector2(0, 90.0 if _touch else 34.0)
-	_entry.add_theme_font_size_override("font_size", 34 if _touch else 18)
+	_entry.add_theme_font_size_override("font_size", 34 if _touch else 17)
 	_entry.text_submitted.connect(_on_submit)
 	col.add_child(_entry)
 
@@ -272,20 +402,20 @@ func _build_bar() -> void:
 ## A subtitle strip above the prompt line: who spoke, and what they said.
 func _build_subtitle() -> void:
 	_subtitle = PanelContainer.new()
-	_subtitle.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_subtitle.offset_left = -470
-	_subtitle.offset_right = 470
-	_subtitle.offset_bottom = -176
-	_subtitle.offset_top = -240
-	_subtitle.add_theme_stylebox_override("panel", _panel_style())
+	_subtitle.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	var ssb := UiTheme.panel_active()
+	ssb.set_corner_radius_all(int(UiTheme.px(UiTheme.R_LG)))
+	ssb.content_margin_left = UiTheme.px(20)
+	ssb.content_margin_right = UiTheme.px(20)
+	_subtitle.add_theme_stylebox_override("panel", ssb)
 	_subtitle.visible = false
-	_root.add_child(_subtitle)
+	_bottom.add_child(_subtitle)
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 2)
 	_subtitle.add_child(col)
-	_subtitle_who = _label("", 24 if _touch else 14, DIM)
+	_subtitle_who = UiTheme.title("", 24 if _touch else 14, UiTheme.GOLD)
 	col.add_child(_subtitle_who)
-	_subtitle_line = _label("", 30 if _touch else 18, INK)
+	_subtitle_line = _label("", 30 if _touch else 19, INK, 600)
 	_subtitle_line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_subtitle_line.custom_minimum_size = Vector2(900, 0)
 	col.add_child(_subtitle_line)
@@ -299,33 +429,38 @@ func subtitle(w: Worker, line: String, kind: String) -> void:
 		chat.log_line(w, "them", line, kind)
 	if kind not in ["talk", "question", "refuse", "done"]:
 		return
-	_subtitle_who.text = w.display_name()
+	_subtitle_who.text = w.display_name().to_upper()
 	_subtitle_line.text = line
+	_fit(_subtitle_line, line, 900.0 if not _touch else 1400.0, 30 if _touch else 19, 600)
 	_subtitle_line.add_theme_color_override("font_color",
 		WARN if kind == "question" else (Color("#ffb4a2") if kind == "refuse" else INK))
 	_subtitle_left = clampf(3.0 + line.length() * 0.05, 4.0, 16.0)
 	_subtitle.visible = true
-	# Sized to the text, so a one-liner is not a banner.
-	_subtitle.offset_top = _subtitle.offset_bottom - _subtitle.get_combined_minimum_size().y
 
 
 func _build_assumptions() -> void:
 	_assume = PanelContainer.new()
 	_assume.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_assume.offset_top = 18
-	_assume.offset_bottom = 260
-	_assume.add_theme_stylebox_override("panel", _panel_style())
+	_assume.offset_top = 20
+	_assume.offset_bottom = 21
+	var asb := UiTheme.panel_active()
+	asb.set_corner_radius_all(int(UiTheme.px(UiTheme.R_LG)))
+	asb.content_margin_left = UiTheme.px(18)
+	asb.content_margin_right = UiTheme.px(18)
+	_assume.add_theme_stylebox_override("panel", asb)
 	_assume.visible = false
 	_root.add_child(_assume)
 
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 5)
 	_assume.add_child(col)
-	_assume_title = _label("", 26 if _touch else 15, WARN)
+	var acap := UiTheme.title("ASSUMPTIONS", 22 if _touch else 12, UiTheme.DIM)
+	col.add_child(acap)
+	_assume_title = _label("", 26 if _touch else 16, WARN, 800)
 	_assume_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_assume_title.custom_minimum_size = Vector2(390, 0)
 	col.add_child(_assume_title)
-	_assume_body = _label("", 26 if _touch else 15, INK)
+	_assume_body = _label("", 26 if _touch else 15, INK, 500)
 	_assume_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_assume_body.custom_minimum_size = Vector2(390, 0)
 	col.add_child(_assume_body)
@@ -387,8 +522,8 @@ static func _panel_style() -> StyleBoxFlat:
 	return UiTheme.panel()
 
 
-static func _label(text: String, size: int, colour: Color) -> Label:
-	return UiTheme.label(text, size, colour)
+static func _label(text: String, size: int, colour: Color, weight: int = 500) -> Label:
+	return UiTheme.label(text, size, colour, weight)
 
 
 # ------------------------------------------------------------------- runtime
@@ -410,53 +545,81 @@ func _on_looked_at(node: Node) -> void:
 
 func _process(delta: float) -> void:
 	if clock != null:
-		_clockline.text = clock.clock_text()
+		var h := int(clock.hour)
+		var tt := "%02d:%02d" % [h, int((clock.hour - h) * 60.0)]
+		if _time_label.text != tt:
+			_time_label.text = tt
+		var dt := "DAY %d" % clock.day
+		if _day_label.text != dt:
+			_day_label.text = dt
+		# Sun by day, moon from dusk to dawn; a warm tint near the horizon.
+		var night := clock.hour < 5.5 or clock.hour >= 19.5
+		var low := (clock.hour >= 5.5 and clock.hour < 8.0) or (clock.hour >= 17.5 and clock.hour < 19.5)
+		_sky_icon.set_kind("moon" if night else "sun",
+			Color("#b9c8ff") if night else (Color("#ff9d5c") if low else Color("#ffd27a")))
 	if realm != null and realm.has_method("hud_lines"):
 		var lines: Array = realm.hud_lines()
 		while _realm_labels.size() < lines.size():
-			var l := _label("", 24 if _touch else 14, DIM)
+			var l := _label("", int(14 * _k), DIM, 600)
 			_realm_box.add_child(l)
 			_realm_labels.append(l)
 		for i in _realm_labels.size():
 			var want := str(lines[i]) if i < lines.size() else ""
 			if _realm_labels[i].text != want:
 				_realm_labels[i].text = want
+		var any := not lines.is_empty()
+		if _realm_card.visible != any:
+			_realm_card.visible = any
 	if warfare != null and warfare.has_method("player_status"):
 		_arms.text = str(warfare.player_status())
 		var hp := float(warfare.get("player_health"))
 		if hp < 100.0:
 			_arms.text = ("health %d     " % int(hp)) + _arms.text
 	if town != null:
-		_purse.text = "%s coins" % town.coin_line()
+		var pt := town.coin_line()
+		pt = pt.replace(" coins", "")
+		if _purse.text != pt:
+			_purse.text = pt
 		# Only when it actually changes. Setting a theme override marks the
-		# control dirty and queues a re-layout, so doing it unconditionally is
-		# a font shaping pass every frame for a colour that changes about once
-		# a session.
+		# control dirty and queues a re-layout.
 		var owed := town.coins < 0
 		if owed != _in_debt:
 			_in_debt = owed
 			_purse.add_theme_color_override("font_color", DEBT if owed else COIN)
+			_coin_icon.set_kind("coin", DEBT if owed else COIN)
 
 	# The roster is the people who work for you, with their job. Citizens are
 	# not listed: a dozen names of people you have not spoken to is a phone
 	# book, and the point of the roster is to hold the crew in your head.
 	var hired: Array[Worker] = crew.hired() if crew != null else []
-	while _crewbox.get_child_count() < hired.size():
-		_crewbox.add_child(_label("", 26 if _touch else 15, DIM))
-		_crew_tint.append(Color.BLACK)
-	for i in _crewbox.get_child_count():
-		var l := _crewbox.get_child(i) as Label
+	while _crew_rows.size() < hired.size():
+		_add_crew_row()
+	for i in _crew_rows.size():
+		var row: Dictionary = _crew_rows[i]
+		var card: Control = row["card"]
 		if i >= hired.size():
-			l.text = ""
+			if card.visible:
+				card.visible = false
 			continue
+		if not card.visible:
+			card.visible = true
 		var w: Worker = hired[i]
-		var job := w.role.name if w.role != null and w.role.id != "builder" else ""
-		l.text = "%s%s — %s" % [w.display_name(),
-			(" the " + job) if job != "" else "", w.status_text()]
-		var tint := WARN if w.pending_question != "" else (INK if w.busy() else DIM)
-		if _crew_tint[i] != tint:
-			_crew_tint[i] = tint
-			l.add_theme_color_override("font_color", tint)
+		var job := w.role.name if w.role != null and w.role.id != "builder" else "Builder"
+		var nm: Label = row["name"]
+		if nm.text != w.display_name():
+			nm.text = w.display_name()
+		var rl: Label = row["role"]
+		if rl.text != job.to_upper():
+			rl.text = job.to_upper()
+		var st: Label = row["status"]
+		var stt := w.status_text()
+		if st.text != stt:
+			st.text = stt
+		# Status colour: amber when waiting on you, green when at work, grey idle.
+		var tint := WARN if w.pending_question != "" else (UiTheme.GOOD if w.busy() else UiTheme.FAINT)
+		if row["tint"] != tint:
+			row["tint"] = tint
+			(row["dot"] as UiIcon).set_kind("dot", tint)
 
 	if _web != null and _typing_for != null:
 		var said := _web.take()
@@ -469,22 +632,36 @@ func _process(delta: float) -> void:
 		_toast_left -= delta
 		if _toast_left <= 0.0:
 			_toast.text = ""
+			_toast_box.visible = false
 	if _subtitle_left > 0.0:
 		_subtitle_left -= delta
 		if _subtitle_left <= 0.0:
 			_subtitle.visible = false
 
+	var pname := ""
+	var pverb := ""
+	var pcol := INK
+	_bottom.offset_bottom = (_bar.offset_top - 14.0) if _bar.visible else -(150 if _touch else 112)
 	if _typing_for != null:
-		_prompt.text = ""
+		pass
 	elif _target != null:
+		pname = _target.display_name()
 		if _target.pending_question != "":
-			_prompt.text = "%s is waiting on an answer   [E]" % _target.display_name()
+			pverb = "is waiting on an answer"
+			pcol = WARN
 		else:
-			_prompt.text = "%s   [E] speak" % _target.display_name()
+			pverb = "speak"
 	elif _crop != null and is_instance_valid(_crop):
-		_prompt.text = "ripe %s   [E] pick" % str(_crop.get_meta("crop_kind", "crop"))
-	else:
-		_prompt.text = ""
+		pname = "Ripe %s" % str(_crop.get_meta("crop_kind", "crop"))
+		pverb = "pick"
+	var pstate := pname + "|" + pverb
+	if pstate != _prompt_state:
+		_prompt_state = pstate
+		_prompt_box.visible = pname != ""
+		_prompt_name.text = pname
+		_prompt_name.add_theme_color_override("font_color", pcol)
+		_prompt_verb.text = pverb
+		_prompt_verb.add_theme_color_override("font_color", pcol if pcol != INK else DIM)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -660,7 +837,7 @@ func _fill_phrases(w: Worker) -> void:
 		var b := Button.new()
 		b.text = text
 		b.focus_mode = Control.FOCUS_NONE
-		b.add_theme_font_size_override("font_size", 34 if _touch else 18)
+		UiTheme.style_button(b, 34 if _touch else 15)
 		# Forty-four physical pixels is the smallest thing a thumb hits
 		# reliably. On the half-scale canvas of a phone that is ninety here.
 		b.custom_minimum_size = Vector2(0, 90.0 if _touch else 44.0)
@@ -710,4 +887,6 @@ func show_assumptions(w: Worker, assumptions: Array) -> void:
 
 func toast(text: String, seconds: float = 4.0) -> void:
 	_toast.text = text
+	_fit(_toast, text, 860.0 if not _touch else 1400.0, int(16 * _k), 600)
+	_toast_box.visible = text != ""
 	_toast_left = seconds

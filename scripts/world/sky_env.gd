@@ -7,13 +7,17 @@ class_name SkyEnv
 ## to a finished wall in the low afternoon sun. The day cycle is therefore a
 ## gameplay readout as much as a look.
 
-## How much fill light a full moon is worth. Tuned by measurement: at the
-## old value the town after dark came out at one part in 255.
-const MOON_FILL := 3.4
-## The compatibility renderer needs six times as much to land in the same place.
-## Not a guess: swept and measured against the Forward+ night, which sits at
-## about 33/255 mean. It only applies after dark, so daylight is untouched.
-const MOON_FILL_COMPAT := 20.0
+## Moonlight strength. The moon is a real shadow-casting light, so a bright
+## night has readable silhouettes and long blue shadows rather than a flat fill.
+const MOON_ENERGY := 0.85
+## Fill-light multipliers for the compatibility renderer (no sky radiance
+## ambient there). Kept modest: shade should be a cool, darker version of the
+## sunlit colour, not the same brightness.
+const AMBIENT_COMPAT_DAY := 5.0
+const AMBIENT_COMPAT_NIGHT := 3.0
+const EXPOSURE_COMPAT := 0.9
+const EXPOSURE_FPLUS := 0.9
+const FOG_DENSITY := 0.0016
 const SUNRISE := 6.0
 const SUNSET := 20.0
 
@@ -31,11 +35,22 @@ var _no_ssr := false
 var _no_sea := false
 var _no_gi := false
 var _no_clouds := false
+var _no_shadow_moon := false
+var _vignette_mat: ShaderMaterial
+var _clock: Node = null
+var _clock_synced := true
+var _last_pushed_hour := -1.0
+var _cloud_t := 0.0
+var _push_due := 0.0
 ## True on the compatibility renderer, which is what the web and mobile
 ## exports run. It is not a lesser version of the same lighting — several
 ## things simply are not there, and ambient light is the one that decides
 ## whether the game is playable.
 var _compat := false
+## A phone screen is smaller, dimmer and often looked at outdoors, so the same
+## frame that reads as moody on a monitor reads as murky there. Fill and
+## exposure are lifted on the phone profile, most of all at night.
+var _handheld := false
 
 const SKY_SHADER := preload("res://scripts/core/sky.gdshader")
 
@@ -54,21 +69,41 @@ var hour: float = 9.0:
 		_apply_time()
 
 # Keyframed palette: hour -> [sky_top, horizon, sun_colour, sun_energy, ambient]
+# Colours are chosen as swatches of the real sky at that hour: deep blue zenith
+# with a pale bright horizon at noon, salmon-and-teal at sunrise, orange-violet
+# at dusk, and a navy night with a cold afterglow on the horizon.
 const KEYS := [
-	[0.0,  Color("#050a18"), Color("#0d1424"), Color("#5a6a90"), 0.04, 0.10],
-	[5.0,  Color("#0b1430"), Color("#2a2740"), Color("#7a6a80"), 0.07, 0.16],
-	[6.5,  Color("#2a3f74"), Color("#d98a5e"), Color("#ffb07a"), 0.50, 0.30],
-	[8.5,  Color("#3f77c4"), Color("#a9c6e0"), Color("#ffeed2"), 0.88, 0.46],
-	[12.0, Color("#2f6fd0"), Color("#bcd6ec"), Color("#fff8ec"), 1.00, 0.52],
-	[16.0, Color("#3a72c8"), Color("#c0d4e6"), Color("#fff0d6"), 0.92, 0.50],
-	[18.5, Color("#3a548f"), Color("#f0984f"), Color("#ff9e57"), 0.68, 0.36],
-	[20.0, Color("#22305e"), Color("#c4633c"), Color("#dd8153"), 0.34, 0.24],
-	[21.5, Color("#0d1631"), Color("#3a3450"), Color("#6a6a92"), 0.07, 0.14],
-	[24.0, Color("#050a18"), Color("#0d1424"), Color("#5a6a90"), 0.04, 0.10],
+	[0.0,  Color("#0a1a48"), Color("#25397a"), Color("#6f86c0"), 0.00, 0.22],
+	[4.5,  Color("#0c1d4e"), Color("#2a3f80"), Color("#6f86c0"), 0.00, 0.22],
+	[5.5,  Color("#1b2b63"), Color("#7a5478"), Color("#ff9a70"), 0.20, 0.28],
+	[6.5,  Color("#2f5296"), Color("#eeb083"), Color("#ffb27a"), 0.80, 0.34],
+	[8.5,  Color("#3577d3"), Color("#b0d3f0"), Color("#ffe9c8"), 1.25, 0.42],
+	[12.0, Color("#3373d2"), Color("#b4d6f2"), Color("#fff4e2"), 1.40, 0.46],
+	[16.0, Color("#3672cd"), Color("#b8d4ee"), Color("#ffe9c4"), 1.30, 0.44],
+	[18.5, Color("#3a56a4"), Color("#f2b276"), Color("#ff9448"), 0.95, 0.36],
+	[19.8, Color("#3f4d98"), Color("#e48c62"), Color("#f07a44"), 0.45, 0.30],
+	[20.8, Color("#1a2660"), Color("#835a8a"), Color("#c86a60"), 0.10, 0.25],
+	[21.8, Color("#0e1f52"), Color("#38407a"), Color("#6f86c0"), 0.00, 0.22],
+	[24.0, Color("#0a1a48"), Color("#25397a"), Color("#6f86c0"), 0.00, 0.22],
 ]
 
 
-## The lift/gamma/gain grade used by adjustment_color_correction.
+## Shadow-lift curve, per channel: a slight lift below mid grey, identity at the
+## top, so dark timber and shaded facades do not crush to black under the ACES
+## toe while the highlights are left alone. A 1D LUT (height 1, one texel per
+## input level) is the unambiguous form of adjustment_color_correction.
+static func _build_curve_lut() -> Texture2D:
+	var n := 256
+	var img := Image.create(n, 1, false, Image.FORMAT_RGB8)
+	for i in n:
+		var x := float(i) / float(n - 1)
+		var y := pow(x, 0.80)
+		y = lerpf(y, x, smoothstep(0.55, 1.0, x))
+		img.set_pixel(i, 0, Color(y, y, y))
+	return ImageTexture.create_from_image(img)
+
+
+## (Legacy, unused) The lift/gamma/gain grade used by adjustment_color_correction.
 ##
 ## Godot's adjustment_color_correction wants a 3x3 color matrix laid out in a
 ## 4x4 texture, and it samples it in a way that is not a normal image lookup:
@@ -129,10 +164,38 @@ func _ready() -> void:
 	_no_sea = "--nosea" in args
 	_no_gi = "--nogi" in args
 	_no_clouds = "--noclouds" in args
+	_no_shadow_moon = "--nomoonshadow" in args
 	_compat = RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	_handheld = Platform.is_handheld()
 	_build_environment()
 	_build_lights()
+	_build_vignette()
 	_apply_time()
+	_last_pushed_hour = hour
+
+
+## Follows the game clock. Nothing else pushes the hour into the sky, which is
+## how the sun used to stay put while the HUD clock ran. A manual set (the
+## screenshot tool, tests, --hour style overrides) changes `hour` behind our
+## back; once that is seen the clock stops driving the sky so it holds still.
+func _process(delta: float) -> void:
+	if _clock == null and get_parent() != null:
+		_clock = get_parent().get("clock")
+	if _clock_synced and _clock != null:
+		if absf(hour - _last_pushed_hour) > 0.0005:
+			_clock_synced = false          # somebody else set the hour
+		else:
+			var h: float = _clock.hour
+			if absf(h - hour) > 0.01:
+				hour = h
+				_last_pushed_hour = h
+	# Clouds drift on a slow clock pushed a few times a second, not on TIME
+	# (see sky.gdshader: TIME would re-render the radiance cubemap every frame).
+	_cloud_t += delta
+	_push_due -= delta
+	if _push_due <= 0.0 and sky_mat != null:
+		_push_due = 0.25
+		sky_mat.set_shader_parameter("cloud_time", _cloud_t)
 
 
 func _build_environment() -> void:
@@ -144,8 +207,11 @@ func _build_environment() -> void:
 
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
-	sky.radiance_size = Sky.RADIANCE_SIZE_256
-	sky.process_mode = Sky.PROCESS_MODE_REALTIME
+	# Radiance only feeds reflections (and Forward+ ambient); the shader takes a
+	# cheap path when rendering it, and never reads TIME, so AUTOMATIC re-renders
+	# it only when the palette or cloud clock actually changes.
+	sky.radiance_size = Sky.RADIANCE_SIZE_64 if _compat else Sky.RADIANCE_SIZE_128
+	sky.process_mode = Sky.PROCESS_MODE_AUTOMATIC
 	env.sky = sky
 
 	# Where the fill light comes from.
@@ -193,8 +259,8 @@ func _build_environment() -> void:
 	# All three exist in 4.7 (LINEAR=0, REINHARDT=1, FILMIC=2, ACES=3, AGX=4;
 	# there is no TONE_MAPPER_NEUTRAL). Re-run _tools/ab_tonemap.py after any
 	# palette change rather than re-deriving this by argument.
-	env.tonemap_exposure = 1.02 if _compat else 0.86
-	env.tonemap_white = 3.0
+	env.tonemap_exposure = EXPOSURE_COMPAT if _compat else EXPOSURE_FPLUS
+	env.tonemap_white = 4.0
 
 	# Contact shadows and bounce. This is what stops a voxel town from reading
 	# as a pile of flat coloured boxes.
@@ -291,28 +357,34 @@ func _build_environment() -> void:
 	env.ssr_fade_in = 0.2
 	env.ssr_fade_out = 2.0
 
+	# Bloom on the sun, bright cloud edges, windows and lamps. A low HDR
+	# threshold with soft-light blending gives a gentle halo on everything
+	# bright rather than a hard glow on the sun alone.
 	env.glow_enabled = true
-	env.glow_intensity = 0.55
+	env.glow_intensity = 0.8
 	env.glow_strength = 1.0
-	env.glow_bloom = 0.06
-	env.glow_hdr_threshold = 2.0
-	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SOFTLIGHT
+	env.glow_bloom = 0.04
+	env.glow_hdr_threshold = 1.0
+	env.glow_hdr_scale = 2.0
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
+	env.glow_normalized = false
 
 	# Depth haze plus aerial perspective so the far shore melts into the horizon
 	# instead of ending in a hard line. Kept shallow: a 160 m map turns to soup
 	# if the fog works as hard as it does on a kilometre-scale landscape.
 	env.fog_enabled = true
-	env.fog_mode = Environment.FOG_MODE_DEPTH
-	env.fog_density = 0.05
-	env.fog_sky_affect = 0.08
-	env.fog_aerial_perspective = 0.35
-	env.fog_depth_begin = 130.0
-	env.fog_depth_end = 900.0
-	env.fog_depth_curve = 1.6
+	env.fog_mode = Environment.FOG_MODE_EXPONENTIAL
+	env.fog_density = FOG_DENSITY
+	env.fog_sky_affect = 0.0
+	env.fog_aerial_perspective = 0.4
+	env.fog_sun_scatter = 0.1
+	env.fog_height = 4.0
+	env.fog_height_density = 0.0
 
 	env.volumetric_fog_enabled = true
-	env.volumetric_fog_density = 0.0018
+	env.volumetric_fog_density = 0.0016
 	env.volumetric_fog_albedo = Color(0.92, 0.94, 1.0)
+	env.volumetric_fog_anisotropy = 0.55   # forward scatter: soft god-rays toward the sun
 	env.volumetric_fog_length = 64.0
 	env.volumetric_fog_detail_spread = 2.0
 	env.volumetric_fog_gi_inject = 0.4
@@ -335,29 +407,12 @@ func _build_environment() -> void:
 	# a palette that now carries per-material hue variation of its own; past
 	# about 1.4 the shadows start going neon.
 	env.adjustment_brightness = 1.0
-	env.adjustment_contrast = 1.10
-	env.adjustment_saturation = 1.30
-	# No adjustment_color_correction.
-	#
-	# Two attempts, both measured, both wrong, and the reason is recorded here
-	# rather than in a guess:
-	#
-	#   as a GradientTexture2D with three stops across four texels:
-	#     every frame came out at mean luma 0.98, 97% of pixels clipped white.
-	#   as a hand-written 4x4 texel matrix, texel x = input channel and
-	#   texel y = output channel, in FORMAT_RGBAF:
-	#     every frame came out at mean luma 0.05, 90% of pixels crushed black.
-	#
-	# The second result is the informative one: a near-zero output from an
-	# identity-diagonal matrix means the diagonals are not being read where I
-	# put them, so the layout assumption is wrong, not the values. Rather than
-	# ship a colour grade that either whites out or blacks out the game, the
-	# grade is off and the look is carried by the tonemapper, the per-material
-	# texture hue variation and the SSAO, all of which are measured and correct.
-	#
-	# If this is revisited, verify the exact expected layout against the engine
-	# source for the `adjustment_color_correction` sampler before writing
-	# another matrix.
+	env.adjustment_contrast = 1.08
+	env.adjustment_saturation = 1.20
+	# Shadow-lift tone curve as a 1D colour-correction LUT (see _build_curve_lut).
+	# The earlier 3x3-matrix attempts whited or blacked out the frame; a 1D
+	# curve (height 1) is the simple documented form.
+	env.adjustment_color_correction = _build_curve_lut()
 
 	if _no_vol:
 		env.volumetric_fog_enabled = false
@@ -380,29 +435,19 @@ func _build_lights() -> void:
 	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
-	sun.directional_shadow_max_distance = 170.0
-	# The split distances decide how many texels a shadow gets. Four splits over
-	# 170 m with the near split pushed out to 0.06 means the first cascade does
-	# not waste its resolution on the two metres in front of the camera, where
-	# the player's own shadow is the only thing casting. The old 0.06/0.16/0.42
-	# spread left the fourth cascade covering 70 m at the atlas's texel density,
-	# which is where the long shadows across a field turned to mush.
-	sun.directional_shadow_split_1 = 0.04
-	sun.directional_shadow_split_2 = 0.13
-	sun.directional_shadow_split_3 = 0.36
+	# Strong, soft shadows in both renderers. Cascades are tight around the
+	# camera (that is where houses and people are seen), and the far one still
+	# reaches across the plaza. Normal bias does the anti-acne work so the depth
+	# bias can stay small and shadows stay attached to the feet of things.
+	sun.directional_shadow_max_distance = 110.0
+	sun.directional_shadow_split_1 = 0.06
+	sun.directional_shadow_split_2 = 0.18
+	sun.directional_shadow_split_3 = 0.45
 	sun.directional_shadow_blend_splits = true
-	# A smaller normal bias than a human-scale scene wants. The old 1.4 was set
-	# against flat untextured faces where nothing was ever visible close to a
-	# surface; with a normal map now perturbing the shading normal, a bias that
-	# size starts to push the shadow off the base of a wall and leave a bright
-	# line where the wall meets the ground. This is the acne-versus-peter-panning
-	# trade, and the texture made it visible for the first time.
-	sun.shadow_bias = 0.022
-	sun.shadow_normal_bias = 0.7
-	# Light angular distance is the sun's apparent size, and it is what softens a
-	# shadow edge by filtering the shadow map rather than by blurring the result.
-	# 0.7 degrees is about twice the real sun, which is the usual game compromise:
-	# a physically correct 0.53 gives an edge so hard it reads as a stencil.
+	sun.directional_shadow_fade_start = 0.85
+	sun.shadow_bias = 0.03
+	sun.shadow_normal_bias = 1.0
+	sun.shadow_blur = 1.4
 	sun.light_angular_distance = 0.9
 	sun.light_specular = 0.6
 	add_child(sun)
@@ -410,8 +455,46 @@ func _build_lights() -> void:
 	moon = DirectionalLight3D.new()
 	moon.light_color = Color("#8fa8d8")
 	moon.light_energy = 0.0
-	moon.shadow_enabled = false
+	moon.shadow_enabled = true
+	moon.directional_shadow_max_distance = 80.0
+	moon.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	moon.shadow_bias = 0.04
+	moon.shadow_normal_bias = 1.2
+	moon.shadow_blur = 1.6
+	moon.light_specular = 0.3
 	add_child(moon)
+
+
+## A soft vignette (and warm/cool corner tint) on a canvas layer just above the
+## 3D view and under the HUD. Costs one full-screen quad of arithmetic, no
+## screen-texture read, so it is fine on WebGL2.
+func _build_vignette() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = -10
+	layer.name = "Vignette"
+	var rect := ColorRect.new()
+	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sh := Shader.new()
+	sh.code = VIGNETTE_CODE
+	_vignette_mat = ShaderMaterial.new()
+	_vignette_mat.shader = sh
+	rect.material = _vignette_mat
+	layer.add_child(rect)
+	add_child(layer)
+
+
+const VIGNETTE_CODE := """
+shader_type canvas_item;
+uniform vec4 tint : source_color = vec4(0.02, 0.03, 0.08, 1.0);
+uniform float strength = 0.34;
+void fragment() {
+	vec2 q = UV - 0.5;
+	q.x *= 1.15;
+	float v = smoothstep(0.30, 0.95, length(q));
+	COLOR = vec4(tint.rgb, v * v * strength);
+}
+"""
 
 
 func _sample(h: float) -> Array:
@@ -450,117 +533,123 @@ func _apply_time() -> void:
 	horizon = horizon * weather_tint
 	sun_col = sun_col * weather_tint
 
-	# Sun rides an arc from east to west between sunrise and sunset.
-	var day_t := clampf(inverse_lerp(SUNRISE, SUNSET, hour), 0.0, 1.0)
-	var elevation := sin(day_t * PI) * 68.0 + 2.0
-	var azimuth := lerpf(-95.0, 95.0, day_t)
-	sun.rotation_degrees = Vector3(-elevation, azimuth, 0.0)
+	# The sun rides an arc from east to west by day and keeps going under the
+	# horizon by night, so the moon (its opposite) is genuinely up at night and
+	# the light direction always agrees with the hour. (It used to park on the
+	# horizon after sunset, which is what left the sky dark and the ground lit.)
+	var h24 := fposmod(hour, 24.0)
+	var elevation: float
+	var azimuth: float
+	if h24 >= SUNRISE and h24 <= SUNSET:
+		var day_t := inverse_lerp(SUNRISE, SUNSET, h24)
+		elevation = sin(day_t * PI) * 68.0
+		azimuth = lerpf(-95.0, 95.0, day_t)
+	else:
+		var since := h24 - SUNSET if h24 > SUNSET else h24 + 24.0 - SUNSET
+		var night_t := since / (24.0 - (SUNSET - SUNRISE))
+		elevation = -sin(night_t * PI) * 55.0
+		azimuth = 95.0 + night_t * 170.0
+	sun.rotation_degrees = Vector3(-(elevation + 0.5), azimuth, 0.0)
+	# Direction from any surface back to the sun.
+	var to_sun := (sun.global_transform.basis * Vector3(0, 0, 1)).normalized()
+
+	# Sunlight fades out across the last degrees above the horizon: the
+	# atmosphere eats it long before the geometric sunset.
+	var horizon_fade := smoothstep(-1.5, 5.0, elevation)
+	sun_energy *= horizon_fade
 	sun.light_color = sun_col
 	sun.light_energy = sun_energy
-	sun.visible = sun_energy > 0.02
+	sun.visible = sun_energy > 0.015
+	# Low sun: long, soft shadows; high sun: crisp.
+	sun.light_angular_distance = lerpf(1.6, 0.7, clampf(elevation / 40.0, 0.0, 1.0))
 
-	var night := clampf(1.0 - sun_energy / 0.4, 0.0, 1.0)
-	moon.rotation_degrees = Vector3(-55.0, azimuth + 180.0, 0.0)
-	# Moonlight you can actually walk by. At 0.22 the town after eight o'clock
-	# was a black screen on every renderer — measured at two parts in 255,
-	# which is not a dark night, it is a fault.
-	moon.light_energy = night * 0.55
-	moon.visible = night > 0.02
+	var day_amt := clampf(sun_energy / 0.5, 0.0, 1.0)
+	var night := 1.0 - clampf(inverse_lerp(-8.0, 3.0, elevation), 0.0, 1.0)
+	night = night * night * (3.0 - 2.0 * night)
+	# How close to sunrise/sunset: 1 with the sun on the horizon, 0 above ~25 deg
+	# or well below the horizon.
+	var twilight := (1.0 - smoothstep(0.0, 25.0, maxf(elevation, 0.0))) \
+		* smoothstep(-14.0, -1.0, elevation)
 
-	# The colour of the fill light — sky above, horizon at the edges, warmed a
-	# little toward white so a shaded wall reads as shaded rather than as blue.
+	# Moon: exactly opposite the sun, so it is up whenever the sun is not.
+	var to_moon := -to_sun
+	moon.global_transform = Transform3D(Basis.looking_at(to_sun, Vector3.UP), Vector3.ZERO)
+	moon.light_energy = night * MOON_ENERGY * clampf(to_moon.y * 3.0 + 0.4, 0.0, 1.0)
+	moon.visible = moon.light_energy > 0.02
+	moon.shadow_enabled = moon.visible and not _no_shadow_moon
+
+	# Ambient (the sky's fill light), and why it is an explicit colour.
 	#
-	# After sunset it drifts to moonlight, and that is not a stylistic choice.
-	# Derived from the palette alone it fails at night in a way no amount of
-	# energy can fix: the night sky IS nearly black, so the ambient colour is
-	# nearly black, and a colour of zero times any energy is still zero. The town
-	# at ten in the evening measured half a part in 255 — not a dark night, an
-	# unplayable one. Moonlight is dim and blue, but it is a colour.
-	const MOONLIGHT := Color("#8ba3d8")
-	# A real night sky is not one hue. It is deep blue at the zenith and keeps a
-	# faint cool-warm afterglow along the horizon long after the sun has gone.
-	# The single flat blue above is why a night frame measures a colorfulness
-	# of 0.12 where a moonlit reference measures 0.30 — the same "dull"
-	# complaint as the daylight frames, in a different palette.
-	const MOONLIGHT_LOW := Color("#6d7cae")
-	env.ambient_light_color = horizon.lerp(sky_top, 0.4) \
-		.lerp(Color.WHITE, 0.3).lerp(MOONLIGHT, night)
-	# Moonlight, faded in as the sun goes rather than applied as a flat floor:
-	# a floor high enough to light the town at ten at night also brightens
-	# nine in the morning, which is not a floor, it is a different palette.
-	var moonfill := (MOON_FILL_COMPAT if _compat else MOON_FILL) * night
-	# The base night fill, from the palette as before.
-	var base_col := horizon.lerp(sky_top, 0.4).lerp(Color.WHITE, 0.3)
+	# Forward+ can take fill from the sky radiance; the compatibility renderer
+	# cannot (its sky radiance contributes almost nothing), so it uses an
+	# explicit colour. That colour is a cool sky blue by day, so shade reads
+	# blue and sunlit surfaces read warm - the colour contrast that makes a
+	# shader-pack image feel lit rather than filtered - and a deep moon blue at
+	# night. The energy stays LOW: it used to be several times the sun's, which
+	# is what washed the grass out and erased every shadow.
+	const MOONLIGHT := Color("#6f8fd8")
+	var sky_fill := horizon.lerp(sky_top, 0.55).lerp(Color("#dbe6ff"), 0.6)
+	# Twilight fill is warmer and dimmer than the clear-sky one.
+	sky_fill = sky_fill.lerp(MOONLIGHT, night)
+	env.ambient_light_color = sky_fill
 	if _compat:
-		# Scaled by the sun, not flat. A multiplier generous enough to make the
-		# plaza readable at nine in the morning would turn midnight into dusk,
-		# and the whole point of the palette is that the hours feel different.
-		env.ambient_light_color = base_col.lerp(MOONLIGHT, night)
-		env.ambient_light_energy = maxf(
-			ambient * lerpf(1.5, 7.0, clampf(sun_energy, 0.0, 1.0)), moonfill)
+		env.ambient_light_energy = ambient * lerpf(AMBIENT_COMPAT_DAY, AMBIENT_COMPAT_NIGHT, night) \
+			* (lerpf(1.3, 2.2, night) if _handheld else 1.0)
 		env.ambient_light_sky_contribution = 0.0
 	else:
-		# Forward+ takes its fill from the sky in daylight, which is free and
-		# always agrees with the horizon. At night the sky has nothing to give,
-		# so the explicit colour takes over.
-		env.ambient_light_energy = maxf(ambient * 0.78, moonfill)
-		env.ambient_light_sky_contribution = lerpf(0.15, 1.0,
-			clampf(sun_energy, 0.0, 1.0))
-		# A moonlight scene, shaped as three points rather than one value.
-		#
-		# A single ambient scalar is what made the previous nights read as a
-		# blue filter over a black screen: one number lifts the shadows and
-		# the midtones by the same amount, so nothing in frame is brighter than
-		# anything else. Activision's measurement for CoD:Advanced Warfare is
-		# that night targets 2 EV against 14.3 EV in daylight, and that they
-		# deliberately do NOT normalise to middle grey — naive auto-exposure is
-		# precisely what makes a game look flat.
-		#
-		# So the ambient hue is pushed toward moonlight at three different
-		# rates, one per tonal region, which is what the three-point curve buys
-		# that a single lerp cannot:
-		#
-		#   shadows    mostly the blue of the sky overhead, so the darkest
-		#              thing in frame stays genuinely dark
-		#   midtones   enough to read the street by
-		#   highlights  the moon itself, which is what the eye goes to
-		env.ambient_light_color = base_col
-		env.ambient_light_color = env.ambient_light_color.lerp(
-			MOONLIGHT_LOW, night * 0.55)      # shadows: cool, deep
-		env.ambient_light_color = env.ambient_light_color.lerp(
-			MOONLIGHT, night * 0.30)          # midtones: readable
-	# A cool rim on the brightest surfaces, so something in a night frame is
-	# actually brighter than something else. Scoped to night because raising
-	# brightness at noon just washes the day out.
-	if night > 0.01:
-		env.adjustment_brightness = 1.0 + night * 0.07
-	if not _no_vol:
-		env.volumetric_fog_density = lerpf(0.0042, 0.0010, clampf(sun_energy, 0.0, 1.0)) \
-			+ weather_fog * 0.02
+		env.ambient_light_energy = ambient * lerpf(0.85, 1.6, night)
+		env.ambient_light_sky_contribution = lerpf(0.9, 0.0, night)
+
+	# Tonemap exposure follows the hour a little: brighter at night so the moon
+	# scene has something to work with, slightly lower at noon to hold highlights.
+	env.tonemap_exposure = (EXPOSURE_COMPAT if _compat else EXPOSURE_FPLUS) \
+		* lerpf(1.0, 1.25, night) * (lerpf(1.15, 1.35, night) if _handheld else 1.0)
+
+	# Colour grade per time of day: rich and slightly contrasty at noon, punchier
+	# and warmer at golden hour, desaturated toward blue at night.
+	env.adjustment_saturation = lerpf(1.18, 1.22, twilight) * lerpf(1.0, 0.85, night)
+	env.adjustment_contrast = lerpf(1.06, 1.12, twilight)
+	env.adjustment_brightness = 1.0
+
+	# Fog. Aerial perspective is tinted by the sky and, when the sun is low,
+	# warmed on the sun's side; dawn and dusk carry extra mist so far hills melt
+	# into blue and the morning feels cool and damp.
+	var mist := twilight * 0.6 * (1.0 if hour < 12.0 else 0.5)
 	if not _no_fog:
-		# The palette's own haze is a constant 0.05 (see _build_environment);
-		# weather thickens it on top; a storm or a fog bank should read as
-		# genuinely hard to see through, not as a slightly duller day.
-		env.fog_density = 0.05 + weather_fog * 0.4
-	env.fog_light_color = horizon
+		env.fog_density = FOG_DENSITY * (1.0 + mist * 1.4) + weather_fog * 0.03
+		env.fog_sun_scatter = clampf(twilight * 0.55 + day_amt * 0.12, 0.0, 0.7)
+	# Dimmed after dark: fog is added over the lit scene, so a fog as bright as
+	# the night horizon made the far hills glow teal above a moonlit town.
+	env.fog_light_color = horizon.lerp(sky_top, 0.15 + 0.2 * night) * lerpf(1.0, 0.4, night)
+	if not _no_vol:
+		env.volumetric_fog_density = lerpf(0.0035, 0.0012, day_amt) * (1.0 + mist) \
+			+ weather_fog * 0.02
+		env.volumetric_fog_albedo = sky_fill.lerp(Color.WHITE, 0.5)
 
-	env.glow_intensity = lerpf(1.00, 0.50, clampf(sun_energy, 0.0, 1.0))
+	env.glow_intensity = lerpf(0.9, 0.7, day_amt) + twilight * 0.25
 
-	# Direction from any surface back to the sun, for the water glitter and the
-	# cloud shading. The sun node shines down its -Z, so +Z points at the sun.
-	var to_sun := (sun.global_transform.basis * Vector3(0, 0, 1)).normalized()
+	if _vignette_mat != null:
+		_vignette_mat.set_shader_parameter("tint", Color(0.02, 0.03, 0.08).lerp(
+			Color(0.10, 0.05, 0.02), twilight * (1.0 - night)))
+
 	# Water follows the palette: horizon-tinted reflections, glitter that wakes
 	# up as the sun drops and the specular path stretches across the sea.
 	var reflect := horizon.lerp(Color("#1d4a63"), 0.45)
 	var glitter := 1.0 + (1.0 - clampf(sun_energy, 0.0, 1.0)) * 1.5
 	VoxelMaterials.set_sky(to_sun, sun_col, glitter, reflect)
-	# The sky shader paints gradient, sun halo, clouds and sea haze from the
-	# same palette, so dusk skies and dusk clouds always agree.
-	var lit := sun_col.lerp(Color.WHITE, 0.35)
-	var shadow := horizon.lerp(Color("#5a6a86"), 0.45)
-	var bright := clampf(sun_energy * 1.25 + 0.10, 0.0, 1.0)
-	var cover := 0.0 if _no_clouds else clampf(0.58 + cloud_cover, 0.0, 1.0)
-	_set_sky_uniforms(sky_top, horizon, lit, shadow, to_sun, sun_col, cover, bright)
+
+	# The sky shader paints gradient, sun, moon, stars and clouds from the same
+	# palette, so dusk skies and dusk clouds always agree. Cloud colours dim with
+	# the night: they are lit by the moon there, not by a sun that has set.
+	var dim := lerpf(1.0, 0.16, night)
+	var lit := sun_col.lerp(Color.WHITE, 0.45) * dim
+	var shadow := horizon.lerp(Color(0.66, 0.74, 0.88), 0.55 * (1.0 - twilight * 0.6)) \
+		* lerpf(1.0, 0.5, night)
+	var cover := 0.0 if _no_clouds else clampf(0.60 + cloud_cover, 0.0, 1.0)
+	_set_sky_uniforms(sky_top, horizon, lit, shadow, to_sun, sun_col, cover, 1.0)
+	sky_mat.set_shader_parameter("moon_dir", to_moon)
+	sky_mat.set_shader_parameter("night", night)
+	sky_mat.set_shader_parameter("twilight", twilight)
 
 
 ## Pushes the palette into the sky shader. Colours arrive sRGB and are

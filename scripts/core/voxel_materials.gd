@@ -7,6 +7,7 @@ class_name VoxelMaterials
 
 const SHADER := preload("res://scripts/core/voxel.gdshader")
 const SHADER_GLASS := preload("res://scripts/core/voxel_glass.gdshader")
+const SHADER_WATER := preload("res://scripts/core/voxel_water.gdshader")
 
 ## Detail pattern per material. See voxel.gdshader.
 const PLAIN := 0
@@ -77,7 +78,14 @@ static func get_material(id: int) -> ShaderMaterial:
 	var lin := albedo.srgb_to_linear()
 	var see_through := VoxelTypes.is_transparent(id)
 	var m := ShaderMaterial.new()
-	m.shader = SHADER_GLASS if see_through else SHADER
+	if id == VoxelTypes.WATER:
+		m.shader = SHADER_WATER
+		# The depth texture stores z differently per renderer: 0..1 in the
+		# Vulkan renderers, and 0..1 needing a remap to -1..1 in compatibility.
+		var compat := RenderingServer.get_current_rendering_method() == "gl_compatibility"
+		m.set_shader_parameter("depth_ndc", Vector2(2.0, -1.0) if compat else Vector2(1.0, 0.0))
+	else:
+		m.shader = SHADER_GLASS if see_through else SHADER
 	m.set_shader_parameter("base_albedo", Vector3(lin.r, lin.g, lin.b))
 	m.set_shader_parameter("base_roughness", float(props[1]))
 	m.set_shader_parameter("base_metallic", float(props[2]))
@@ -92,12 +100,12 @@ static func get_material(id: int) -> ShaderMaterial:
 		var layer := VoxelTextures.layer_of(VoxelTypes.name_of(id))
 		if layer >= 0:
 			m.set_shader_parameter("tex_layer", layer)
-			# Scaled by the source resolution so a 512px web build draws the
-			# same number of bricks on the same wall as the 1024px desktop one.
+			# Repeats per metre: each baked tile is authored at a natural size.
 			m.set_shader_parameter("tex_scale",
 				TEX_SCALE.get(id, 1.0) * VoxelTextures.res_scale())
 			m.set_shader_parameter("normal_strength", NORMAL_STRENGTH.get(id, 1.0))
 			m.set_shader_parameter("ao_strength", AO_STRENGTH.get(id, 1.0))
+			m.set_shader_parameter("antitile", ANTITILE.get(id, 0.0))
 		m.set_shader_parameter("albedo_array", VoxelTextures.albedo_array())
 		m.set_shader_parameter("normal_array", VoxelTextures.normal_array())
 		m.set_shader_parameter("orm_array", VoxelTextures.orm_array())
@@ -107,51 +115,49 @@ static func get_material(id: int) -> ShaderMaterial:
 		m.set_shader_parameter("emission_color", Vector3(lin.r, lin.g, lin.b))
 		m.set_shader_parameter("emission_energy", emission)
 
-	# Painted and glazed surfaces want less procedural noise than natural ones.
-	var strength := 0.16
-	var bump := 0.25
-	var jitter := 0.10
+	# Fine world-space colour breakup and the wide-area drift, per kind of
+	# surface. Natural ground and foliage vary a lot; paint, metal and glass
+	# should stay clean.
+	var jitter := 0.08
+	var macro := 0.55
 	match PATTERN.get(id, PLAIN):
 		GLASS:
-			strength = 0.04
-			bump = 0.0
-			jitter = 0.02
-		NEON:
-			strength = 0.05
-			bump = 0.0
 			jitter = 0.0
+			macro = 0.0
+		NEON:
+			jitter = 0.0
+			macro = 0.0
 		SCATTER:
-			strength = 0.24
-			bump = 0.0
-			jitter = 0.20
+			jitter = 0.16
+			macro = 0.85
 		MASONRY:
-			strength = 0.14
-			bump = 0.0
-			jitter = 0.10
-		THATCH:
-			strength = 0.20
-			bump = 0.0
-			jitter = 0.12
-		TILE:
-			strength = 0.10
-			bump = 0.0
 			jitter = 0.08
-		CORRUGATED:
-			strength = 0.08
-			bump = 0.0
-			jitter = 0.04
-		PANEL:
-			strength = 0.06
-			bump = 0.0
-			jitter = 0.04
+			macro = 0.6
+		THATCH:
+			jitter = 0.14
+			macro = 0.7
+		TILE:
+			jitter = 0.06
+			macro = 0.5
+		CORRUGATED, PANEL:
+			jitter = 0.03
+			macro = 0.3
 		GRAIN:
-			strength = 0.12
-			bump = 0.0
-			jitter = 0.09
+			jitter = 0.07
+			macro = 0.5
+	if id == VoxelTypes.LEAF:
+		jitter = 0.30
+		macro = 1.0
+		# Leaves sway in the wind and let the sun through.
+		m.set_shader_parameter("wave_amount", 0.028)
+		m.set_shader_parameter("backlight_amount", 0.55)
+	if id == VoxelTypes.NEON_STRIP or id == VoxelTypes.EMBER:
+		m.set_shader_parameter("emission_from_tex", 1.0)
 
-	m.set_shader_parameter("detail_strength", strength)
-	m.set_shader_parameter("bump_strength", bump)
+	m.set_shader_parameter("detail_strength", 0.0)
+	m.set_shader_parameter("bump_strength", 0.0)
 	m.set_shader_parameter("hue_jitter", jitter)
+	m.set_shader_parameter("macro_strength", macro)
 
 	if see_through:
 		m.render_priority = 1
@@ -160,58 +166,61 @@ static func get_material(id: int) -> ShaderMaterial:
 	return m
 
 
-## How many times the baked tile repeats across one voxel face.
+## How many times the baked tile repeats per METRE of world.
 ##
-## A voxel face is 0.25 m. At 1.0 the whole 1024px texture lands on a single
-## face, which means 4096 texels per metre — far more than the screen can ever
-## resolve, so the mip chain throws almost all of it away and the wall reads
-## smooth. The number that matters is texels per screen pixel at the distance
-## the player actually looks at things from: roughly 2 m for a wall you are
-## standing next to.
-##
-# These were measured, not guessed. The first pass used 1.0 everywhere and the
-# close-up frames measured 6.4 detail against the shader packs' 5.9-9.2, while
-# the aerial frame measured 7.9. Halving the repeat roughly doubled close-up
-# detail and cost nothing, because the mip chain was discarding the extra
-# resolution regardless.
+## Each tile is authored at a natural size (see the builders in
+## _tools/gen_pbr.py): the plaza cobble tile is 1 m with seven stones across, a
+## brick tile 1.33 m with six bricks across, and so on, so this is roughly
+## 1 / tile size. Bigger tiles mean fewer visible repeats but a coarser mip
+## chain at range; the sizes here keep a stone about the size of a real stone.
 const TEX_SCALE := {
-	VoxelTypes.BRICK: 2.2, VoxelTypes.SANDSTONE: 1.6, VoxelTypes.GRANITE: 1.4,
-	VoxelTypes.COBBLE: 2.4, VoxelTypes.STONE: 1.8, VoxelTypes.ROCK: 1.6,
-	VoxelTypes.CONCRETE: 1.2, VoxelTypes.REBAR_CONCRETE: 1.2,
-	VoxelTypes.CONCRETE_SLAB: 1.8,
-	VoxelTypes.TIMBER: 2.4, VoxelTypes.PLANK: 2.6, VoxelTypes.DARK_OAK: 2.4,
-	VoxelTypes.BARK: 3.5,
-	VoxelTypes.THATCH: 3.0, VoxelTypes.CLAY_TILE: 2.6, VoxelTypes.ASPHALT_SHINGLE: 2.4,
-	VoxelTypes.CORRUGATED_STEEL: 2.0,
-	VoxelTypes.GRAVEL: 4.0, VoxelTypes.GRASS: 3.4, VoxelTypes.SAND: 2.8,
-	VoxelTypes.DIRT: 2.6, VoxelTypes.CLAY: 2.4, VoxelTypes.LEAF: 3.2,
-	VoxelTypes.FARMLAND: 2.6, VoxelTypes.WET_FARMLAND: 2.6,
-	VoxelTypes.IRON_ORE: 2.4, VoxelTypes.ASPHALT: 1.6, VoxelTypes.EMBER: 3.0,
-	VoxelTypes.CARBON_COMPOSITE: 4.0, VoxelTypes.SOLAR_PANEL: 1.0,
-	VoxelTypes.SHEET_METAL: 1.2, VoxelTypes.STEEL_FRAME: 1.2,
-	VoxelTypes.PLASTIC_PANEL: 1.2,
+	VoxelTypes.BRICK: 0.75, VoxelTypes.SANDSTONE: 0.75, VoxelTypes.GRANITE: 1.0,
+	VoxelTypes.COBBLE: 1.0, VoxelTypes.STONE: 0.8, VoxelTypes.ROCK: 0.6,
+	VoxelTypes.CONCRETE: 0.7, VoxelTypes.REBAR_CONCRETE: 0.7,
+	VoxelTypes.CONCRETE_SLAB: 0.85,
+	VoxelTypes.TIMBER: 0.9, VoxelTypes.PLANK: 1.0, VoxelTypes.DARK_OAK: 1.0,
+	VoxelTypes.BARK: 1.2,
+	VoxelTypes.THATCH: 1.3, VoxelTypes.CLAY_TILE: 1.0, VoxelTypes.ASPHALT_SHINGLE: 1.0,
+	VoxelTypes.CORRUGATED_STEEL: 1.6,
+	VoxelTypes.GRAVEL: 1.4, VoxelTypes.GRASS: 1.1, VoxelTypes.SAND: 0.8,
+	VoxelTypes.DIRT: 1.1, VoxelTypes.CLAY: 0.9, VoxelTypes.LEAF: 1.3,
+	VoxelTypes.FARMLAND: 1.0, VoxelTypes.WET_FARMLAND: 1.0,
+	VoxelTypes.IRON_ORE: 1.0, VoxelTypes.ASPHALT: 0.8, VoxelTypes.EMBER: 3.0,
+	VoxelTypes.CARBON_COMPOSITE: 2.0, VoxelTypes.SOLAR_PANEL: 2.0,
+	VoxelTypes.SHEET_METAL: 1.0, VoxelTypes.STEEL_FRAME: 1.0,
+	VoxelTypes.PLASTIC_PANEL: 1.0, VoxelTypes.NEON_STRIP: 4.0,
 }
 
-## How hard the baked normal map pushes. Stone and brick are read at arm's
-## length and want their relief; painted trim is not, and overdriving it makes
-## a wall look wet.
+## How hard the baked normal map pushes. The bake already scales relief per
+## material; this trims it for surfaces that read as wet when overdriven.
 const NORMAL_STRENGTH := {
-	VoxelTypes.BRICK: 1.0, VoxelTypes.SANDSTONE: 0.85, VoxelTypes.GRANITE: 0.8,
-	VoxelTypes.COBBLE: 1.1, VoxelTypes.STONE: 0.8, VoxelTypes.ROCK: 1.0,
-	VoxelTypes.CONCRETE: 0.6, VoxelTypes.REBAR_CONCRETE: 0.8,
-	VoxelTypes.CONCRETE_SLAB: 0.6,
-	VoxelTypes.TIMBER: 0.8, VoxelTypes.PLANK: 0.8, VoxelTypes.DARK_OAK: 0.8,
-	VoxelTypes.BARK: 1.2,
-	VoxelTypes.THATCH: 1.2, VoxelTypes.CLAY_TILE: 1.0, VoxelTypes.ASPHALT_SHINGLE: 1.0,
+	VoxelTypes.BRICK: 1.0, VoxelTypes.SANDSTONE: 0.9, VoxelTypes.GRANITE: 0.9,
+	VoxelTypes.COBBLE: 1.0, VoxelTypes.STONE: 0.9, VoxelTypes.ROCK: 0.9,
+	VoxelTypes.CONCRETE: 0.8, VoxelTypes.REBAR_CONCRETE: 0.9,
+	VoxelTypes.CONCRETE_SLAB: 0.8,
+	VoxelTypes.TIMBER: 0.9, VoxelTypes.PLANK: 0.9, VoxelTypes.DARK_OAK: 0.9,
+	VoxelTypes.BARK: 1.0,
+	VoxelTypes.THATCH: 1.0, VoxelTypes.CLAY_TILE: 1.0, VoxelTypes.ASPHALT_SHINGLE: 1.0,
 	VoxelTypes.CORRUGATED_STEEL: 1.0,
-	VoxelTypes.GRAVEL: 1.2, VoxelTypes.GRASS: 1.0, VoxelTypes.SAND: 0.7,
-	VoxelTypes.DIRT: 0.9, VoxelTypes.CLAY: 0.8, VoxelTypes.LEAF: 1.1,
+	VoxelTypes.GRAVEL: 1.0, VoxelTypes.GRASS: 0.8, VoxelTypes.SAND: 0.8,
+	VoxelTypes.DIRT: 0.9, VoxelTypes.CLAY: 0.8, VoxelTypes.LEAF: 0.9,
 	VoxelTypes.FARMLAND: 0.9, VoxelTypes.WET_FARMLAND: 0.7,
-	VoxelTypes.IRON_ORE: 1.0, VoxelTypes.ASPHALT: 0.5, VoxelTypes.EMBER: 0.8,
+	VoxelTypes.IRON_ORE: 0.9, VoxelTypes.ASPHALT: 0.7, VoxelTypes.EMBER: 0.8,
 	VoxelTypes.CARBON_COMPOSITE: 0.7, VoxelTypes.SOLAR_PANEL: 0.5,
-	VoxelTypes.PAINTED_WHITE: 0.4, VoxelTypes.PAINTED_RED: 0.4,
-	VoxelTypes.MATTE_BLACK: 0.4, VoxelTypes.CHROME: 0.4, VoxelTypes.SHEET_METAL: 0.5,
-	VoxelTypes.STEEL_FRAME: 0.5, VoxelTypes.PLASTIC_PANEL: 0.5,
+	VoxelTypes.PAINTED_WHITE: 0.5, VoxelTypes.PAINTED_RED: 0.5,
+	VoxelTypes.MATTE_BLACK: 0.4, VoxelTypes.CHROME: 0.4, VoxelTypes.SHEET_METAL: 0.6,
+	VoxelTypes.STEEL_FRAME: 0.6, VoxelTypes.PLASTIC_PANEL: 0.5,
+}
+
+## Materials whose tile is blended with a second, offset sample of itself to
+## hide the repeat. Only organic or granular ground, where mixing two samples
+## reads as natural variation; patterned masonry would show ghost joints.
+const ANTITILE := {
+	VoxelTypes.GRASS: 1.0, VoxelTypes.DIRT: 0.8, VoxelTypes.SAND: 0.8,
+	VoxelTypes.GRAVEL: 0.7, VoxelTypes.ASPHALT: 0.8, VoxelTypes.CLAY: 0.6,
+	VoxelTypes.FARMLAND: 0.6, VoxelTypes.CONCRETE: 0.6, VoxelTypes.LEAF: 0.6,
+	VoxelTypes.CONCRETE_SLAB: 0.4, VoxelTypes.COBBLE: 0.5, VoxelTypes.STONE: 0.5,
+	VoxelTypes.ROCK: 0.5, VoxelTypes.GRANITE: 0.4,
 }
 
 ## How much the texture's own cavity darkening is allowed to bite. Ground
@@ -246,4 +255,6 @@ static func set_sky(to_sun: Vector3, tint: Color, glitter: float, reflect: Color
 		m.set_shader_parameter("sun_dir", to_sun)
 		m.set_shader_parameter("sun_tint", Vector3(lin_tint.r, lin_tint.g, lin_tint.b))
 		m.set_shader_parameter("sun_glitter", glitter)
+		# Only the glass shader reads this: windows lit from inside after dusk.
+		m.set_shader_parameter("night_glow", smoothstep(0.08, -0.12, to_sun.y))
 		m.set_shader_parameter("sky_reflect", Vector3(lin_reflect.r, lin_reflect.g, lin_reflect.b))

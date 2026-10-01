@@ -29,6 +29,8 @@ var town: Town
 var crew: Crew
 var dispatch: Dispatcher
 var hud: Hud
+var title: TitleScreen
+var pause_menu: PauseMenu
 var farm: Farm
 var livestock: Livestock
 var wildlife: Wildlife
@@ -127,6 +129,15 @@ func _ready() -> void:
 	clock = GameClock.new()
 	clock.name = "Clock"
 	add_child(clock)
+
+	# The front door, only on a plain interactive launch: no test, bench, shot
+	# or other dev flag. It holds the clock and the player until "Begin".
+	if _is_interactive_launch(args):
+		PauseMenu.start_fullscreen(args)
+		title = TitleScreen.new()
+		title.name = "Title"
+		add_child(title)
+		title.setup(player, clock)
 
 	town = Town.new()
 
@@ -235,10 +246,27 @@ func _physics_process(_delta: float) -> void:
 			world.ensure_support(p)
 
 
+## True for a normal player launch. Any flag other than the harmless ones
+## (seed, fresh, windowed) marks a test, bench or capture run.
+func _is_interactive_launch(args: PackedStringArray) -> bool:
+	if DisplayServer.get_name() == "headless":
+		return false
+	for a in args:
+		if not (a.begins_with("--seed=") or a == "--fresh" or a == "--windowed" or a == "--touchui" or a == "--titleshot" or a.begins_with("--uishotdir=")):
+			return false
+	return true
+
+
 func _on_world_ready(t0: int) -> void:
 	print("[delegate] world ready in %d ms: %d columns, %d chunks, %d mesh nodes" % [
 		Time.get_ticks_msec() - t0, world.loaded_columns(),
 		world.chunk_count(), world.mesh_node_count()])
+	if title != null:
+		title.ready_to_play()
+		if "--titleshot" in OS.get_cmdline_user_args():
+			var ts := UiShot.new()
+			add_child(ts)
+			ts.run_title()
 	var g := world.ground_m(player.global_position.x, player.global_position.z)
 	player.teleport(Vector3(player.global_position.x, g + 0.4,
 		player.global_position.z), PI)
@@ -294,6 +322,16 @@ func _on_world_ready(t0: int) -> void:
 			if a.begins_with("--say="):
 				say2 = a.substr(6)
 		rt.begin(say2)
+		return
+	if "--costrun" in args:
+		# A scripted first session, for reading the cost of each thing a
+		# player does off the gateway's log. See scripts/dev/cost_run.gd.
+		var cr := CostRun.new()
+		cr.dispatch = dispatch
+		cr.crew = crew
+		cr.clock = clock
+		add_child(cr)
+		cr.begin()
 		return
 	if "--playertest" in args:
 		# PlayerTest is the adversarial one: nonsense, insults, empty input,
@@ -532,6 +570,18 @@ func _on_world_ready(t0: int) -> void:
 	if "--mapshot" in args:
 		map.capture_and_quit()
 		return
+	if "--uishot" in args:
+		var us := UiShot.new()
+		us.hud = hud
+		us.map = map
+		us.inventory = inventory
+		us.pause = pause_menu
+		us.player = player
+		us.crew = crew
+		us.clock = clock
+		add_child(us)
+		us.run()
+		return
 	if "--flicker" in args:
 		var ft := FlickerTest.new()
 		ft.world = world
@@ -629,6 +679,18 @@ func _raise_crew() -> void:
 	hud.name = "Hud"
 	add_child(hud)
 	hud.setup(player, crew, clock, town)
+
+	pause_menu = PauseMenu.new()
+	pause_menu.name = "PauseMenu"
+	add_child(pause_menu)
+	pause_menu.setup(player, title != null)
+	# Nothing of the game's own interface shows through the front door.
+	if title != null:
+		hud.visible = false
+		touch.visible = false
+		title.begun.connect(func() -> void:
+			hud.visible = true
+			touch.visible = true)
 
 	hud.show_minimap(village, map, crew, inventory)
 	# The town trades overnight. Connected here rather than inside Town so the
@@ -732,6 +794,8 @@ func _raise_realm() -> void:
 	realm.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
 	dispatch.realm = realm
 	hud.realm = realm
+	# The map's directory of buildings and people reads from the realm.
+	map.realm = realm
 
 
 func _run_realm_test(which: String) -> void:

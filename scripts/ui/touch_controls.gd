@@ -93,13 +93,15 @@ func _buttons() -> Dictionary:
 		return {"map": out["map"]}
 	if _inventory_open():
 		return {"bag": out["bag"]}
-	out["menu"] = {
-		"centre": Vector2(56.0 * u, 56.0 * u), "radius": 28.0 * u,
-		"action": &"menu", "label": "ESC",
-	}
+	# Down the right edge under MAP and BAG. The top-left corner is the HUD's
+	# clock and crew cards, and buttons there sat underneath them.
 	out["chat"] = {
-		"centre": Vector2(56.0 * u, 122.0 * u), "radius": 28.0 * u,
+		"centre": Vector2(s.x - 56.0 * u, 188.0 * u), "radius": 28.0 * u,
 		"action": &"chat", "label": "CHAT",
+	}
+	out["menu"] = {
+		"centre": Vector2(s.x - 56.0 * u, 254.0 * u), "radius": 28.0 * u,
+		"action": &"menu", "label": "ESC",
 	}
 	out["talk"] = {
 		"centre": Vector2(s.x - 100.0 * u, s.y - 108.0 * u), "radius": 54.0 * u,
@@ -274,19 +276,20 @@ func _draw_pad() -> void:
 	if not active:
 		return
 	_refresh_unit()
-	var font := ThemeDB.fallback_font
+	var font := UiTheme.font(800)
 	var has_target := player != null and player.looked_at_worker() != null
 
 	if _stick_touch != -1:
 		var r := STICK_RADIUS * _unit
 		var tilt := _stick_vector()
 		var knob := _stick_origin + tilt * r
-		_ring(_stick_origin, r, Color(1, 1, 1, 0.18), 3.0 * _unit)
-		_pad.draw_circle(knob, 26.0 * _unit, Color(1, 1, 1, 0.22))
-		_ring(knob, 26.0 * _unit, Color(1, 1, 1, 0.5), 2.0 * _unit)
+		_pad.draw_circle(_stick_origin, r, Color(0.07, 0.06, 0.05, 0.28))
+		_ring(_stick_origin, r, Color(UiTheme.GOLD, 0.35), 2.0 * _unit)
+		_pad.draw_circle(knob, 26.0 * _unit, Color(UiTheme.PARCHMENT, 0.30))
+		_ring(knob, 26.0 * _unit, Color(UiTheme.PARCHMENT, 0.75), 2.0 * _unit)
 		if tilt.length() >= SPRINT_AT:
-			_ring(_stick_origin, r + 6.0 * _unit, Color(1, 0.86, 0.5, 0.55),
-				2.0 * _unit)
+			_ring(_stick_origin, r + 6.0 * _unit, Color(UiTheme.ACCENT, 0.7),
+				2.5 * _unit)
 
 	var held := _button_touch.values()
 	var buttons := _buttons()
@@ -295,18 +298,19 @@ func _draw_pad() -> void:
 		var radius := float(b["radius"])
 		var down: bool = b["action"] in held
 		var lit: bool = down or (key == "talk" and has_target)
-		var fill := Color(0, 0, 0, 0.28)
+		var fill := Color(0.075, 0.062, 0.05, 0.50)
 		if down:
-			fill = Color(1, 1, 1, 0.22)
+			fill = Color(UiTheme.GOLD, 0.45)
 		elif key == "talk" and has_target:
-			fill = Color(1, 0.86, 0.5, 0.22)
+			fill = Color(UiTheme.ACCENT, 0.32)
+		_pad.draw_circle(b["centre"] + Vector2(0, 2.0 * _unit), radius, Color(0, 0, 0, 0.22))
 		_pad.draw_circle(b["centre"], radius, fill)
-		_ring(b["centre"], radius, Color(1, 1, 1, 0.85 if lit else 0.38),
+		_ring(b["centre"], radius, Color(UiTheme.GOLD, 0.95 if lit else 0.55),
 			2.0 * _unit)
 		var fs := int(round(15.0 * _unit))
 		_pad.draw_string(font, b["centre"] + Vector2(-radius, fs * 0.36),
 			str(b["label"]), HORIZONTAL_ALIGNMENT_CENTER, radius * 2.0, fs,
-			Color(1, 1, 1, 0.92 if lit else 0.55))
+			Color(UiTheme.PARCHMENT, 1.0 if lit else 0.75))
 
 
 func _ring(centre: Vector2, radius: float, colour: Color, width: float) -> void:

@@ -15,11 +15,11 @@ class_name ChatPanel
 signal sent(worker: Worker, text: String)
 signal closed
 
-const BG := Color(0.06, 0.055, 0.05, 0.90)
-const INK := Color(0.94, 0.92, 0.87)
-const DIM := Color(0.62, 0.60, 0.56)
-const YOU := Color(0.98, 0.83, 0.42)
-const ASK := Color(1.0, 0.86, 0.52)
+const BG := UiTheme.PANEL_SOLID
+const INK := UiTheme.INK
+const DIM := UiTheme.DIM
+const YOU := UiTheme.ACCENT
+const ASK := UiTheme.WARN
 const NO := Color("#ffb4a2")
 const KEEP := 200
 ## What is worth keeping. Work chatter ("Nailing.") is not a conversation.
@@ -54,6 +54,7 @@ func setup(c: Crew, gc: GameClock, touch: bool) -> void:
 func _build() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	UiTheme.apply(self)
 
 	_panel = PanelContainer.new()
 	_panel.set_anchors_preset(Control.PRESET_LEFT_WIDE)
@@ -61,12 +62,9 @@ func _build() -> void:
 	_panel.offset_right = 14 + _width
 	_panel.offset_top = 14
 	_panel.offset_bottom = -14
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = BG
-	sb.border_color = Color(1, 1, 1, 0.14)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(6)
-	sb.set_content_margin_all(12)
+	var sb := UiTheme.panel_menu()
+	sb.set_content_margin_all(16)
+	sb.bg_color = Color(BG.r, BG.g, BG.b, 0.94)
 	_panel.add_theme_stylebox_override("panel", sb)
 	add_child(_panel)
 
@@ -76,13 +74,14 @@ func _build() -> void:
 
 	var head := HBoxContainer.new()
 	col.add_child(head)
-	_title = _label("Chat", 30 if _touch else 18, INK)
+	_title = UiTheme.title("Chat", 30 if _touch else 17, UiTheme.ACCENT)
 	_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(_title)
 	var close := Button.new()
 	close.text = "×"
 	close.focus_mode = Control.FOCUS_NONE
-	close.add_theme_font_size_override("font_size", 34 if _touch else 20)
+	UiTheme.style_button(close, 34 if _touch else 20)
+	close.add_theme_constant_override("h_separation", 0)
 	close.custom_minimum_size = Vector2(90 if _touch else 36, 90 if _touch else 32)
 	close.pressed.connect(hide_panel)
 	head.add_child(close)
@@ -104,7 +103,7 @@ func _build() -> void:
 	_entry = LineEdit.new()
 	_entry.placeholder_text = "say something…"
 	_entry.custom_minimum_size = Vector2(0, 90.0 if _touch else 34.0)
-	_entry.add_theme_font_size_override("font_size", 34 if _touch else 17)
+	_entry.add_theme_font_size_override("font_size", 34 if _touch else 16)
 	_entry.text_submitted.connect(_on_submit)
 	col.add_child(_entry)
 
@@ -200,11 +199,10 @@ func _rebuild_tabs() -> void:
 		var b := Button.new()
 		b.text = w.display_name()
 		b.focus_mode = Control.FOCUS_NONE
-		b.add_theme_font_size_override("font_size", 28 if _touch else 14)
+		UiTheme.style_button(b, 28 if _touch else 14, w.memory.worker_id == current_id)
 		b.custom_minimum_size = Vector2(0, 70.0 if _touch else 30.0)
 		if w.memory.worker_id == current_id:
-			b.add_theme_color_override("font_color", YOU)
-			b.add_theme_color_override("font_hover_color", YOU)
+			b.add_theme_color_override("font_color", Color.WHITE)
 		b.pressed.connect(select.bind(w))
 		_tabs.add_child(b)
 	var w2 := current()
@@ -244,7 +242,19 @@ func _rebuild_rows() -> void:
 		body.custom_minimum_size = Vector2(wrap * 0.85, 0)
 		body.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT if you else HORIZONTAL_ALIGNMENT_LEFT
 		box.add_child(body)
-		_rows.add_child(box)
+		var bubble := PanelContainer.new()
+		var bsb := StyleBoxFlat.new()
+		bsb.bg_color = Color(UiTheme.GOLD, 0.16) if you else Color(1, 0.95, 0.85, 0.07)
+		bsb.border_color = Color(UiTheme.GOLD, 0.35) if you else Color(1, 0.95, 0.85, 0.10)
+		bsb.set_border_width_all(1)
+		bsb.set_corner_radius_all(12)
+		bsb.set_content_margin_all(10)
+		bsb.anti_aliasing = true
+		bubble.add_theme_stylebox_override("panel", bsb)
+		bubble.size_flags_horizontal = box.size_flags_horizontal
+		bubble.add_child(box)
+		box.size_flags_horizontal = Control.SIZE_FILL
+		_rows.add_child(bubble)
 	# To the bottom once the rows have a size.
 	call_deferred("_scroll_to_end")
 
@@ -267,6 +277,7 @@ func _on_submit(text: String) -> void:
 static func _label(text: String, size: int, colour: Color) -> Label:
 	var l := Label.new()
 	l.text = text
+	l.add_theme_font_override("font", UiTheme.font(500))
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", colour)
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE

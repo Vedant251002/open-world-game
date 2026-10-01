@@ -21,6 +21,10 @@ static func is_web() -> bool:
 ## running on a tablet, and deliberately excludes a touchscreen desktop, which
 ## has the silicon to render the full thing.
 static func is_handheld() -> bool:
+	# --handheld forces the phone profile on any machine, so it can be seen and
+	# measured without a phone.
+	if "--handheld" in OS.get_cmdline_user_args():
+		return true
 	if OS.has_feature("mobile"):
 		return true
 	if OS.has_feature("web_android") or OS.has_feature("web_ios"):
