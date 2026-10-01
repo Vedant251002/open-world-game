@@ -135,6 +135,9 @@ var _idle_target := Vector3.ZERO
 var _idle_timer := 0.0
 var _speak_timer := 0.0
 var _gather_hours := 0.0
+var _shown_load := ""           ## what the body is visibly carrying
+var _carry_for: VoxelPatch = null
+var _carry_cached := "planks"
 ## Who to walk behind while idle, and where in the huddle this one stands.
 var employer: Node3D = null
 var follow_slot := 0
@@ -391,9 +394,44 @@ func _physics_process(delta: float) -> void:
 		_face_the_work(delta)
 		body.work(delta, _gesture)
 	else:
-		body.animate(delta, planar, state == State.WALKING and job_patch != null)
+		var load_kind := _carry_kind()
+		body.animate(delta, planar, load_kind != "")
+		_show_load(load_kind)
+		# Fetching: bent to the pile, hefting a bundle, rather than standing.
+		if state == State.GATHERING and job_construction != null and planar < 0.1:
+			body.work(delta, "lift")
 
 	_tick_state(delta)
+
+
+## What they are carrying right now, for the picture only: the material of the
+## building they are walking out to, a basket on the way to bring in a harvest.
+func _carry_kind() -> String:
+	if state != State.WALKING:
+		return ""
+	if job_patch != null:
+		if job_patch != _carry_for:
+			_carry_for = job_patch
+			_carry_cached = CarriedItem.kind_for_patch(job_patch)
+		return _carry_cached
+	if not job_errand.is_empty() and str(job_errand.get("kind", "")) in ["harvest", "collect"]:
+		return "basket"
+	return ""
+
+
+## Puts the load in their arms, and when they put it down at a site, leaves it
+## there as a pile for the length of the job.
+func _show_load(kind: String) -> void:
+	if kind == _shown_load:
+		return
+	var was := _shown_load
+	_shown_load = kind
+	CarriedItem.set_on(body, kind)
+	if kind == "" and was != "" and job_construction != null:
+		var fwd := Vector3(sin(rotation.y), 0.0, cos(rotation.y))
+		var at := global_position + fwd * 0.9
+		at.y = world.ground_m(at.x, at.z)
+		job_construction.drop_material(was, at)
 
 
 ## Whether the last half second actually went anywhere, and which way to lean
@@ -723,6 +761,8 @@ func _on_arrived() -> void:
 		"build":
 			state = State.GATHERING
 			_gather_hours = 0.0
+			if job_construction != null:
+				job_construction.begin_show()
 			_say("%s. I will fetch what I need." % _acknowledge(), "work")
 		"report":
 			state = State.REPORTING
@@ -1361,6 +1401,8 @@ func take_job(plot: Plot, spec: Dictionary, patch: VoxelPatch,
 		_path = PackedVector3Array()
 		state = State.GATHERING
 		_gather_hours = 0.0
+		if job_construction != null:
+			job_construction.begin_show()
 		_say("%s. I will fetch what I need." % _acknowledge(), "work")
 	elif not walk_to(stand, "build"):
 		# No route: that is a question, not a crash.
@@ -1417,6 +1459,8 @@ func take_enclosure_job(patch: VoxelPatch, where: String, assumptions: Array,
 		_path = PackedVector3Array()
 		state = State.GATHERING
 		_gather_hours = 0.0
+		if job_construction != null:
+			job_construction.begin_show()
 		_say("%s. I will fetch what I need." % _acknowledge(), "work")
 	elif not walk_to(stand, "build"):
 		_cannot_reach("unreachable_ground",
@@ -1667,6 +1711,8 @@ func _finish_field() -> void:
 
 func _clear_job() -> void:
 	_holding = false
+	if job_construction != null:
+		job_construction.abandon_show()
 	job_quarry = null
 	job_craft = null
 	job_plot = null
