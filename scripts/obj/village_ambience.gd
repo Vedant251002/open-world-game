@@ -1,5 +1,5 @@
 extends Node3D
-class_name Ambience
+class_name VillageAmbience
 ## The things that make a town look lived in rather than merely built: smoke
 ## from chimneys (more of it in the evening, leaning with the wind), sparks off
 ## the forge, steam from the bakery oven, butterflies over the flowers by day,

@@ -159,9 +159,9 @@ func _spawn_props() -> void:
 		# Ambient life: sparks off a forge, embers in an oven.
 		var key := Props.resolve(t)
 		if key == "forge_block":
-			Ambience.add_source(patch.get_instance_id(), "forge", Vector3(p["pos"]) + Vector3(0, 0.75, 0))
+			VillageAmbience.add_source(patch.get_instance_id(), "forge", Vector3(p["pos"]) + Vector3(0, 0.75, 0))
 		elif key == "oven_block":
-			Ambience.add_source(patch.get_instance_id(), "oven", Vector3(p["pos"]) + Vector3(0, 0.5, 0))
+			VillageAmbience.add_source(patch.get_instance_id(), "oven", Vector3(p["pos"]) + Vector3(0, 0.5, 0))
 	_register_chimneys()
 
 
@@ -175,7 +175,7 @@ func _register_chimneys() -> void:
 		if not ("chimney" in mdef.get("needs", [])):
 			continue
 		var kind := "steam" if str(m.get("type", "")) == "oven" else "smoke"
-		Ambience.add_chimney(patch.get_instance_id(), kind, m["rect"],
+		VillageAmbience.add_chimney(patch.get_instance_id(), kind, m["rect"],
 			patch.origin.y, patch.origin.y + patch.size.y - 1)
 
 
@@ -204,7 +204,7 @@ func _spawn_sign(p: Dictionary) -> Node3D:
 ## Demolition: takes the building back out and refunds part of the materials,
 ## per game-design-doc.md §9. Wrong must be recoverable, and never free.
 func demolish() -> Dictionary:
-	Ambience.remove_owner(patch.get_instance_id())
+	VillageAmbience.remove_owner(patch.get_instance_id())
 	if fx != null and is_instance_valid(fx):
 		fx.queue_free()
 	fx = null

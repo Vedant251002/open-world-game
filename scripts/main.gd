@@ -126,7 +126,7 @@ func _ready() -> void:
 		# away from.
 		world.import_edits(_save.get("world", {}))
 
-	Ambience.clear_sources()      # smoke/sparks registry is static; start clean
+	VillageAmbience.clear_sources()      # smoke/sparks registry is static; start clean
 	props_root = Node3D.new()
 	props_root.name = "Props"
 	add_child(props_root)
@@ -809,7 +809,7 @@ func _raise_crew() -> void:
 		_raise_realm()
 	# --- village ambience: chimney smoke, forge sparks, fireflies, butterflies ---
 	if "--noambience" not in OS.get_cmdline_user_args():
-		var amb := Ambience.new()
+		var amb := VillageAmbience.new()
 		amb.name = "Ambience"
 		add_child(amb)
 		amb.setup(world, player, clock)
