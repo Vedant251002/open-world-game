@@ -28,9 +28,16 @@ signal crier_requested          ## the Village Crier's back issues (crier_screen
 signal diplomacy_requested
 signal villages_requested
 signal leave_visit_requested
+## A name in the village panel was clicked: open that person's card.
+signal villager_requested(w: Worker)
+signal rank_requested           ## the village's rank and milestones (milestones_ui.gd)
 
 var player: Player
 var open := false
+## Read when the menu opens, for the village panel: the crew and the kingdom's
+## own lines (people, sickness, sieges) that used to crowd the main screen.
+var crew: Crew
+var realm: Node
 
 var _root: Control
 var _screen_button: Button
@@ -41,6 +48,7 @@ var _diplomacy_button: Button
 var _crier_button: Button
 var _share_button: Button
 var _ready_ms := 0
+var _village: VBoxContainer
 
 
 ## `on_focus_loss` false for tests and benches, which must not freeze because
@@ -94,9 +102,23 @@ func _build() -> void:
 	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.add_child(centre)
 
+	# The menu, and beside it the village: everything the main screen leaves out.
+	var sides := HBoxContainer.new()
+	sides.add_theme_constant_override("separation", int(UiTheme.px(16)))
+	centre.add_child(sides)
+
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", UiTheme.panel_menu())
-	centre.add_child(panel)
+	sides.add_child(panel)
+
+	var vpanel := PanelContainer.new()
+	vpanel.add_theme_stylebox_override("panel", UiTheme.panel_menu())
+	vpanel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	sides.add_child(vpanel)
+	_village = VBoxContainer.new()
+	_village.add_theme_constant_override("separation", int(UiTheme.px(8)))
+	_village.custom_minimum_size = Vector2(UiTheme.px(320), 0)
+	vpanel.add_child(_village)
 
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", int(UiTheme.px(10)))
@@ -131,9 +153,16 @@ func _build() -> void:
 	_challenge_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	extra.add_child(_challenge_button)
 
-	# Village Crier: today's paper and back issues.
-	_crier_button = _button("The Village Crier  [N]", func() -> void: crier_requested.emit())
-	col.add_child(_crier_button)
+	# Village Crier: today's paper and back issues; the village's rank beside it.
+	var town_row := HBoxContainer.new()
+	town_row.add_theme_constant_override("separation", int(UiTheme.px(8)))
+	col.add_child(town_row)
+	_crier_button = _button("Crier  [N]", func() -> void: crier_requested.emit())
+	_crier_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	town_row.add_child(_crier_button)
+	var rank_b := _button("Village rank  [J]", func() -> void: rank_requested.emit())
+	rank_b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	town_row.add_child(rank_b)
 	# Neighbours and shared villages. While visiting somebody else's village
 	# only "Leave this village" shows (see set_visiting).
 	_village_row = HBoxContainer.new()
@@ -157,7 +186,8 @@ func _build() -> void:
 	keys.add_theme_constant_override("h_separation", int(UiTheme.px(14)))
 	keys.add_theme_constant_override("v_separation", int(UiTheme.px(6)))
 	col.add_child(keys)
-	for pair: Array in [["WASD", "move"], ["E", "speak"], ["M", "map"], ["I", "stores"], ["C", "chat"], ["Esc", "pause"]]:
+	for pair: Array in [["WASD", "move"], ["E", "speak"], ["V", "villager card"], ["M", "map"],
+			["I", "stores"], ["C", "chat"], ["P", "photo"], ["N", "crier"], ["Esc", "pause"]]:
 		var cap := UiTheme.key_cap(pair[0])
 		cap.size_flags_horizontal = Control.SIZE_SHRINK_END
 		keys.add_child(cap)
@@ -220,6 +250,38 @@ func set_open(v: bool) -> void:
 		player.set_input_enabled(not v)
 	if v:
 		_label_screen_button()
+		_fill_village()
+
+
+## The crew with what each is doing, then the kingdom's lines. Built when the
+## menu opens rather than every frame, since nothing changes while paused.
+func _fill_village() -> void:
+	if _village == null:
+		return
+	for c: Node in _village.get_children():
+		c.queue_free()
+	var title := UiTheme.title("YOUR VILLAGE", 20, UiTheme.ACCENT)
+	_village.add_child(title)
+	var hired: Array[Worker] = crew.hired() if crew != null else []
+	if hired.is_empty():
+		_village.add_child(UiTheme.label("Nobody works for you yet.", 14, UiTheme.DIM, 500))
+	for w: Worker in hired:
+		var job := "Builder" if w.role == null or w.role.id == "builder" else w.role.name
+		var b := Button.new()
+		b.text = "%s  ·  %s
+%s" % [w.display_name(), job.to_lower(), w.status_text()]
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.focus_mode = Control.FOCUS_NONE
+		UiTheme.style_button(b, 14)
+		b.pressed.connect(func() -> void:
+			set_open(false)
+			villager_requested.emit(w))
+		_village.add_child(b)
+	var lines: Array = realm.hud_lines() if realm != null and realm.has_method("hud_lines") else []
+	if not lines.is_empty():
+		_village.add_child(_rule())
+		for l: Variant in lines:
+			_village.add_child(UiTheme.label(str(l), 14, UiTheme.INK, 600))
 
 
 ## Saves through the same close notification the window sends, so a quit from

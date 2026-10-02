@@ -30,6 +30,8 @@ const SWIM_SINK := -1.1        ## terminal speed while treading water
 const BUOYANCY := 9.0
 
 var camera: Camera3D
+## The player's own forearms in view (FpHands).
+var hands: FpHands
 var world: VoxelWorld
 var in_water := false
 var submerged := false
@@ -127,6 +129,10 @@ func _ready() -> void:
 	att.dof_blur_amount = 0.015
 	camera.attributes = att
 
+	hands = FpHands.new()
+	camera.add_child(hands)
+	hands.setup(self)
+
 	_ray = RayCast3D.new()
 	_ray.target_position = Vector3(0, 0, -REACH)
 	_ray.collide_with_areas = true
@@ -134,6 +140,8 @@ func _ready() -> void:
 	_ray.collision_mask = 0xFFFFFFFF
 	camera.add_child(_ray)
 
+	# The world, and the furniture (Props.SOLID_LAYER).
+	collision_mask = 1 | Props.SOLID_LAYER
 	floor_max_angle = deg_to_rad(52.0)
 	floor_snap_length = 0.4
 	_install_look_lock()
@@ -258,6 +266,8 @@ func set_low_spec(on: bool) -> void:
 ## aim from, and aiming is the whole point of the recoil being there.
 func kick(amount: float) -> void:
 	_kick_t = 0.3
+	if hands != null:
+		hands.jolt(amount)
 	_kick = Vector3(randf_range(-1, 1), randf_range(0.6, 1.0), 0.0) * amount * 0.06
 
 

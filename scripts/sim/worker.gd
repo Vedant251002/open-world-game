@@ -609,8 +609,10 @@ func _unwedge() -> void:
 ## Whether the worker should be trailing the player right now. Only when idle:
 ## a worker who abandons a half-built wall because you walked past is not a
 ## worker, and being asked a question is a conversation you are standing in.
+## Nobody trails the player any more: between jobs the crew live their own
+## day like every other villager (_tick_idle), and only an order redirects them.
 func _tags_along() -> bool:
-	return employer != null and state == State.IDLE and not _holding
+	return false
 
 
 ## Direct steering rather than a path. Following happens at three metres and
@@ -1122,7 +1124,7 @@ func _arrive_errand() -> void:
 				for i in spots.size():
 					var at: Vector3 = spots[i]
 					var prop := str(kinds[i % kinds.size()])
-					Props.spawn(prop, at, randf() * TAU, root)
+					Props.spawn(prop, at, randf() * TAU, root, true)
 					placed += 1
 			if placed == 0:
 				_say("There was nowhere to put anything.", "refuse")

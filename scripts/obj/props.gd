@@ -837,9 +837,48 @@ static func _add_box(st: SurfaceTool, o: Vector3, s: Vector3) -> void:
 		st.add_vertex(p[f[0]]); st.add_vertex(p[f[2]]); st.add_vertex(p[f[3]])
 
 
+## The physics layer furniture blocks on. Only the player's mask includes it:
+## the crew and the animals path on the voxel grid and were never routed round
+## a table, so making furniture solid to them would just get them stuck.
+const SOLID_LAYER := 16
+## Props the player walks over or under rather than into: flat, hanging, tiny,
+## or (the stair) meant to be climbed.
+const NOT_SOLID := {"rug": true, "mat": true, "candle": true, "lantern": true,
+	"tool_rack": true, "stair": true, "tankard": true, "peel": true,
+	"bread_tray": true, "signboard": true}
+
+static var _solid_cache: Dictionary = {}
+
+
+## The prop's bounding box in metres (centre, size), or an empty array when the
+## prop should not block. Measured off the boxes like back_extent().
+static func solid_box(type_name: String) -> Array:
+	var key := resolve(type_name)
+	if _solid_cache.has(key):
+		return _solid_cache[key]
+	var out: Array = []
+	var boxes: Array = DEFS.get(key, [])
+	if not NOT_SOLID.has(key) and not boxes.is_empty() and mount_y(key) == 0.0:
+		var lo := Vector3(INF, INF, INF)
+		var hi := -lo
+		for b: Array in boxes:
+			var o := Vector3(float(b[0]), float(b[1]), float(b[2])) * U
+			var e := o + Vector3(float(b[3]), float(b[4]), float(b[5])) * U
+			lo = lo.min(o)
+			hi = hi.max(e)
+		var sz := hi - lo
+		# Knee height and a hand's width across before it is in the way.
+		if sz.y >= 0.3 and maxf(sz.x, sz.z) >= 0.3:
+			out = [(lo + hi) * 0.5, sz]
+	_solid_cache[key] = out
+	return out
+
+
 ## Spawns one prop as a scene node. Props are entities: they carry their own
-## transform and never touch chunk data.
-static func spawn(type_name: String, pos: Vector3, yaw: float, parent: Node) -> Node3D:
+## transform and never touch chunk data. `solid` gives it a collision box the
+## player cannot walk through (furniture, barrels); crops and drops stay ghosts.
+static func spawn(type_name: String, pos: Vector3, yaw: float, parent: Node,
+		solid: bool = false) -> Node3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh_for(type_name)
 	mi.position = pos + Vector3(0.0, GROUND_LIFT, 0.0)
@@ -853,7 +892,25 @@ static func spawn(type_name: String, pos: Vector3, yaw: float, parent: Node) -> 
 		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(mi)
 	_attach_light(resolve(type_name), mi)
+	if solid:
+		_attach_body(type_name, mi)
 	return mi
+
+
+static func _attach_body(type_name: String, to: Node3D) -> void:
+	var box := solid_box(type_name)
+	if box.is_empty():
+		return
+	var body := StaticBody3D.new()
+	body.collision_layer = SOLID_LAYER
+	body.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = box[1]
+	cs.shape = shape
+	cs.position = box[0]
+	body.add_child(cs)
+	to.add_child(body)
 
 
 static func _attach_light(key: String, to: Node3D) -> void:

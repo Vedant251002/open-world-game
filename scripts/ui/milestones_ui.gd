@@ -96,6 +96,9 @@ func _build() -> void:
 	_card.offset_top = 14
 	_card.mouse_filter = Control.MOUSE_FILTER_STOP
 	_card.gui_input.connect(_on_card_input)
+	# Not on the main screen: the rank is a J / pause-menu look-up, and the
+	# celebration banner below is what announces a change.
+	_card.visible = false
 	_root.add_child(_card)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", int(12 * _k))

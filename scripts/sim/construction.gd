@@ -155,7 +155,7 @@ func _spawn_props() -> void:
 			continue
 		if not Props.exists(t):
 			continue
-		spawned_nodes.append(Props.spawn(t, p["pos"], float(p.get("yaw", 0.0)), prop_parent))
+		spawned_nodes.append(Props.spawn(t, p["pos"], float(p.get("yaw", 0.0)), prop_parent, true))
 		# Ambient life: sparks off a forge, embers in an oven.
 		var key := Props.resolve(t)
 		if key == "forge_block":

@@ -266,6 +266,31 @@ static func crosshair(blade: float, gap: float, thickness: float) -> Control:
 
 
 ## The centre dot that appears only when the look ray has hit something.
+## The crosshair: one small round dot at the exact centre of the screen, white
+## with a thin dark rim so it reads on snow and on night sky alike. Ignores the
+## mouse for the same reason the old blades did (see Hud._build_bar).
+static func dot_crosshair(radius: float = 2.6) -> Control:
+	var d := DotCrosshair.new()
+	d.radius = px(radius)
+	var s := ceilf(d.radius * 2.0 + 4.0)
+	d.set_anchors_preset(Control.PRESET_CENTER)
+	d.offset_left = -s * 0.5
+	d.offset_right = s * 0.5
+	d.offset_top = -s * 0.5
+	d.offset_bottom = s * 0.5
+	d.pivot_offset = Vector2(s, s) * 0.5
+	d.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return d
+
+
+class DotCrosshair extends Control:
+	var radius := 2.6
+	func _draw() -> void:
+		var c := size * 0.5
+		draw_circle(c, radius + 1.2, Color(0, 0, 0, 0.5), true, -1.0, true)
+		draw_circle(c, radius, Color(1, 1, 1, 0.92), true, -1.0, true)
+
+
 static func crosshair_dot() -> ColorRect:
 	var d := ColorRect.new()
 	var s := maxf(px(3), 2.0)

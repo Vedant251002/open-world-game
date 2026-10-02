@@ -159,6 +159,8 @@ func show_issue(idx: int) -> void:
 	shown = clampi(idx, 0, crier.issues.size() - 1)
 	var issue: Dictionary = crier.issues[shown]
 	crier.mark_read(issue)
+	if hud != null and hud.crier_badge != null:
+		hud.crier_badge.refresh()
 	_render(issue)
 	_prev_btn.disabled = shown <= 0
 	_next_btn.disabled = shown >= crier.issues.size() - 1
@@ -378,6 +380,9 @@ class Badge extends PanelContainer:
 			return
 		var latest := crier.latest()
 		_unread = crier.unread_count() > 0
+		# On the main screen only while there is something new to read; the
+		# paper is always in the pause menu and on N.
+		visible = _unread
 		_sub.text = ("Day %d" % int(latest["day"]) + ("  ·  new issue" if _unread else "")) if not latest.is_empty() else "No issues"
 		_label.text = "THE CRIER — DAY %d" % int(latest["day"]) if not latest.is_empty() else "THE CRIER"
 		if not _unread and _style != null:
