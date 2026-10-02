@@ -815,6 +815,7 @@ func _raise_crew() -> void:
 	hud.name = "Hud"
 	add_child(hud)
 	hud.setup(player, crew, clock, town)
+	touch.hud = hud
 
 	pause_menu = PauseMenu.new()
 	pause_menu.name = "PauseMenu"
