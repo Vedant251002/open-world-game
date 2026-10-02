@@ -33,6 +33,10 @@ var created_day := 0
 ## roster, because a role composed by keywords from a description is a coarser
 ## thing than one a model wrote, and the player should know which they got.
 var source := "builtin"
+## The classifier's questions for this role's orders (RoleQuestions). Built
+## from the engine when the role is made, reworded by the model once if there
+## is one, and saved with the role so that is never paid for twice.
+var questions: Dictionary = {}
 
 
 static func make(role_id: String, display: String, caps: Array,
@@ -85,6 +89,7 @@ func to_dict() -> Dictionary:
 		"id": id, "name": name, "description": description,
 		"capabilities": capabilities.duplicate(), "character": character,
 		"standing": standing, "created_day": created_day, "source": source,
+		"questions": questions.duplicate(true),
 	}
 
 
@@ -95,6 +100,9 @@ static func from_dict(d: Dictionary) -> Role:
 	r.standing = str(d.get("standing", ""))
 	r.created_day = int(d.get("created_day", 0))
 	r.source = str(d.get("source", "fallback"))
+	var q: Variant = d.get("questions", {})
+	if q is Dictionary:
+		r.questions = (q as Dictionary).duplicate(true)
 	return r
 
 

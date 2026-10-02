@@ -14,6 +14,8 @@ class_name ChatPanel
 
 signal sent(worker: Worker, text: String)
 signal closed
+## The player flipped Command / Chat here; the HUD keeps the bar in step.
+signal mode_changed(mode: String)
 
 const BG := UiTheme.PANEL_SOLID
 const INK := UiTheme.INK
@@ -37,6 +39,7 @@ var _tabs: HFlowContainer
 var _scroll: ScrollContainer
 var _rows: VBoxContainer
 var _entry: LineEdit
+var _mode: ModeToggle
 var _rows_for := ""
 var _rows_count := -1
 var _width := 420.0
@@ -100,12 +103,35 @@ func _build() -> void:
 	_rows.add_theme_constant_override("separation", 6)
 	_scroll.add_child(_rows)
 
+	_mode = ModeToggle.new()
+	_mode.setup(26 if _touch else 13, 64.0 if _touch else 28.0)
+	_mode.changed.connect(func(m: String) -> void:
+		_paint_hint()
+		mode_changed.emit(m))
+	col.add_child(_mode)
+
 	_entry = LineEdit.new()
-	_entry.placeholder_text = "say something…"
+	_entry.placeholder_text = "tell them what to do…"
 	_entry.custom_minimum_size = Vector2(0, 90.0 if _touch else 34.0)
 	_entry.add_theme_font_size_override("font_size", 34 if _touch else 16)
 	_entry.text_submitted.connect(_on_submit)
 	col.add_child(_entry)
+
+
+## Which mode a line typed here is sent in.
+var mode: String:
+	get:
+		return _mode.mode if _mode != null else ModeToggle.COMMAND
+
+
+func set_mode(m: String) -> void:
+	if _mode != null:
+		_mode.set_mode(m)
+		_paint_hint()
+
+
+func _paint_hint() -> void:
+	_entry.placeholder_text = "say anything — nothing gets done…" 		if mode == ModeToggle.CHAT else "tell them what to do…"
 
 
 # ------------------------------------------------------------------- record

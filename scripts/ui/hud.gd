@@ -11,6 +11,8 @@ class_name Hud
 
 signal instruction_given(worker: Worker, text: String)
 signal answer_given(worker: Worker, text: String)
+## Something said in Chat mode: talk only, never an order (Dispatcher.chat).
+signal chat_given(worker: Worker, text: String)
 signal harvest_wanted(tile: Vector2i)
 ## The player has opened the talk bar on somebody (the guided first day listens).
 signal talk_opened(worker: Worker)
@@ -33,7 +35,6 @@ var town: Town
 var _target: Worker = null
 var _crop: Node3D = null
 var _purse: Label
-var _keys: Control
 var _k := 1.0                       ## type multiplier for phones
 var _status: PanelContainer
 var _sky_icon: UiIcon
@@ -41,7 +42,6 @@ var _coin_icon: UiIcon
 var _day_label: Label
 var _time_label: Label
 var _coin_word: Label
-var _realm_card: PanelContainer
 var _crew_rows: Array[Dictionary] = []
 var _prompt_box: PanelContainer
 var _prompt_key: PanelContainer
@@ -56,10 +56,8 @@ var _bottom: VBoxContainer          ## subtitle, toast, prompt: stacked, never o
 ## What the player is holding, bottom right. Empty when unarmed.
 var _arms: Label
 var warfare: Node = null
-## The kingdom, for the lines under the roster: people, weather, the rest.
+## The kingdom: read for the season on the clock card.
 var realm: Node = null
-var _realm_box: VBoxContainer
-var _realm_labels: Array[Label] = []
 ## What the purse and the roster were last painted, so a colour is only ever
 ## reassigned when it has really changed.
 var _in_debt := false
@@ -78,12 +76,14 @@ var _root: Control
 ## the whole interface: it answers "is there someone there?" without the player
 ## having to read a line of text or look away from the middle of the screen.
 var _crosshair: Control
-var _crosshair_dot: ColorRect
 var _prompt: Label
 var _crewbox: VBoxContainer
 var _bar: PanelContainer
 var _barlabel: Label
 var _entry: LineEdit
+## Command or Chat, shared by the talk bar and the chat panel.
+var talk_mode := ModeToggle.COMMAND
+var _mode_toggle: ModeToggle
 var _assume: PanelContainer
 var _assume_title: Label
 var _assume_body: Label
@@ -100,7 +100,6 @@ var _subtitle_left := 0.0
 var _phrases: HFlowContainer
 ## The conversation, kept per person, down the left of the screen.
 var chat: ChatPanel
-var _chat_button: Button
 ## Sized for a thumb rather than a cursor.
 var _touch := false
 ## On the web the text field is a real HTML input laid over the canvas —
@@ -135,11 +134,10 @@ func _build() -> void:
 	UiTheme.apply(_root)
 	add_child(_root)
 
-	_crosshair = UiTheme.crosshair(7.0, 3.0, 2.0)
+	# Just a dot, dead centre. It warms to gold and grows a touch when it rests
+	# on somebody you can talk to or a crop you can pick (_on_looked_at).
+	_crosshair = UiTheme.dot_crosshair()
 	_root.add_child(_crosshair)
-	_crosshair_dot = UiTheme.crosshair_dot()
-	_crosshair_dot.visible = false
-	_root.add_child(_crosshair_dot)
 
 	# Bigger on a phone, where the 1600x900 canvas is shown at under half size,
 	# but not so big the column covers a third of a landscape screen: at 1.75
@@ -218,6 +216,7 @@ func _build() -> void:
 	chat.name = "Chat"
 	chat.setup(crew, clock, _touch)
 	chat.sent.connect(_on_chat_sent)
+	chat.mode_changed.connect(_set_talk_mode)
 	chat.closed.connect(_on_chat_closed)
 	add_child(chat)
 
@@ -231,8 +230,8 @@ func _build() -> void:
 	Voice.listener = player
 
 
-## The top-left stack: time and purse in one card, a card per crew member, the
-## kingdom's own lines, and a row of key hints. One column, one rhythm.
+## The top-left stack: time and purse in one card, and a card for any crew
+## member who is waiting on an answer. Everything else is in the pause menu.
 func _build_topleft() -> void:
 	var k := _k
 	_stack = VBoxContainer.new()
@@ -277,20 +276,8 @@ func _build_topleft() -> void:
 	for _i in 3:
 		_add_crew_row()
 
-	# What the kingdom has to say for itself.
-	_realm_card = PanelContainer.new()
-	_realm_card.add_theme_stylebox_override("panel", UiTheme.card(0.8))
-	_realm_card.visible = false
-	_stack.add_child(_realm_card)
-	var rrow := HBoxContainer.new()
-	rrow.add_theme_constant_override("separation", int(10 * k))
-	_realm_card.add_child(rrow)
-	var pi := UiIcon.make("people", 20.0 * k, UiTheme.DIM)
-	pi.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	rrow.add_child(pi)
-	_realm_box = VBoxContainer.new()
-	_realm_box.add_theme_constant_override("separation", 1)
-	rrow.add_child(_realm_box)
+	# The kingdom's own lines (people, sickness, sieges) live in the pause
+	# menu now: the main screen carries only what the player acts on.
 
 	# The weekly challenge objective (hidden unless a run is under way).
 	challenge_card = ChallengeCard.new()
@@ -314,37 +301,7 @@ func _build_topleft() -> void:
 	requests_card = RequestsCard.new()
 	requests_card.size_flags_horizontal = Control.SIZE_SHRINK_END
 	side.add_child(requests_card)
-
-	# Key hints, said once and left there. The phone build has buttons instead.
-	if not _touch:
-		var pill := PanelContainer.new()
-		pill.add_theme_stylebox_override("panel", UiTheme.card(0.7, 14))
-		pill.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-		_stack.add_child(pill)
-		var hints := HBoxContainer.new()
-		hints.add_theme_constant_override("separation", 14)
-		_keys = hints
-		pill.add_child(hints)
-		hints.add_child(UiTheme.chip("I", "stores"))
-		hints.add_child(UiTheme.chip("M", "map"))
-		hints.add_child(UiTheme.chip("P", "photo"))
-		var ch := HBoxContainer.new()
-		ch.add_theme_constant_override("separation", 6)
-		ch.add_child(UiTheme.key_cap("C"))
-		_chat_button = Button.new()
-		_chat_button.text = "chat"
-		_chat_button.flat = true
-		_chat_button.focus_mode = Control.FOCUS_NONE
-		_chat_button.add_theme_font_override("font", UiTheme.font(600))
-		_chat_button.add_theme_font_size_override("font_size", UiTheme.fs(13))
-		_chat_button.add_theme_color_override("font_color", UiTheme.DIM)
-		_chat_button.add_theme_color_override("font_hover_color", UiTheme.ACCENT)
-		var empty := StyleBoxEmpty.new()
-		for n: String in ["normal", "hover", "pressed", "focus"]:
-			_chat_button.add_theme_stylebox_override(n, empty)
-		_chat_button.pressed.connect(toggle_chat)
-		ch.add_child(_chat_button)
-		hints.add_child(ch)
+	# No key hints on screen: they are listed in the pause menu.
 
 
 func _add_crew_row() -> void:
@@ -436,8 +393,16 @@ func _build_bar() -> void:
 	col.add_theme_constant_override("separation", 6)
 	_bar.add_child(col)
 
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	col.add_child(head)
 	_barlabel = _label("", 28 if _touch else 16, UiTheme.ACCENT, 700)
-	col.add_child(_barlabel)
+	_barlabel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(_barlabel)
+	_mode_toggle = ModeToggle.new()
+	_mode_toggle.setup(28 if _touch else 14, 70.0 if _touch else 30.0)
+	_mode_toggle.changed.connect(_set_talk_mode)
+	head.add_child(_mode_toggle)
 
 	# Tappable phrases, above the field.
 	#
@@ -596,12 +561,11 @@ func _on_looked_at(node: Node) -> void:
 	_crop = null
 	if _target == null and node is Node3D and (node as Node3D).has_meta("crop_tile"):
 		_crop = node as Node3D
-	# The centre dot is the cheapest useful signal in the interface: the player
-	# learns there is someone to talk to from the centre of the screen, without
-	# reading a line of text or moving their gaze off the thing they are
-	# looking at. It is hidden again the moment the ray loses them.
-	if _crosshair_dot != null:
-		_crosshair_dot.visible = _target != null or _crop != null
+	# The dot grows a little on something you can act on: the player learns
+	# there is someone to talk to without reading a line of text.
+	var on := _target != null or _crop != null
+	if _crosshair != null:
+		_crosshair.scale = Vector2.ONE * (1.5 if on else 1.0)
 	# Rim glow on what is being looked at, and a warm crosshair to match.
 	TargetHighlight.set_target(node if (_target != null or _crop != null) else null)
 	if _crosshair != null:
@@ -610,13 +574,6 @@ func _on_looked_at(node: Node) -> void:
 
 
 func _process(delta: float) -> void:
-	# The chat word in the key hints is a button only while the player is not
-	# steering (a menu, the bar or chat has the pointer). During play it lets
-	# clicks through, or a click that happened to land on it went to the
-	# button and not to the world.
-	if _chat_button != null and player != null:
-		_chat_button.mouse_filter = Control.MOUSE_FILTER_IGNORE \
-			if player.input_enabled else Control.MOUSE_FILTER_STOP
 	# Crier/requests column steps down while a held-plan panel is up top right.
 	if _side != null:
 		_side.offset_top = (_assume.size.y + 32.0) if _assume != null and _assume.visible else 20.0
@@ -645,19 +602,6 @@ func _process(delta: float) -> void:
 		var low := (clock.hour >= 5.5 and clock.hour < 8.0) or (clock.hour >= 17.5 and clock.hour < 19.5)
 		_sky_icon.set_kind("moon" if night else "sun",
 			Color("#b9c8ff") if night else (Color("#ff9d5c") if low else Color("#ffd27a")))
-	if realm != null and realm.has_method("hud_lines"):
-		var lines: Array = realm.hud_lines()
-		while _realm_labels.size() < lines.size():
-			var l := _label("", int(14 * _k), DIM, 600)
-			_realm_box.add_child(l)
-			_realm_labels.append(l)
-		for i in _realm_labels.size():
-			var want := str(lines[i]) if i < lines.size() else ""
-			if _realm_labels[i].text != want:
-				_realm_labels[i].text = want
-		var any := not lines.is_empty()
-		if _realm_card.visible != any:
-			_realm_card.visible = any
 	if warfare != null and warfare.has_method("player_status"):
 		_arms.text = str(warfare.player_status())
 		var hp := float(warfare.get("player_health"))
@@ -676,21 +620,20 @@ func _process(delta: float) -> void:
 			_purse.add_theme_color_override("font_color", DEBT if owed else COIN)
 			_coin_icon.set_kind("coin", DEBT if owed else COIN)
 
-	# The roster is the people who work for you, with their job. Citizens are
-	# not listed: a dozen names of people you have not spoken to is a phone
-	# book, and the point of the roster is to hold the crew in your head.
+	# The roster on the main screen is only whoever is waiting on you.
 	var hired: Array[Worker] = crew.hired() if crew != null else []
 	while _crew_rows.size() < hired.size():
 		_add_crew_row()
 	for i in _crew_rows.size():
 		var row: Dictionary = _crew_rows[i]
 		var card: Control = row["card"]
-		if i >= hired.size():
-			if card.visible:
-				card.visible = false
+		# Only somebody waiting on an answer earns a place on the main screen;
+		# the full roster is in the pause menu.
+		var want := i < hired.size() and hired[i].pending_question != ""
+		if card.visible != want:
+			card.visible = want
+		if not want:
 			continue
-		if not card.visible:
-			card.visible = true
 		var w: Worker = hired[i]
 		var job := w.role.name if w.role != null and w.role.id != "builder" else "Builder"
 		var nm: Label = row["name"]
@@ -712,6 +655,7 @@ func _process(delta: float) -> void:
 	if _web != null and _typing_for != null:
 		var said := _web.take()
 		if said != "":
+			_set_talk_mode(_web.mode())
 			_on_submit(said)
 		elif _web.take_closed():
 			_close_bar()
@@ -851,10 +795,32 @@ func _on_chat_closed() -> void:
 ## A line typed in the panel goes exactly where a line from the bar goes.
 func _on_chat_sent(w: Worker, said: String) -> void:
 	chat.log_line(w, "you", said)
-	if w.pending_question != "":
+	_route(w, said)
+
+
+## Where a line goes: an answer to their question, a chat line, or an order.
+## A pending question is only answered in Command mode — in Chat the same
+## words are talk, and must not be taken as the answer to a work question.
+func _route(w: Worker, said: String) -> void:
+	if talk_mode == ModeToggle.CHAT:
+		chat_given.emit(w, said)
+	elif w.pending_question != "":
 		answer_given.emit(w, said)
 	else:
 		instruction_given.emit(w, said)
+
+
+## Switches Command / Chat everywhere it is shown, and re-labels the open bar.
+func _set_talk_mode(m: String) -> void:
+	talk_mode = ModeToggle.CHAT if m == ModeToggle.CHAT else ModeToggle.COMMAND
+	if _mode_toggle != null:
+		_mode_toggle.set_mode(talk_mode)
+	if chat != null:
+		chat.set_mode(talk_mode)
+	if _typing_for != null:
+		_label_bar(_typing_for)
+		if _web == null:
+			_fill_phrases(_typing_for)
 
 
 ## Opens the instruction bar from outside, for the screenshot rig.
@@ -876,28 +842,45 @@ func _open_bar(w: Worker) -> void:
 	# nearly the width of the screen and lands straight on top of the map.
 	if minimap != null:
 		minimap.visible = false
-	if w.pending_question != "":
-		_barlabel.text = "%s asked:  %s" % [w.display_name(), w.pending_question]
-		_entry.placeholder_text = "answer them…"
-	elif not w.hired:
-		_barlabel.text = "Talking to %s, who lives here" % w.display_name()
-		_entry.placeholder_text = "hire them as something, or ask them something…"
-	else:
-		var job := "" if w.role == null or w.role.id == "builder" else " the " + w.role.name
-		_barlabel.text = "Telling %s%s what to do" % [w.display_name(), job]
-		_entry.placeholder_text = "tell them what to do, or ask them something…"
+	# Somebody waiting on an answer about their work is answered as a command.
+	if w.pending_question != "" and talk_mode == ModeToggle.CHAT:
+		_set_talk_mode(ModeToggle.COMMAND)
+	_label_bar(w)
 	_entry.text = ""
 	player.set_input_enabled(false)
 	if _web != null:
 		# The browser gets the whole panel: label, phrases and field together,
 		# as real elements. Two fields on screen would be worse than none.
 		_bar.visible = false
-		var hint := "answer them…" if w.pending_question != "" else "tell them what to do, or ask them something…"
-		_web.show_bar(_barlabel.text, hint, _phrases_for(w))
+		_web.show_bar(_barlabel.text, _entry.placeholder_text, _phrases_for(w),
+			talk_mode, _hint_for(w, ModeToggle.COMMAND), _hint_for(w, ModeToggle.CHAT))
 		return
 	_entry.grab_focus()
 	_show_keyboard()
 	_fill_phrases(w)
+
+
+func _label_bar(w: Worker) -> void:
+	if talk_mode == ModeToggle.CHAT:
+		_barlabel.text = "Chatting with %s" % w.display_name()
+	elif w.pending_question != "":
+		_barlabel.text = "%s asked:  %s" % [w.display_name(), w.pending_question]
+	elif not w.hired:
+		_barlabel.text = "Talking to %s, who lives here" % w.display_name()
+	else:
+		var job := "" if w.role == null or w.role.id == "builder" else " the " + w.role.name
+		_barlabel.text = "Telling %s%s what to do" % [w.display_name(), job]
+	_entry.placeholder_text = _hint_for(w, talk_mode)
+
+
+func _hint_for(w: Worker, m: String) -> String:
+	if m == ModeToggle.CHAT:
+		return "say anything — they will answer, nothing gets done…"
+	if w.pending_question != "":
+		return "answer them…"
+	if not w.hired:
+		return "hire them as something…"
+	return "tell them what to do…"
 
 
 func _close_bar() -> void:
@@ -918,16 +901,12 @@ func _close_bar() -> void:
 func _on_submit(text: String) -> void:
 	var w := _typing_for
 	var said := text.strip_edges()
-	var answering := w != null and w.pending_question != ""
 	_close_bar()
 	if w == null or said == "":
 		return
 	if chat != null:
 		chat.log_line(w, "you", said)
-	if answering:
-		answer_given.emit(w, said)
-	else:
-		instruction_given.emit(w, said)
+	_route(w, said)
 
 
 ## Everything a worker understands, in the words that reach them.
@@ -935,10 +914,14 @@ func _on_submit(text: String) -> void:
 ## Deliberately phrased as instructions rather than as buttons: tapping one
 ## sends exactly the sentence shown, so a player learns what kind of thing
 ## can be said and then starts typing their own variations on it.
+## Chat mode: things to say, not things to have done.
+const CHAT_PHRASES := ["how are you?", "what do you do?", "how is the town doing?",
+	"what do you think of me?", "tell me about yourself"]
+
 const PHRASES := [
 	"build a hut", "build a bakery", "build a workshop",
 	"build a tavern", "build a store", "plant a wheat field",
-	"bring some hens", "wait here", "follow me",
+	"bring some hens", "wait here",
 	# Questions, so the field is visibly a conversation and not a command line.
 	"what are you doing?", "where is the store?", "what do we have?",
 	"what did I ask you?",
@@ -958,7 +941,7 @@ const HIRE_PHRASES := [
 ]
 ## Things a hired person other than a builder is usually asked.
 const ROLE_PHRASES := [
-	"go to the well", "follow me", "wait here",
+	"go to the well", "wait here",
 	"work a shift at the bakery", "patrol the well and the edge of town",
 	"bring in the harvest", "collect the eggs", "scout north",
 	"what can you do?", "what are you doing?",
@@ -966,6 +949,8 @@ const ROLE_PHRASES := [
 
 
 func _phrases_for(w: Worker) -> Array:
+	if talk_mode == ModeToggle.CHAT:
+		return CHAT_PHRASES
 	if w.pending_question != "":
 		return REPLIES
 	if not w.hired:

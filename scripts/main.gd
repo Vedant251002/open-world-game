@@ -386,6 +386,15 @@ func _on_world_ready(t0: int) -> void:
 				say2 = a.substr(6)
 		rt.begin(say2)
 		return
+	if "--modetest" in args:
+		# Chat versus Command, live. See scripts/dev/mode_test.gd.
+		var mt := ModeTest.new()
+		mt.dispatch = dispatch
+		mt.crew = crew
+		mt.hud = hud
+		add_child(mt)
+		mt.begin()
+		return
 	if "--uiflow" in args:
 		# The game driven through its interface: talk, type, tap a phrase,
 		# open and close every screen. See scripts/dev/ui_flow.gd.
@@ -811,6 +820,8 @@ func _raise_crew() -> void:
 	pause_menu.name = "PauseMenu"
 	add_child(pause_menu)
 	pause_menu.setup(player, title != null)
+	pause_menu.crew = crew
+	pause_menu.villager_requested.connect(hud.open_card)
 	# Nothing of the game's own interface shows through the front door.
 	if title != null:
 		hud.visible = false
@@ -826,6 +837,9 @@ func _raise_crew() -> void:
 	# clock stays something Town is handed rather than something it listens to.
 	clock.day_passed.connect(func(_d: int) -> void: town.market_day())
 	hud.harvest_wanted.connect(_on_harvest)
+	# The player's hands answer what they just did (scripts/player/fp_hands.gd).
+	hud.harvest_wanted.connect(func(_t: Vector2i) -> void: player.hands.reach())
+	hud.talk_opened.connect(func(_w: Worker) -> void: player.hands.wave())
 	# Visiting a shared village, words go to the villager and nowhere else: no
 	# order can be planned there (VillageVisit.talk).
 	hud.instruction_given.connect(func(w: Worker, t: String) -> void:
@@ -838,6 +852,12 @@ func _raise_crew() -> void:
 			VillageVisit.talk(self, w, t)
 		else:
 			dispatch.answer(w, t))
+	# Chat mode: the model answers in their voice and nothing is done.
+	hud.chat_given.connect(func(w: Worker, t: String) -> void:
+		if VillageVisit.active:
+			VillageVisit.talk(self, w, t)
+		else:
+			dispatch.chat(w, t))
 	dispatch.plan_accepted.connect(func(w: Worker, a: Array) -> void:
 		hud.show_assumptions(w, a))
 	dispatch.status.connect(func(t: String) -> void: hud.toast(t))
@@ -1041,7 +1061,6 @@ func _raise_crier() -> void:
 	add_child(crier_screen)
 	crier_screen.setup(crier, player, hud, map, inventory)
 	hud.crier_badge.bind(crier)
-	hud.crier_badge.visible = true
 	hud.crier_badge.pressed.connect(func() -> void:
 		if crier_screen.open:
 			crier_screen.set_open(false)
@@ -1097,6 +1116,9 @@ func _raise_village_life() -> void:
 	milestones_ui.name = "MilestonesUi"
 	add_child(milestones_ui)
 	milestones_ui.setup(progression, identity, player, hud, map, inventory)
+	pause_menu.rank_requested.connect(func() -> void:
+		pause_menu.set_open(false)
+		milestones_ui.set_open(true))
 
 	tutorial = Tutorial.new()
 	tutorial.name = "Tutorial"
@@ -1172,6 +1194,7 @@ func _raise_realm() -> void:
 	realm.status.connect(func(t: String) -> void: hud.toast(t, 6.0))
 	dispatch.realm = realm
 	hud.realm = realm
+	pause_menu.realm = realm
 	# The map's directory of buildings and people reads from the realm.
 	map.realm = realm
 	# --- crisis banner: fire / raid / wolves / hunger / sickness / storm status

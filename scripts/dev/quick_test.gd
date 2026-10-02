@@ -21,55 +21,57 @@ func _init() -> void:
 		"verbs": ["go", "stock", "trade", "gather", "scout", "teach", "sow"],
 		"places": ["bakery", "well", "field"],
 		"materials": ["timber", "stone"],
-		"species": ["hen", "sheep"],
+		"f_species": ["hen", "sheep"],
 		"crops": ["wheat", "carrot"],
 		"directions": ["north", "south"],
 		"skills": ["carpentry", "masonry"],
 		"trade_actions": ["sell", "buy"],
-		"goods": ["timber", "food"],
+		"f_kind": ["timber", "food"],
 		"who": ["Mira"],
 	}
 
 	# --- what it should take ------------------------------------------------
 	_step("a sure errand", q, _reply({
-		"action": ["go", 0.97], "place": ["bakery", 0.95]}), labels,
+		"action": ["go", 0.97], "f_place": ["bakery", 0.95]}), labels,
 		{"do": "go", "place": "bakery"})
 	_step("a sure flock order", q, _reply({
-		"action": ["stock", 0.95], "species": ["sheep", 0.88]}), labels,
+		"action": ["stock", 0.95], "f_species": ["sheep", 0.88]}), labels,
 		{"do": "stock", "species": "sheep"})
 	_step("a sale with both halves", q, _reply({
-		"action": ["trade", 0.93], "trade_action": ["sell", 0.9],
-		"goods": ["timber", 0.85]}), labels,
+		"action": ["trade", 0.93], "f_action": ["sell", 0.9],
+		"f_kind": ["timber", 0.85]}), labels,
 		{"do": "trade", "action": "sell", "kind": "timber"})
 	_step("a lesson", q, _reply({
-		"action": ["teach", 0.94], "who": ["Mira", 0.9],
-		"skill": ["carpentry", 0.88]}), labels,
+		"action": ["teach", 0.94], "f_who": ["Mira", 0.9],
+		"f_skill": ["carpentry", 0.88]}), labels,
 		{"do": "teach", "who": "Mira", "skill": "carpentry"})
 	# An optional field left out is not a reason to refuse: the dispatcher's
 	# own default is exactly what the model would have sent.
 	_step("sowing with no crop named", q, _reply({
-		"action": ["sow", 0.95], "crop": [QuickIntent.NONE, 0.99]}), labels,
+		"action": ["sow", 0.95], "f_crop": [QuickIntent.NONE, 0.99]}), labels,
 		{"do": "sow"})
 
 	# --- what it must hand over --------------------------------------------
 	_pass("an unsure verb", q, _reply({"action": ["go", 0.80],
-		"place": ["bakery", 0.99]}), labels)
+		"f_place": ["bakery", 0.99]}), labels)
 	_pass("the escape label", q, _reply({"action": [QuickIntent.OTHER, 0.99]}), labels)
 	_pass("a verb it may not produce", q, _reply({"action": ["build", 0.99]}), labels)
 	_pass("a verb outside this role", q, _reply({"action": ["demolish", 0.99]}),
 		{"verbs": ["go"], "places": ["bakery"]})
 	_pass("a place nobody named", q, _reply({"action": ["go", 0.99],
-		"place": [QuickIntent.NONE, 0.99]}), labels)
+		"f_place": [QuickIntent.NONE, 0.99]}), labels)
 	_pass("an unsure place", q, _reply({"action": ["go", 0.99],
-		"place": ["bakery", 0.5]}), labels)
+		"f_place": ["bakery", 0.5]}), labels)
 	_pass("half a sale", q, _reply({"action": ["trade", 0.99],
-		"trade_action": ["sell", 0.95]}), labels)
+		"f_action": ["sell", 0.95]}), labels)
 	_pass("an animal nobody named", q, _reply({"action": ["stock", 0.99],
-		"species": [QuickIntent.NONE, 0.99]}), labels)
+		"f_species": [QuickIntent.NONE, 0.99]}), labels)
 	_pass("a label that was never offered", q, _reply({"action": ["go", 0.99],
-		"place": ["castle", 0.99]}), labels)
-	_pass("a place this step cannot carry", q, _reply({"action": ["wait", 0.99],
-		"place": ["bakery", 0.99]}), {"verbs": ["wait"], "places": ["bakery"]})
+		"f_place": ["castle", 0.99]}), labels)
+	# Wait carries a place now that the role's questions ask for one.
+	_step("waiting at a place", q, _reply({"action": ["wait", 0.99],
+		"f_place": ["bakery", 0.99]}), {"verbs": ["wait"], "places": ["bakery"]},
+		{"do": "wait", "place": "bakery"})
 	_pass("nonsense", q, "not json at all", labels)
 	_pass("an empty reply", q, "{}", labels)
 	_pass("no results", q, '{"results": []}', labels)
@@ -83,7 +85,7 @@ func _init() -> void:
 			"go to the well, then come back",
 			"chop timber and bring it here",
 			"don't go to the well", "sell 50 timber", "wait until noon",
-			"stock twelve hens", "rest for 3 hours"]:
+			"stock seven hens", "rest for 3 hours", "bring all the sheep"]:
 		if q.submit(s, "w1", labels):
 			_fail("took a two-part order: \"%s\"" % s)
 		else:

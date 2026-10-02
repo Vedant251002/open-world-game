@@ -86,8 +86,8 @@ const PROVIDERS := {
 }
 
 ## Tried in this order when nothing has been named. The chat API first, once
-## its key is actually in .env; otherwise the same order as before.
-const PREFERENCE := ["chat", "groq", "opencode"]
+## its key is actually in .env; then Orca Router, then the rest as before.
+const PREFERENCE := ["chat", "orcarouter", "groq", "opencode"]
 
 
 static func known(name: String) -> bool:

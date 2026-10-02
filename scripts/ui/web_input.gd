@@ -54,8 +54,11 @@ const SETUP := """
     return b;
   }
   var send = btn('Send', '#4a4238');
+  // Command or Chat, the same switch as the Godot bar's ModeToggle.
+  var modeBtn = btn('Command', '#3a3f4a');
   var shut = btn('\\u2715', '#2a2724');
 
+  row.appendChild(modeBtn);
   row.appendChild(input);
   row.appendChild(send);
   row.appendChild(shut);
@@ -64,7 +67,16 @@ const SETUP := """
   wrap.appendChild(row);
   document.body.appendChild(wrap);
 
-  var state = { sent: null, closed: false };
+  var state = { sent: null, closed: false, mode: 'command', hints: {} };
+  function paintMode() {
+    modeBtn.textContent = state.mode === 'chat' ? 'Chat' : 'Command';
+    modeBtn.style.background = state.mode === 'chat' ? '#3f4a3a' : '#3a3f4a';
+    input.placeholder = state.hints[state.mode] || input.placeholder;
+  }
+  modeBtn.addEventListener('click', function () {
+    state.mode = state.mode === 'chat' ? 'command' : 'chat';
+    paintMode();
+  });
 
   function submit(text) {
     if (!text) { return; }
@@ -93,6 +105,9 @@ const SETUP := """
       input.value = '';
       state.sent = null;
       state.closed = false;
+      state.mode = cfg.mode === 'chat' ? 'chat' : 'command';
+      state.hints = { command: cfg.hint_command || cfg.hint || '', chat: cfg.hint_chat || cfg.hint || '' };
+      paintMode();
       while (chips.firstChild) { chips.removeChild(chips.firstChild); }
       (cfg.phrases || []).forEach(function (p) {
         var c = btn(p, '#332f2a');
@@ -107,6 +122,7 @@ const SETUP := """
     },
     hide: function () { wrap.style.display = 'none'; input.blur(); },
     take: function () { var s = state.sent; state.sent = null; return s; },
+    mode: function () { return state.mode; },
     takeClosed: function () { var c = state.closed; state.closed = false; return c; },
     open: function () { return wrap.style.display !== 'none'; }
   };
@@ -128,11 +144,13 @@ func setup() -> void:
 	Voice.install_mic()      # dictation button, only where SpeechRecognition exists
 
 
-func show_bar(title: String, hint: String, phrases: Array) -> void:
+func show_bar(title: String, hint: String, phrases: Array,
+		mode: String = "command", hint_command: String = "", hint_chat: String = "") -> void:
 	if not available():
 		return
 	setup()
-	var cfg := JSON.stringify({"title": title, "hint": hint, "phrases": phrases})
+	var cfg := JSON.stringify({"title": title, "hint": hint, "phrases": phrases,
+		"mode": mode, "hint_command": hint_command, "hint_chat": hint_chat})
 	JavaScriptBridge.eval("window.__dgt && window.__dgt.show(%s)" % cfg, true)
 
 
@@ -149,6 +167,15 @@ func take() -> String:
 	var v: Variant = JavaScriptBridge.eval(
 		"(window.__dgt && window.__dgt.take()) || ''", true)
 	return str(v) if v != null else ""
+
+
+## Which mode the browser bar was in when the line was sent.
+func mode() -> String:
+	if not available():
+		return "command"
+	var v: Variant = JavaScriptBridge.eval(
+		"(window.__dgt && window.__dgt.mode()) || 'command'", true)
+	return "chat" if str(v) == "chat" else "command"
 
 
 ## True once, if the player dismissed the panel rather than sending anything.

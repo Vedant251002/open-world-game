@@ -191,6 +191,7 @@ func setup(w: VoxelWorld, v: Village, g: WorldGen, t: Town, c: GameClock,
 	llm.answered.connect(_on_answered)
 	llm.line_ready.connect(_on_line_ready)
 	llm.role_ready.connect(_on_role_ready)
+	llm.questions_ready.connect(_on_questions_ready)
 	llm.round_ready.connect(_on_round_ready)
 	llm.status.connect(func(t2: String) -> void: status.emit(t2))
 	clock.day_passed.connect(_on_morning)
@@ -263,6 +264,12 @@ func instruct(worker: Worker, instruction: String) -> void:
 	if _open.has(worker.memory.worker_id):
 		status.emit("%s is still thinking." % worker.display_name())
 		return
+	# A stroll of their own is not work. Without this an order given to
+	# somebody wandering about between jobs was refused as "busy — walking".
+	# Somebody following you is left walking: that is their catching up, not
+	# a stroll, and stopping them left the crew standing about mid-follow.
+	if worker.employer == null:
+		worker.stop_wandering()
 	if worker.busy():
 		converse(worker, instruction,
 			"You are busy — %s — and cannot take anything new on until that is done. Say so in your own way." % worker.status_text(),
@@ -324,6 +331,37 @@ func instruct(worker: Worker, instruction: String) -> void:
 	_ask_model(worker, instruction, plot)
 
 
+## Chat: words, and nothing else.
+##
+## The talk field has two modes. A command is an order and goes through
+## instruct(), where the classifier and the planner turn it into work. Chat is
+## for talking — asking, joking, passing the time — and it is answered by the
+## model in the person's own voice and changes nothing in the town: no plan,
+## no walk, no hire, whatever was said. Facts still come from the records, so
+## "how much timber is there" is answered truly; the model only says it.
+const CHAT_SITUATION := "This is only conversation. Nothing said here starts, stops or changes any work: you cannot do anything because of it, and you must not say you are doing something now. If they ask you to do a job, say you will do it if they give it to you as an order. Answer honestly and in character, in a sentence or two."
+
+
+func chat(worker: Worker, said: String) -> void:
+	if worker == null or not is_instance_valid(worker) or said.strip_edges() == "":
+		return
+	var facts := ""
+	if Answers.is_question(said):
+		facts = _answer_about_role(worker, said)
+		if facts == "":
+			facts = Answers.reply(said, worker, town, village, clock, player,
+				farm, livestock, wildlife, warfare)
+		if facts == "" and realm != null:
+			facts = realm.answer(worker, said)
+	var fallback := facts
+	if fallback == "":
+		fallback = _small_talk_fallback(said) if _is_small_talk(said) 			else "If you want that done, give it to me as an order."
+	worker.memory.remember(clock.day, "You chatted with me: \"%s\"" % said, 0.0, {
+		"kind": "told", "question": said,
+	})
+	converse(worker, said, CHAT_SITUATION, facts, fallback)
+
+
 ## The model's turn. The actions are tools on the call. They stay where they
 ## are until a tool comes back that is actually a job — "let me think" and a
 ## walk to an empty plot was the model being asked to plan a building out of
@@ -341,8 +379,14 @@ func _ask_model(worker: Worker, instruction: String, plot: Plot) -> void:
 ## is a worker walking somewhere nobody asked for. Everything here is the town
 ## as it is right now, narrowed to what this person is allowed to do.
 func _quick_labels(worker: Worker) -> Dictionary:
+	var role := worker.role
+	if role == null and crew != null and crew.roles != null:
+		role = crew.roles.get_role("builder")
+	var questions := RoleQuestions.of(role)
+	if questions.is_empty():
+		return {}
 	var verbs: Array = []
-	for v: String in QuickIntent.SIMPLE:
+	for v: String in RoleQuestions.verbs_in(questions, QuickIntent.SIMPLE):
 		if Steps.verb_tier(v) > town.tier:
 			continue
 		if worker.role != null and not worker.role.can(Steps.capability_of(v)):
@@ -378,6 +422,7 @@ func _quick_labels(worker: Worker) -> Dictionary:
 		goods.append(g)
 
 	return {
+		"questions": questions,
 		"verbs": verbs,
 		"places": places,
 		"who": who,
@@ -2734,8 +2779,14 @@ func _on_role_ready(key: String, raw: Dictionary, source: String) -> void:
 	for base: String in ["go", "wait", "speak"]:
 		if base not in role.capabilities:
 			role.capabilities.append(base)
+	# The classifier's questions for this job, from the engine now and in the
+	# job's own words as soon as the model has written them. Orders given in
+	# the meantime use the plain wording, which works, just less well.
+	role.questions = RoleQuestions.template(role)
 	crew.roles.add(role)
 	status.emit("New job: %s" % role.summary())
+	if source == "model" and llm.available():
+		llm.compose_questions(role.id, role, role.questions)
 
 	var line := str(raw.get("line", "")).strip_edges()
 	for w: Variant in waiting:
@@ -2743,6 +2794,15 @@ func _on_role_ready(key: String, raw: Dictionary, source: String) -> void:
 	if waiting.is_empty() and mouth != null:
 		mouth.speak("%s: %s." % [role.name.capitalize(),
 			", ".join(role.ready_capabilities())], "talk")
+
+
+## The job's questions came back in its own words. Laid over the template, so
+## nothing the model wrote can change what the classifier may answer.
+func _on_questions_ready(key: String, raw: Dictionary) -> void:
+	if crew == null or not crew.roles.has(key) or raw.is_empty():
+		return
+	var role := crew.roles.get_role(key)
+	role.questions = RoleQuestions.merge(RoleQuestions.of(role), raw)
 
 
 func _finish_hire(target: Worker, role: Role, line: String = "") -> void:

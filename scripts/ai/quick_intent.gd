@@ -34,10 +34,13 @@ signal decided(worker_id: String, plan: Dictionary)
 ## there is no secret here to hold.
 const ENDPOINT := "https://classifier.dev/v1/classify"
 
-## Short on purpose. The model is the fallback and it is already the slow path;
-## a front door that takes two seconds to fail has made every order worse. If
-## the answer is not back before a player would notice, it is not worth having.
-const TIMEOUT := 3.0
+## Long enough for the first call of a session, which is not the same as the
+## rest. Measured in the running game: about two seconds once the town has
+## settled, but four to six for the first order while the world is still
+## streaming in — at three seconds every game's first order timed out here and
+## went to the model. A failure costs this long before the model is asked, so
+## it is no longer than the slow case needs.
+const TIMEOUT := 8.0
 
 ## How sure it has to be before the order is taken out of the model's hands.
 ##
@@ -70,10 +73,13 @@ const OTHER := "something_else"
 ## line is written, not chosen), patrol is missing (an order of places is not a
 ## choice), and delegate and recruit are missing (both end in plain words meant
 ## for somebody else).
+##
+## enclose and pave joined once a role's questions (RoleQuestions) gave size,
+## width and gate a fixed scale to be picked from.
 const SIMPLE := ["go", "follow", "wait", "rest", "station", "harvest", "collect",
 	"water", "tend", "report", "fish", "hunt", "cook", "craft", "scout",
 	"gather", "stock", "trade", "sow", "plant_tree", "level", "demolish",
-	"decorate", "teach"]
+	"decorate", "teach", "enclose", "pave"]
 
 ## A sentence holding one of these is holding more than one job, and splitting
 ## it is not a thing a classifier does — it answers about the whole sentence at
@@ -91,12 +97,18 @@ const HOLDS := [" not ", " dont ", " never ", " stop ", " no ", " cancel ", " ne
 	" if ", " unless ", " until ", " till ", " instead ", " without ", " except ",
 	" before ", " while ", " because "]
 
-## Amounts and durations. The steps this can produce carry no count, no hours
-## and no distance, so "sell 50 timber" would sell the default, not 50.
-const AMOUNTS := ["one", "two", "three", "four", "five", "six", "seven", "eight",
-	"nine", "ten", "eleven", "twelve", "dozen", "twenty", "thirty", "forty", "fifty",
-	"hundred", "half", "couple", "few", "several", "all", "every", "everything",
-	"hour", "hours", "minute", "minutes", "day", "days", "metres", "meters", "more"]
+## Amounts the question scales cannot say exactly. "Sell 50 timber" would sell
+## the nearest bucket, not 50, so these still go to the model untouched.
+## Digits count as amounts too.
+const AMOUNTS := ["four", "five", "seven", "eight", "nine", "ten", "eleven",
+	"twenty", "thirty", "forty", "fifty", "hundred", "several", "all", "every",
+	"everything", "minute", "minutes", "metres", "meters", "more"]
+## Amounts a scale does say exactly — "a couple", "half a day", "a dozen". Let
+## through only when the step that comes back has an amount field filled from
+## them; otherwise the amount would be silently dropped.
+const SCALE_WORDS := ["one", "two", "three", "six", "twelve", "dozen", "half",
+	"couple", "few", "hour", "hours", "day", "days", "small", "big", "large",
+	"little", "narrow", "wide", "far", "medium", "short", "long", "full"]
 
 ## Where the questions go. Overridable for the same reason the proxy URL is:
 ## the only honest way to test this whole path is to stand something in front
@@ -111,6 +123,9 @@ var taken := 0          ## orders answered here
 var passed := 0         ## orders handed to the model
 var last_error := ""
 var last_ms := 0
+## The classifier's last reply, as sent — for working out why an order it was
+## sure of went to the model anyway.
+var last_raw := ""
 
 var _busy := {}         ## worker_id -> true
 
@@ -167,9 +182,16 @@ func submit(instruction: String, worker_id: String, labels: Dictionary) -> bool:
 	for h: String in HOLDS:
 		if plain.find(h) >= 0:
 			return false
+	var amount := false
 	for word: String in plain.split(" ", false):
 		if word in AMOUNTS or word.to_int() != 0 or word.contains("0"):
 			return false
+		if word in SCALE_WORDS:
+			amount = true
+	labels = labels.duplicate()
+	labels["_amount"] = amount
+	if not labels.has("questions"):
+		labels["questions"] = _plain_questions(labels)
 
 	var dims := _dimensions(labels)
 	if dims.is_empty():
@@ -197,7 +219,8 @@ func submit(instruction: String, worker_id: String, labels: Dictionary) -> bool:
 				decided.emit(worker_id, {})
 				return
 			last_error = ""
-			var plan := _read(body.get_string_from_utf8(), labels)
+			last_raw = body.get_string_from_utf8()
+			var plan := _read(last_raw, labels)
 			if plan.is_empty():
 				passed += 1
 			else:
@@ -225,47 +248,65 @@ func submit(instruction: String, worker_id: String, labels: Dictionary) -> bool:
 
 ## The questions, all asked about the same sentence in one go.
 ##
-## They are independent — the classifier does not know that "which animal" only
-## matters when the verb turned out to be stock — so the cost of asking about a
-## field that turns out to be irrelevant is one decision, and the saving is the
-## second round trip that asking in two passes would need.
+## They come from the role's own set (RoleQuestions): which of this person's
+## jobs it is, worded for their trade, and one question per detail any of
+## those jobs can carry. They are independent — the classifier does not know
+## that "which animal" only matters when the job turned out to be stock — so
+## the cost of a detail that turns out to be irrelevant is one decision, and
+## the saving is the second round trip that asking in two passes would need.
 func _dimensions(labels: Dictionary) -> Dictionary:
 	var verbs: Array = labels.get("verbs", [])
-	if verbs.is_empty():
+	var qs: Dictionary = labels.get("questions", {})
+	if verbs.is_empty() or qs.is_empty():
 		return {}
+	var meanings: Array[String] = []
+	var fields: Array[String] = []
+	for v: String in verbs:
+		var e: Dictionary = (qs.get("verbs", {}) as Dictionary).get(v, {})
+		meanings.append("%s = %s" % [v, str(e.get("means", v))])
+		for f: Variant in e.get("fields", []):
+			if str(f) not in fields:
+				fields.append(str(f))
 	var dims := {
 		"action": {
 			"labels": verbs + [OTHER],
-			"instructions": ("Which single job is this person being told to do?"
-				+ " Answer %s if it is anything else, if it is more than one job,"
-				+ " or if it is a question rather than an order.") % OTHER,
+			"instructions": "%s %s. Answer %s if it is anything else, if it is more than one job, or if it is a question rather than an order." % [
+				str(qs.get("action_ask", "Which single job is this person being told to do?")),
+				"; ".join(meanings), OTHER],
 		},
 	}
-	_add(dims, "place", labels.get("places", []),
-		"Which place is named as where to go or work? Buildings only.")
-	_add(dims, "material", labels.get("materials", []),
-		"Which material is being asked for?")
-	_add(dims, "species", labels.get("species", []),
-		"Which kind of animal is named?")
-	_add(dims, "crop", labels.get("crops", []),
-		"Which crop is named?")
-	_add(dims, "direction", labels.get("directions", []),
-		"Which compass direction is named?")
-	_add(dims, "skill", labels.get("skills", []),
-		"Which skill is being taught?")
-	_add(dims, "trade_action", labels.get("trade_actions", []),
-		"Is this a sale or a purchase?")
-	_add(dims, "goods", labels.get("goods", []),
-		"Which goods are being bought or sold?")
-	_add(dims, "who", labels.get("who", []),
-		"Which named person is being spoken about?")
+	for f: String in fields:
+		var q: Dictionary = (qs.get("fields", {}) as Dictionary).get(f, {})
+		var options := _distinct(RoleQuestions.options_for(qs, f, labels))
+		if options.is_empty():
+			continue
+		dims[DIM + f] = {"labels": options + [NONE],
+			"instructions": str(q.get("ask", "Which %s?" % f))}
 	return dims
 
 
-func _add(dims: Dictionary, name: String, options: Array, says: String) -> void:
-	if options.is_empty():
-		return
-	dims[name] = {"labels": options + [NONE], "instructions": says}
+## A dimension name for a field, kept apart from "action" — trade has a field
+## called action, and the two answers must not land on one key.
+const DIM := "f_"
+## classifier.dev takes up to a hundred labels a question, the escape included.
+const MAX_LABELS := 99
+
+
+static func _distinct(options: Array) -> Array:
+	var out: Array = []
+	for o: Variant in options:
+		var s := str(o).strip_edges()
+		if s != "" and s.length() <= 200 and s not in out:
+			out.append(s)
+		if out.size() >= MAX_LABELS:
+			break
+	return out
+
+
+## A set for labels that came without one: the engine's plain wording over the
+## verbs on offer. What a caller that predates role questions gets.
+static func _plain_questions(labels: Dictionary) -> Dictionary:
+	return RoleQuestions.template(Role.make("worker", "worker", labels.get("verbs", [])))
 
 
 ## The reply, turned into a plan, or {} if anything at all is off.
@@ -286,6 +327,9 @@ func _read(raw: String, labels: Dictionary) -> Dictionary:
 	if not (dims is Dictionary):
 		return {}
 	var d: Dictionary = dims
+	if not labels.has("questions"):
+		labels = labels.duplicate()
+		labels["questions"] = _plain_questions(labels)
 
 	var verb := _pick(d, "action", ACCEPT)
 	if verb == "" or verb == OTHER or verb not in SIMPLE:
@@ -310,57 +354,41 @@ func _read(raw: String, labels: Dictionary) -> Dictionary:
 	}
 
 
-## The fields for one verb, from the answers already in hand. False when a
-## required one did not come back well enough to use — the model has it then,
-## which is better than a confident guess at the wrong animal.
+## The fields for one verb, from the role's questions and the answers in hand.
+## False when a required one did not come back well enough to use — the model
+## has it then, which is better than a confident guess at the wrong animal —
+## or when the order named an amount and nothing in the step carries it.
 func _fill(step: Dictionary, verb: String, d: Dictionary, labels: Dictionary) -> bool:
-	match verb:
-		"go", "station", "demolish", "decorate":
-			var place := _pick(d, "place", FIELD_ACCEPT, labels.get("places", []))
-			if place == "" or place == NONE:
+	var qs: Dictionary = labels.get("questions", {})
+	var e: Dictionary = (qs.get("verbs", {}) as Dictionary).get(verb, {})
+	if e.is_empty():
+		return false
+	var required: Array = e.get("required", [])
+	var carried_amount := false
+	var said_amount := bool(labels.get("_amount", false))
+	for f: Variant in e.get("fields", []):
+		var field := str(f)
+		# An amount nobody said is not an amount. The classifier will pick
+		# "one" for "sell the bread" if asked how many; the step's own default
+		# is what the player meant.
+		if field in RoleQuestions.AMOUNT_FIELDS and not said_amount:
+			if field in required:
+				return false        # "fence a pen": how big is the model's to ask
+			continue
+		var options := _distinct(RoleQuestions.options_for(qs, field, labels))
+		var got := _pick(d, DIM + field, FIELD_ACCEPT, options)
+		if got == "" or got == NONE:
+			if field in required:
 				return false
-			step["place"] = place
-		"gather":
-			var m := _pick(d, "material", FIELD_ACCEPT, labels.get("materials", []))
-			if m == "" or m == NONE:
-				return false
-			step["material"] = m
-		"stock":
-			var sp := _pick(d, "species", FIELD_ACCEPT, labels.get("species", []))
-			if sp == "" or sp == NONE:
-				return false
-			step["species"] = sp
-		"scout":
-			var dir := _pick(d, "direction", FIELD_ACCEPT, labels.get("directions", []))
-			if dir == "" or dir == NONE:
-				return false
-			step["direction"] = dir
-		"trade":
-			var act := _pick(d, "trade_action", FIELD_ACCEPT, labels.get("trade_actions", []))
-			var kind := _pick(d, "goods", FIELD_ACCEPT, labels.get("goods", []))
-			if act == "" or act == NONE or kind == "" or kind == NONE:
-				return false
-			step["action"] = act
-			step["kind"] = kind
-		"teach":
-			var who := _pick(d, "who", FIELD_ACCEPT, labels.get("who", []))
-			var skill := _pick(d, "skill", FIELD_ACCEPT, labels.get("skills", []))
-			if who == "" or who == NONE or skill == "" or skill == NONE:
-				return false
-			step["who"] = who
-			step["skill"] = skill
-		"wait", "plant_tree", "level", "cook", "craft":
-			# A place is optional on these, and this step carries none: taking
-			# "wait at the bakery" would have them wait where they stand.
-			var at := _pick(d, "place", FIELD_ACCEPT, labels.get("places", []))
-			if at != "" and at != NONE:
-				return false
-		"sow":
-			# The only optional field taken. A crop nobody named is the
-			# dispatcher's default, which is what the model would have sent.
-			var crop := _pick(d, "crop", FIELD_ACCEPT, labels.get("crops", []))
-			if crop != "" and crop != NONE:
-				step["crop"] = crop
+			continue
+		var value: Variant = RoleQuestions.value_of(qs, verb, field, got)
+		if value == null:
+			return false
+		step[field] = value
+		if field in RoleQuestions.AMOUNT_FIELDS:
+			carried_amount = true
+	if said_amount and not carried_amount:
+		return false
 	return true
 
 

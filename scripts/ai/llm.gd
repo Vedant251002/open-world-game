@@ -21,6 +21,9 @@ signal answered(worker_id: String, text: String)
 ## through Validator.check_role and either keeps it or says why not. `source`
 ## is "model" or "fallback", so the roster can say which it got.
 signal role_ready(key: String, role: Dictionary, source: String)
+## A role's classifier questions in its own words (RoleQuestions.merge reads
+## it). `raw` is {} when the call failed; the template then stands as it is.
+signal questions_ready(key: String, raw: Dictionary)
 ## A morning's round toward a goal: {"done", "orders": [{who, order}], "note"}.
 signal round_ready(worker_id: String, round: Dictionary, source: String)
 ## Something a person said in their own words: a reply in a conversation, or
@@ -374,6 +377,8 @@ var _chatting: Dictionary = {}
 const ANSWER_TOKENS := 220
 ## A role is a short list and a paragraph. Six hundred is generous.
 const ROLE_TOKENS := 600
+## A role's question set: a sentence per job and two per field.
+const QUESTION_TOKENS := 1400
 ## A line of speech. Short on purpose: people in the street say a sentence or
 ## two, not a paragraph.
 const TALK_TOKENS := 260
@@ -587,6 +592,59 @@ func compose_role(key: String, name: String, description: String,
 		http.queue_free()
 		_composing.erase(key)
 		role_ready.emit(key, ArchetypeLibrary.role_fallback(name, description), "fallback")
+
+
+## A role's questions, reworded for it. One call, when the role is written
+## up, and never again: the set is kept with the role and saved with it.
+func compose_questions(key: String, role: Role, base: Dictionary) -> void:
+	if not available():
+		questions_ready.emit(key, {})
+		return
+	if _composing.get("questions:" + key, false):
+		return
+	_composing["questions:" + key] = true
+
+	var http := HTTPRequest.new()
+	http.timeout = TIMEOUT
+	http.use_threads = true
+	add_child(http)
+	http.request_completed.connect(
+		func(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+			http.queue_free()
+			_composing.erase("questions:" + key)
+			var raw := body.get_string_from_utf8()
+			_log("questions", key, role.name, "http=%d result=%d
+%s" % [code, result, raw])
+			if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+				last_error = _gateway_message(raw)
+				questions_ready.emit(key, {})
+				return
+			var parsed := _extract(raw)
+			if str(parsed.get("kind", "")) != "questions":
+				_log("questions_rejected", key, role.name, "not a questions object")
+				questions_ready.emit(key, {})
+				return
+			questions_ready.emit(key, parsed),
+		CONNECT_ONE_SHOT)
+
+	var route := _route()
+	var body := {
+		"model": model,
+		"temperature": 0.4,
+		"messages": [
+			{"role": "system", "content": RoleQuestions.prompt_system()},
+			{"role": "user", "content": RoleQuestions.prompt_user(role, base)},
+		],
+	}
+	_finish_body(body, QUESTION_TOKENS)
+	_log("questions_request", key, role.name, RoleQuestions.prompt_user(role, base))
+	calls_made += 1
+	_begin_call("questions")
+	if http.request(str(route["url"]), route["headers"], HTTPClient.METHOD_POST,
+			JSON.stringify(body)) != OK:
+		http.queue_free()
+		_composing.erase("questions:" + key)
+		questions_ready.emit(key, {})
 
 
 ## A round of a goal. One call a morning per foreman; offline, the campaign
