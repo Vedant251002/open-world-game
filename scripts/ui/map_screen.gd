@@ -269,7 +269,10 @@ func _process(delta: float) -> void:
 ## Regenerates only when the view has drifted past the texture's margin, so
 ## panning slowly costs nothing.
 func _request_texture(force: bool) -> void:
-	var g := MapPixels.grid_for(centre, span * MARGIN, SAMPLES)
+	# A phone surveys a quarter as many pixels: the web build for iPhone has no
+	# threads, so this runs on the main thread there.
+	var px := SAMPLES / 2 if Platform.is_handheld() else SAMPLES
+	var g := MapPixels.grid_for(centre, span * MARGIN, px)
 	if force or _grid.is_empty() or _needs_new_grid(g):
 		_grid = g
 		_compose_explored()
