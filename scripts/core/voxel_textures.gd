@@ -74,6 +74,8 @@ static var _ok := false
 ## every pattern looks twice as large.
 static var _dir := ""
 static var _res := 1024
+## Texture size on phones and tablets (see _read).
+const HANDHELD_RES := 256
 
 
 ## Picks the texture directory.
@@ -141,7 +143,7 @@ static func load_all() -> bool:
 		_layer_of[ORDER[i]] = i
 	print("[tex] %d materials -> 3 texture arrays @ %dx%d (%s)" % [
 		ORDER.size(), _albedo.get_width(), _albedo.get_height(),
-		"web 512" if _res <= 512 else "desktop 1024"])
+		"handheld" if _res <= HANDHELD_RES else ("web 512" if _res <= 512 else "desktop 1024")])
 	return true
 
 
@@ -178,6 +180,13 @@ static func _read(fname: String) -> Image:
 	# convert() returns void in Godot 4.x, not an Error, so it cannot be
 	# checked the way decompress() can.
 	img.convert(Image.FORMAT_RGBA8)
+	# A phone gets a quarter of the pixels. Three arrays of forty-odd layers at
+	# 512px, mipmapped, are about 160 MB before the GPU has its own copy, which
+	# is more than an iPhone gives a browser tab: Safari simply kills the page.
+	# Tiles are authored in metres (res_scale() is 1.0), so a smaller map of
+	# the same tile draws the same pattern, only softer.
+	if Platform.is_handheld() and img.get_width() > HANDHELD_RES:
+		img.resize(HANDHELD_RES, HANDHELD_RES, Image.INTERPOLATE_BILINEAR)
 	if not img.has_mipmaps():
 		if img.generate_mipmaps() != OK:
 			return null
