@@ -60,11 +60,25 @@ func _growth_in(wx: Node, seasons: Node, season: String) -> float:
 	var day := _day_for(wx, season, 5)
 	clock.day = day
 	seasons.on_day(day)
-	var wp := VoxelWorld.to_voxel(realm.village.well_pos + Vector3(34, 0, 34))
-	var vx := (wp.x / Farm.SOW_STEP) * Farm.SOW_STEP
-	var vz := (wp.z / Farm.SOW_STEP) * Farm.SOW_STEP
-	farm.till(vx, vz)
-	var key := Vector2i(vx, vz)
+	# Open grass near the town. A fixed offset from the well used to be
+	# empty and is now somebody's house, so look for ground that takes a hoe.
+	var vx := 0
+	var vz := 0
+	var key := Vector2i.ZERO
+	var found := false
+	for ring in range(0, 12):
+		for k in 8:
+			var ang := TAU * float(k) / 8.0
+			var off := Vector3(cos(ang), 0.0, sin(ang)) * (34.0 + ring * 6.0)
+			var wp := VoxelWorld.to_voxel(realm.village.well_pos + off)
+			vx = (wp.x / Farm.SOW_STEP) * Farm.SOW_STEP
+			vz = (wp.z / Farm.SOW_STEP) * Farm.SOW_STEP
+			key = Vector2i(vx, vz)
+			if farm.tiles.has(key) or farm.till(vx, vz):
+				found = true
+				break
+		if found:
+			break
 	if not farm.tiles.has(key):
 		return -1.0
 	var t: Dictionary = farm.tiles[key]

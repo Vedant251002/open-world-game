@@ -483,6 +483,22 @@ func _on_world_ready(t0: int) -> void:
 		add_child(sf)
 		sf.begin()
 		return
+	if "--lifetest" in args:
+		var lt := LifeTest.new()
+		lt.main = self
+		add_child(lt)
+		lt.begin()
+		return
+	if "--attendshot" in args:
+		var ash := AttendShot.new()
+		ash.world = world
+		ash.player = player
+		ash.crew = crew
+		ash.village = village
+		ash.sky = sky
+		add_child(ash)
+		ash.begin()
+		return
 	if "--gestures" in args:
 		var gt := GestureTest.new()
 		gt.world = world
@@ -758,6 +774,8 @@ func _raise_crew() -> void:
 	crew.name = "Crew"
 	add_child(crew)
 	crew.spawn(world, nav, clock, town, player, village.well_pos)
+	# The founding crew's husbands and wives, in the houses they share.
+	crew.spawn_partners(town)
 	# People in the streets. --nocitizens for the benches, which time the crew
 	# and not the crowd.
 	if "--nocitizens" not in OS.get_cmdline_user_args():
@@ -877,6 +895,7 @@ func _raise_crew() -> void:
 		amb.setup(world, player, clock)
 		amb.realm = realm
 	_raise_village_life()
+	_raise_daily_life()
 	crew.worker_spoke.connect(hud.subtitle)
 	# A held plan is the one refusal the player can act on, so it goes up as an
 	# assumption panel rather than a toast that scrolls away.
@@ -1098,6 +1117,29 @@ func _restore_crier() -> void:
 
 ## The village's name and banner, its rank and milestones, and the guided first
 ## day. Built once the HUD, dispatcher and (optionally) realm exist.
+## Everybody's day and the village organising itself: bed at night, work by
+## day, and people noticing what needs doing and handing it to each other.
+## On in play; off for the test and capture runs, which time and assert on
+## people standing exactly where they were put — unless asked for by name.
+var daily_life: DailyLife
+var council: VillageCouncil
+
+func _raise_daily_life() -> void:
+	var args := OS.get_cmdline_user_args()
+	var live := _is_interactive_launch(args) or "--life" in args or "--lifetest" in args
+	if not live or "--nolife" in args:
+		return
+	daily_life = DailyLife.new()
+	daily_life.name = "DailyLife"
+	add_child(daily_life)
+	daily_life.setup(crew, town, clock, realm.population if realm != null else null)
+	dispatch.daily_life = daily_life
+	council = VillageCouncil.new()
+	council.name = "VillageCouncil"
+	add_child(council)
+	council.setup(crew, dispatch, town, farm, livestock, clock, player, hud, realm)
+
+
 func _raise_village_life() -> void:
 	var args := OS.get_cmdline_user_args()
 	if identity.village_name == "" and _save.is_empty():
@@ -1361,7 +1403,7 @@ func _notification(what: int) -> void:
 ## not something anyone can look at and judge.
 func _found_town() -> void:
 	var ctx := build_context()
-	var specs := GenTest.specs()
+	var specs := VillagePlan.specs()
 	var near: Array[Plot] = village.plots.duplicate()
 	near.sort_custom(func(a: Plot, b: Plot) -> bool:
 		return a.centre_m().distance_to(village.well_pos) \
@@ -1372,7 +1414,14 @@ func _found_town() -> void:
 		if placed >= specs.size():
 			break
 		var plot: Plot = near[i]
-		var res := BuildingGenerator.build(specs[placed], 4242, plot, ctx)
+		var spec: Dictionary = specs[placed].duplicate(true)
+		var household := str(spec.get("household", ""))
+		spec.erase("household")
+		var t_gen := Time.get_ticks_usec()
+		var res := BuildingGenerator.build(spec, 4242, plot, ctx)
+		if "--furniture" in OS.get_cmdline_user_args():
+			print("[showcase] generated %s in %.1f ms" % [spec["archetype"],
+				(Time.get_ticks_usec() - t_gen) / 1000.0])
 		if not res["ok"]:
 			print("[showcase] plot %d refused %s: %s" % [plot.id,
 				specs[placed]["archetype"], res["error"]["code"]])
@@ -1384,13 +1433,20 @@ func _found_town() -> void:
 		# day zero. Left off it — which is how this was — the workers could
 		# not tell you where the bakery was, and the model was planning a town
 		# it had been told was empty.
-		town.register(patch, plot, "", 0)
+		var rec := town.register(patch, plot, "", 0)
+		if household != "":
+			rec["household"] = household
 		ctx["occupied_rects"].append(patch.footprint)
 		ctx["built_fronts"][plot.id] = patch.front
 		map.note_building(patch, str(specs[placed]["archetype"]))
 		print("[showcase] %s on plot %d" % [specs[placed]["archetype"], plot.id])
 		if "--furniture" in OS.get_cmdline_user_args():
 			_report_furniture(patch)
+		if "--plans" in OS.get_cmdline_user_args():
+			var stories_n := int(spec.get("stories", 1))
+			for st in stories_n:
+				PlanShot.draw(patch, BuildingGenerator.FOUNDATION_D + st * BuildingGenerator.STORY_H,
+					"user://shots/plan_%s_%d_s%d.png" % [str(spec["archetype"]), plot.id, st])
 		if _room_shots:
 			_record_room_views(str(specs[placed]["archetype"]), patch)
 		elif _interior_shots:
@@ -1451,22 +1507,20 @@ func _floor_report(r: Rect2i) -> String:
 
 func _record_room_views(view_name: String, patch: VoxelPatch) -> void:
 	for m: Dictionary in patch.modules:
-		if int(m.get("story", 0)) != 0:
-			continue
 		var r: Rect2i = m["rect"]
 		if r.size.x < 6 or r.size.y < 6:
 			continue
 		var cx := (r.position.x + r.size.x * 0.5) * 0.25
 		var cz := (r.position.y + r.size.y * 0.5) * 0.25
-		var floor_y := float(gen.height_at(int(cx / 0.25), int(cz / 0.25)) + 1) * 0.25
-		# Stand at one end of the room's long axis looking down it. From a
-		# corner you see two walls and a table leg.
-		var along_x := r.size.x >= r.size.y
-		var half := (r.size.x if along_x else r.size.y) * 0.25 * 0.5
-		var step := maxf(half - 0.5, 0.4)
-		var back := Vector3(-step, 0, 0) if along_x else Vector3(0, 0, -step)
-		var eye := Vector3(cx, floor_y + 1.62, cz) + back
-		var to := Vector3(cx, floor_y + 0.75, cz) - eye
+		var floor_y := float(gen.height_at(int(cx / 0.25), int(cz / 0.25)) + 1) * 0.25 			+ int(m.get("story", 0)) * BuildingGenerator.STORY_H * 0.25
+		# From high in a corner, looking down across to the far one: the whole
+		# room in one frame, the way a plan would show it but in the round.
+		# From the end of the room at eye height a camera saw two walls and
+		# usually stood inside the table.
+		var lo := Vector3(r.position.x * 0.25 + 0.7, 0.0, r.position.y * 0.25 + 0.7)
+		var hi := Vector3(r.end.x * 0.25 - 0.7, 0.0, r.end.y * 0.25 - 0.7)
+		var eye := Vector3(lo.x, floor_y + 2.45, lo.z)
+		var to := Vector3(hi.x, floor_y + 0.3, hi.z) - eye
 		showcase_views.append({
 			"pos": eye, "yaw": atan2(-to.x, -to.z),
 			"pitch": atan2(to.y, Vector2(to.x, to.z).length()),
@@ -1511,11 +1565,28 @@ func _record_view(view_name: String, patch: VoxelPatch) -> void:
 func _line_up_cast() -> void:
 	var base := village.well_pos + Vector3(0, 0, 14.0)
 	base.y = world.ground_m(base.x, base.z) + 0.2
-	var cast := crew.hired()
+	# The three households, each couple side by side.
+	var cast: Array[Worker] = []
+	for pair: Array in [["tobias", "greta"], ["ren", "lena"], ["mira", "anselm"]]:
+		for wid: String in pair:
+			var who := crew.get_worker(wid)
+			if who != null:
+				cast.append(who)
+				print("[cast] %s %s hired=%s partner=%s house=%d role=%s" % [wid, who.gender,
+					who.hired, who.partner_id, who.home_building_id,
+					who.role.id if who.role != null else "-"])
+	if cast.is_empty():
+		cast = crew.hired()
 	for i in cast.size():
 		var w: Worker = cast[i]
 		w.employer = null
-		w.global_position = base + Vector3((i - 1) * 1.5, 0.0, 0.0)
+		w.global_position = base + Vector3((float(i) - (cast.size() - 1) * 0.5) * 1.25, 0.0, 0.0)
+		# The partners keep their own hours and would walk off to work
+		# mid-shot; for the photograph they stand where they are put.
+		w.stop_wandering()
+		w.house_pos = Vector3.INF
+		w.home = w.global_position
+		w.wander_m = 0.01
 		w.rotation.y = PI
 		w.set_physics_process(false)
 	# --ask="where is the bakery?" puts a question to Mira before the frame is

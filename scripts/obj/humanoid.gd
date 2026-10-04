@@ -12,6 +12,12 @@ class_name Humanoid
 ## velocity, so a model built facing -Z walks backwards everywhere it goes,
 ## which is exactly what all six characters used to do.
 ##
+## The same goes for the arms: a limb hangs down -Y, and a positive turn about
+## X swings that end toward -Z — behind the back. Reaching forward is a
+## NEGATIVE arm rotation.x. Every work pose once had it the other way round,
+## and the whole cast hammered, sawed and carried with their arms flung out
+## behind them while the torso leant forward over nothing.
+##
 ## Three of these are the whole cast, so each one has to be recognisable from
 ## across the plaza at a glance. The colours do some of that; the silhouette
 ## does the rest, which is what `accessory` is for — a headscarf, a flat cap and
@@ -30,6 +36,10 @@ var accessory := ""
 var rolled_sleeves := false
 ## A long coat that falls past the hips.
 var long_coat := false
+## "male", "female", or "" to be dealt one from the clothes as before. A woman
+## wears a dress over her boots and never a beard; set it before the body is
+## added to the tree, since the body is built once, in _ready.
+var gender := ""
 
 var head: Node3D
 var torso: Node3D
@@ -49,6 +59,10 @@ var _carrying := false
 ## hammer through dinner is a builder who never puts anything down.
 var _sheet: Node3D
 var _tool: Node3D
+
+## How much of their attention is on somebody else, 0..1, eased so the head
+## turns to you and back rather than snapping.
+var _attend := 0.0
 
 
 func _ready() -> void:
@@ -96,10 +110,17 @@ func _build() -> void:
 	else:
 		outfit = ["shirt", "vest", "apron", "overalls", "shirt"][rng.randi() % 5]
 	var female := rolled_sleeves or (outfit != "coat" and rng.randf() < 0.45)
+	if gender == "female":
+		female = true
+	elif gender == "male":
+		female = false
+	# Bib overalls over a dress is not a thing anybody wore.
+	if female and outfit == "overalls":
+		outfit = "apron"
 	var style := 1 if female else rng.randi() % 3     # hair: 0 crop, 1 long, 2 mop
 	if female and rng.randf() < 0.4:
 		style = 3                                     # a bun
-	var bearded := long_coat and hair.get_luminance() > 0.35
+	var bearded := long_coat and hair.get_luminance() > 0.35 and not female
 	if not female and not bearded and rng.randf() < 0.2:
 		bearded = true
 	var shirt := cloth
@@ -240,6 +261,20 @@ func _build() -> void:
 			_box(head, Vector3(-0.08, 0.10, -0.16), Vector3(0.16, 0.12, 0.04), hair, 0.9)
 	_add_accessory(hair, cloth, accent, leather)
 
+	# ------------------------------------------------------------- dress
+	# A skirt from the belt to the shin, hung on the torso so it sways with
+	# the walk, flared at the hem with a band of the accent colour. The boots
+	# show under it, and the legs swing inside it: at this scale that reads
+	# as a dress in a stride, not as legs through cloth.
+	if female:
+		var skirt := cloth.darkened(0.08) if outfit != "coat" else cloth.darkened(0.12)
+		_box(torso, Vector3(-0.18, -0.30, -0.115), Vector3(0.36, 0.36, 0.23), skirt)
+		_box(torso, Vector3(-0.195, -0.47, -0.13), Vector3(0.39, 0.19, 0.26), skirt.darkened(0.05))
+		_box(torso, Vector3(-0.2, -0.47, -0.135), Vector3(0.40, 0.035, 0.27), accent.darkened(0.1))
+		if outfit == "apron":
+			var apr2 := linen.lerp(accent, 0.12)
+			_box(torso, Vector3(-0.15, -0.42, 0.116), Vector3(0.30, 0.30, 0.014), apr2)
+
 	# -------------------------------------------------------------- arms
 	var sleeve := 0.24 if rolled_sleeves else 0.36
 	var cuff := shirt.lightened(0.06) if rolled_sleeves else cloth.darkened(0.2)
@@ -341,15 +376,23 @@ func _arm(at: Vector3, sleeve_c: Color, skin: Color, cuff: Color, sleeve: float)
 	return n
 
 
-## Trousers, a turned-up cuff, and a boot with a toe and a sole.
+## Trousers, a turned-up cuff, and a boot with a toe and a sole — from the
+## hip all the way to the ground.
+##
+## The leg used to be 0.44 m hung from a hip at REST_Y (0.72 m), so the soles
+## stopped 0.28 m above the feet point and every person in town hovered a
+## hand's breadth over the ground. It now reaches the full REST_Y down, which
+## puts the boots on the floor and the hip at about half the height, where a
+## person's is.
 func _leg(at: Vector3, trouser: Color, boot: Color) -> Node3D:
 	var n := Node3D.new()
 	n.position = at
-	_box(n, Vector3(-0.066, -0.32, -0.068), Vector3(0.132, 0.32, 0.136), trouser)
-	_box(n, Vector3(-0.07, -0.335, -0.072), Vector3(0.14, 0.035, 0.144), trouser.darkened(0.15))
-	_box(n, Vector3(-0.068, -0.44, -0.07), Vector3(0.136, 0.11, 0.14), boot, 0.55)
-	_box(n, Vector3(-0.07, -0.44, 0.06), Vector3(0.14, 0.06, 0.09), boot.lightened(0.05), 0.55)
-	_box(n, Vector3(-0.072, -0.44, -0.074), Vector3(0.144, 0.025, 0.21), boot.darkened(0.5), 0.7)
+	var foot := -REST_Y
+	_box(n, Vector3(-0.066, foot + 0.12, -0.068), Vector3(0.132, REST_Y - 0.12, 0.136), trouser)
+	_box(n, Vector3(-0.07, foot + 0.105, -0.072), Vector3(0.14, 0.035, 0.144), trouser.darkened(0.15))
+	_box(n, Vector3(-0.068, foot, -0.07), Vector3(0.136, 0.13, 0.14), boot, 0.55)
+	_box(n, Vector3(-0.07, foot, 0.06), Vector3(0.14, 0.06, 0.09), boot.lightened(0.05), 0.55)
+	_box(n, Vector3(-0.072, foot, -0.074), Vector3(0.144, 0.025, 0.21), boot.darkened(0.5), 0.7)
 	return n
 
 
@@ -396,8 +439,8 @@ func animate(delta: float, speed: float, carrying: bool = false) -> void:
 			arm_r.rotation.z = lerpf(arm_r.rotation.z, -0.03 - br * 0.012, delta * 9.0)
 
 	if carrying:
-		arm_l.rotation.x = 1.35
-		arm_r.rotation.x = 1.35
+		arm_l.rotation.x = -1.35
+		arm_r.rotation.x = -1.35
 
 
 ## What somebody actually does on a building site.
@@ -491,8 +534,8 @@ func _drop_kit(k: float) -> void:
 ## page, it is somebody working out whether it is right.
 func _pose_plan(delta: float) -> void:
 	_sheet.visible = true
-	arm_l.rotation.x = 1.34
-	arm_r.rotation.x = 1.34
+	arm_l.rotation.x = -1.34
+	arm_r.rotation.x = -1.34
 	arm_l.rotation.z = 0.26
 	arm_r.rotation.z = -0.26
 	torso.rotation.x = 0.12
@@ -507,9 +550,9 @@ func _pose_plan(delta: float) -> void:
 func _pose_hammer() -> void:
 	_tool.visible = true
 	var swing := sin(_phase)
-	arm_r.rotation.x = 1.55 + swing * 0.74
+	arm_r.rotation.x = -(1.55 + swing * 0.74)
 	arm_r.rotation.z = -0.12
-	arm_l.rotation.x = 0.62
+	arm_l.rotation.x = -0.62
 	arm_l.rotation.z = 0.22
 	# Leaning into the strike, straightening on the backswing.
 	torso.rotation.x = -0.05 - maxf(-swing, 0.0) * 0.02 + maxf(swing, 0.0) * 0.14
@@ -519,8 +562,8 @@ func _pose_hammer() -> void:
 ## rocking with the stroke rather than the arm working alone.
 func _pose_saw() -> void:
 	var stroke := sin(_phase)
-	arm_r.rotation.x = 1.06 + stroke * 0.44
-	arm_l.rotation.x = 0.92 + stroke * 0.32
+	arm_r.rotation.x = -(1.06 + stroke * 0.44)
+	arm_l.rotation.x = -(0.92 + stroke * 0.32)
 	arm_l.rotation.z = 0.24
 	arm_r.rotation.z = -0.08
 	torso.rotation.x = 0.24 + stroke * 0.07
@@ -535,9 +578,9 @@ func _pose_lay() -> void:
 	var sweep := sin(_phase)
 	torso.position.y = 0.62
 	torso.rotation.x = 0.60
-	arm_r.rotation.x = 1.02 + sweep * 0.32
+	arm_r.rotation.x = -(1.02 + sweep * 0.32)
 	arm_r.rotation.z = -0.22 - sweep * 0.34
-	arm_l.rotation.x = 0.88
+	arm_l.rotation.x = -0.88
 	arm_l.rotation.z = 0.18
 	head.rotation.x = 0.26
 
@@ -548,8 +591,8 @@ func _pose_lift() -> void:
 	var down := maxf(-sin(_phase), 0.0)
 	torso.rotation.x = 0.18 + down * 0.58
 	torso.position.y = 0.72 - down * 0.11
-	arm_l.rotation.x = 1.38 - down * 0.34
-	arm_r.rotation.x = 1.38 - down * 0.34
+	arm_l.rotation.x = -(1.38 - down * 0.34)
+	arm_r.rotation.x = -(1.38 - down * 0.34)
 	arm_l.rotation.z = 0.14
 	arm_r.rotation.z = -0.14
 	head.rotation.x = down * 0.34
@@ -558,9 +601,9 @@ func _pose_lift() -> void:
 ## Sighting a line. One arm straight out along the wall, the other back at the
 ## corner, and the head tracking slowly down the length of it.
 func _pose_measure(delta: float) -> void:
-	arm_r.rotation.x = 1.54
+	arm_r.rotation.x = -1.54
 	arm_r.rotation.z = -0.12
-	arm_l.rotation.x = 0.90
+	arm_l.rotation.x = -0.90
 	arm_l.rotation.z = 0.46
 	torso.rotation.x = 0.04
 	torso.rotation.y = lerpf(torso.rotation.y, sin(_phase * 0.7) * 0.34,
@@ -578,10 +621,53 @@ func _pose_measure(delta: float) -> void:
 ## the hand ends up inside the torso and the whole pose disappears into the
 ## silhouette. Raised, it is unmistakable from across the plaza.
 func _pose_survey(delta: float) -> void:
-	arm_r.rotation.x = 2.36
+	arm_r.rotation.x = -2.36
 	arm_r.rotation.z = -0.28
-	arm_l.rotation.x = 0.22
+	arm_l.rotation.x = -0.22
 	arm_l.rotation.z = -0.30
 	torso.rotation.x = -0.17
 	head.rotation.x = lerpf(head.rotation.x, -0.30, delta * 4.0)
 	torso.rotation.y = lerpf(torso.rotation.y, sin(_phase) * 0.34, delta * 2.0)
+
+
+## Asleep: flat on the back, arms by the sides, head on the pillow. The body
+## is turned a quarter about its feet so it lies along the bed; the worker
+## puts the feet where they belong. Nothing else animates while it lies, so
+## every limb is put straight here and left.
+var lying := false
+
+func lie(on: bool) -> void:
+	lying = on
+	rotation.x = -PI * 0.5 if on else 0.0
+	for limb: Node3D in [arm_l, arm_r, leg_l, leg_r]:
+		limb.rotation = Vector3.ZERO
+	head.rotation = Vector3(0.12 if on else 0.0, 0.0, 0.0)
+	torso.rotation = Vector3.ZERO
+	torso.position.y = REST_Y
+	if _sheet != null:
+		_sheet.visible = false
+	if _tool != null:
+		_tool.visible = false
+	_attend = 0.0
+
+
+## Turning to look at somebody: the head takes most of it, the shoulders a
+## little, and the eyes stay level with whoever it is. Called after the frame's
+## animate() or work(), so it lays the glance over whatever the body is doing —
+## a nailer looks up at you mid-swing instead of stopping to stand to attention.
+##
+## Past a quarter turn either side the head stops, because a neck does; the
+## caller turns the whole body if it wants more than that.
+func attend(delta: float, target: Vector3, on: bool) -> void:
+	_attend = move_toward(_attend, 1.0 if on else 0.0, delta * 3.0)
+	if _attend <= 0.001:
+		return
+	var local := to_local(target)
+	var flat := Vector2(local.x, local.z).length()
+	var yaw := clampf(atan2(local.x, local.z), -1.25, 1.25)
+	# Eyes are about 1.4 m up; head.rotation.x positive is looking down.
+	var pitch := clampf(atan2(1.4 - local.y, maxf(flat, 0.3)), -0.45, 0.5)
+	var tw := yaw * 0.3
+	torso.rotation.y = lerpf(torso.rotation.y, tw, _attend)
+	head.rotation.y = lerpf(head.rotation.y, yaw - tw, _attend)
+	head.rotation.x = lerpf(head.rotation.x, pitch, _attend)

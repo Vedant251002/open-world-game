@@ -393,9 +393,9 @@ func _process(delta: float) -> void:
 			_buildings_before = town.buildings.size()
 			_works.clear()
 			_lines.clear()
-			print("[role] telling Mira: demolish the hut  (%d buildings; Mira %s at %s)" % [
+			print("[role] telling Mira: demolish the barn  (%d buildings; Mira %s at %s)" % [
 				_buildings_before, mira.status_text(), str(mira.global_position.round())])
-			dispatch.take_plan_for_test(mira, "demolish the hut", [{"do": "demolish", "place": "hut"}])
+			dispatch.take_plan_for_test(mira, "demolish the barn", [{"do": "demolish", "place": "barn"}])
 			_phase = 24
 			_t = 0.0
 		24:
@@ -409,7 +409,7 @@ func _process(delta: float) -> void:
 				print("[role] buildings: %d -> %d" % [_buildings_before, town.buildings.size()])
 				_phase = 25
 			elif _t > 150.0:
-				_fails.append("the hut was never taken down (%d buildings, works %s, Mira: %s; she said: %s)"
+				_fails.append("the barn was never taken down (%d buildings, works %s, Mira: %s; she said: %s)"
 					% [town.buildings.size(), str(_works), crew.get_worker("mira").status_text(),
 						str(_lines)])
 				_phase = 25
@@ -599,6 +599,9 @@ func _check_citizens() -> void:
 	if crew.hired().size() != 3:
 		_fails.append("the starting crew is %d, not 3" % crew.hired().size())
 	for c: Worker in cits:
+		# The founding crew's partners live in town with trades of their own.
+		if Crew.partner_of(c.memory.worker_id) != "" and not c.hired:
+			continue
 		if c.hired or c.role == null or c.role.id != "citizen":
 			_fails.append("%s is a citizen with the wrong role" % c.display_name())
 			break

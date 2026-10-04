@@ -147,6 +147,8 @@ static func system(mem: WorkerMemory, ctx: Dictionary, as_tools: bool = false) -
 	lines.append("")
 	lines.append("YOUR CHARACTER")
 	lines.append(_character(mem))
+	if str(ctx.get("home", "")) != "":
+		lines.append("%s To send yourself there, the place is \"home\"; somebody else's is \"<name>'s house\"." % str(ctx["home"]))
 	lines.append("")
 	lines.append("AVAILABLE (tier %d)" % tier)
 	# The verbs come first because they are the only list that decides whether

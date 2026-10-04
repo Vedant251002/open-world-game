@@ -94,6 +94,7 @@ var cell_module: Array = []   ## parallel to cells: module spec Dictionary or nu
 var cell_story: Array[int] = []
 var story_cells: Dictionary = {}   ## story -> Array of cell indices
 var flue_spots: Dictionary = {}    ## cell index -> Vector2i, patch-local
+var flue_sides: Dictionary = {}    ## cell index -> Vector2i(x, z), the outside wall it is on
 
 
 func _run(s: Dictionary, world_seed: int, p: Plot, c: Dictionary) -> Dictionary:
@@ -223,14 +224,15 @@ func _resolve_dimensions() -> void:
 
 	# The foundation is a plinth, not a floor. Laying it right through the
 	# interior left every room with a cold blue flagstone floor no matter what
-	# the building was, which read as a cellar. Indoors gets boards, or tile
-	# where there is fire and flour about.
+	# the building was, which read as a cellar. Indoors gets boards.
+	#
+	# Boards in stone buildings too, not tile. Clay tile is a roofing material
+	# and the winter snow settles on every upward face of it — which, with no
+	# way for the shader to know a floor is under a roof, put snow on the
+	# kitchen floor of every stone house from the first frost to the thaw.
 	mat_floor = VoxelTypes.id_of(str(mats.get("floor", "")))
-	if mat_floor < 0:
+	if mat_floor < 0 or mat_floor in SeasonFx.SNOWY:
 		mat_floor = VoxelTypes.PLANK
-		if mat_wall in [VoxelTypes.BRICK, VoxelTypes.SANDSTONE,
-				VoxelTypes.GRANITE, VoxelTypes.CONCRETE]:
-			mat_floor = VoxelTypes.CLAY_TILE
 
 	# Masonry gets a thicker wall than timber. The model has no say in this.
 	wall_t = 2 if mat_wall in [VoxelTypes.BRICK, VoxelTypes.SANDSTONE,
@@ -599,13 +601,24 @@ func _walls_between(idxs: Array, s: int) -> void:
 					patch.put(x, y, r.position.y - 1, mat_wall)
 
 
+## Which room the front door opens into: the entrance hall if there is one,
+## otherwise the room people come in FOR — the shop floor, the bar, the
+## kitchen of a cottage — and never the storeroom or the bedroom when anything
+## else touches the street. Chosen by size alone, the biggest room on the front
+## got the door, and half the town walked in through a pantry.
+const ENTRY_PULL := {
+	"entrance": 20.0, "counter": 14.0, "seating": 12.0, "hearth": 11.0,
+	"workbench": 10.0, "stable": 9.0, "forge": 8.0, "oven": 2.0,
+	"storage": -6.0, "cellar": -8.0, "bed_area": -8.0,
+}
+
 func _entrance_cell(idxs: Array) -> int:
 	var best := -1
-	var best_score := -1.0
+	var best_score := -INF
 	for i: int in idxs:
 		var sc := 0.0
-		if cell_module[i] != null and str(cell_module[i].get("type", "")) == "entrance":
-			sc += 20.0
+		if cell_module[i] != null:
+			sc += float(ENTRY_PULL.get(str(cell_module[i].get("type", "")), 0.0))
 		if _world_side("front") in _touches(cells[i]):
 			sc += 10.0
 		sc += float(cells[i].size.x * cells[i].size.y) * 0.01
@@ -770,15 +783,30 @@ func _stage_roof() -> void:
 	_cut_penetrations(top + _roof_peak() + 3)
 
 
-## Puts the flue against whichever exterior wall the room touches, inset far
-## enough that the 5x5 stack stays inside the room, and never across its middle.
-func _flue_spot(r: Rect2i) -> Vector2i:
-	var inset := 3
+## Puts the flue against an outside wall of the room — the one the module asked
+## for when it touches it — flush to the plaster, and never across the middle.
+##
+## Flush rather than inset: a stack standing a voxel off the wall left a slot
+## behind it and read as a pillar in the room, with the fireplace somewhere
+## else entirely. Against the wall it is a chimney breast, and the fireplace
+## stands on its face.
+func _flue_spot(r: Rect2i, want: Vector3i = Vector3i.ZERO) -> Vector2i:
+	var inset := 2
 	var cx := r.position.x + r.size.x / 2
 	var cz := r.position.y + r.size.y / 2
 	var touches := _touches(r)
 	if not touches.is_empty():
+		# Never the front wall when there is another: the stack would stand
+		# beside the front door, and the fireplace would face the street side
+		# of the room everybody walks in through.
 		var side: Vector3i = touches[0]
+		for t: Vector3i in touches:
+			if t != front:
+				side = t
+				break
+		if want in touches and want != front:
+			side = want
+		_flue_side = Vector2i(side.x, side.z)
 		if side.x < 0:
 			cx = r.position.x + inset
 		elif side.x > 0:
@@ -787,9 +815,13 @@ func _flue_spot(r: Rect2i) -> Vector2i:
 			cz = r.position.y + inset
 		else:
 			cz = r.position.y + r.size.y - 1 - inset
+	else:
+		_flue_side = Vector2i.ZERO
 	cx = clampi(cx, r.position.x + inset, r.position.x + maxi(r.size.x - 1 - inset, inset))
 	cz = clampi(cz, r.position.y + inset, r.position.y + maxi(r.size.y - 1 - inset, inset))
 	return Vector2i(cx, cz)
+
+var _flue_side := Vector2i.ZERO
 
 
 func _roof_height(kind: String, x: int, z: int) -> int:
@@ -840,8 +872,9 @@ func _cut_penetrations(sky_y: int) -> void:
 		if not ("chimney" in needs or "ventilation" in needs):
 			continue
 		var r: Rect2i = cells[i]
-		var flue := _flue_spot(r)
+		var flue := _flue_spot(r, _world_side(str(m.get("wall", ""))))
 		flue_spots[i] = flue
+		flue_sides[i] = _flue_side
 		var cx := flue.x
 		var cz := flue.y
 		var stack_mat := mat_wall if "chimney" in needs else VoxelTypes.CORRUGATED_STEEL
@@ -1039,265 +1072,123 @@ static func _yaw_of(dir: Vector3i) -> float:
 
 # -------------------------------------------------------------- stage 8: props
 
-## What a room of each kind is dressed with beyond its vocabulary list, so a
-## bakery has bread on racks, a tavern a bar and bottles, a shop its shelves.
-## Placed after the essentials and dropped silently when the room is too small.
-const DRESSING := {
-	"hearth": [["table", 1], ["shelf", 1]],
-	"oven": [["bread_rack", 1], ["shelf", 1]],
-	"counter": [["shelf", 2], ["barrel", 1]],
-	"seating": [["counter_block", 1], ["shelf", 1], ["barrel", 2]],
-	"workbench": [["barrel", 1], ["shelf", 1]],
-	"bed_area": [["shelf", 1]],
-	"forge": [["barrel", 1], ["crate", 1]],
-}
-
-
 func _stage_props() -> void:
 	var rng := DetRng.new(seed_value, plot.id, STEP_PROPS)
+	var arche := str(spec.get("archetype", "building"))
 	for i in cells.size():
 		var m = cell_module[i]
-		if m == null:
-			continue
-		var mtype := str(m.get("type", ""))
-		var d := Vocabulary.def(mtype)
 		var r: Rect2i = cells[i]
 		var base := story_base(cell_story[i])
-		patch.modules.append({
-			"type": mtype,
-			"rect": Rect2i(r.position + Vector2i(patch.origin.x, patch.origin.z), r.size),
-			"story": cell_story[i],
-			"priority": str(m.get("priority", "preferred")),
-			"flue": flue_spots.get(i, Vector2i(-1, -1)),
-		})
+		var mtype := "spare_room"
+		var wanted: Array = []
+		var lay := RoomLayout.new(self, r, base, mtype, arche, rng)
+		if m != null:
+			mtype = str(m.get("type", ""))
+			var d := Vocabulary.def(mtype)
+			wanted = (d.get("props", []) as Array).duplicate()
+			patch.modules.append({
+				"type": mtype,
+				"rect": Rect2i(r.position + Vector2i(patch.origin.x, patch.origin.z), r.size),
+				"story": cell_story[i],
+				"priority": str(m.get("priority", "preferred")),
+				"flue": flue_spots.get(i, Vector2i(-1, -1)),
+			})
+			lay.mtype = mtype
+			var pw := _world_side(str(m.get("wall", "")))
+			lay.pref_wall = Vector2i(pw.x, pw.z)
+		lay.flue = flue_spots.get(i, Vector2i(-1, -1))
+		lay.flue_side = flue_sides.get(i, Vector2i.ZERO)
+		lay.furnish(wanted)
+	_door_mat()
+	_stage_exterior(rng)
 
-		var wanted: Array = (d.get("props", []) as Array).duplicate()
-		wanted.append_array(DRESSING.get(mtype, []))
-		_furnish(r, base, mtype, wanted, rng)
 
-	# Rooms the partitioner never assigned a module to are still rooms. Left
-	# bare they read as an unfinished house, and being unlit they read as a
-	# cupboard.
-	for i in cells.size():
-		if cell_module[i] != null:
-			continue
-		var base2 := story_base(cell_story[i])
-		_furnish(cells[i], base2, "spare_room",
-			[["lantern", 1], ["chest", 1], ["stool", 2], ["basket", 1]], rng)
+## A mat just inside the front door, whatever room it opens into.
+func _door_mat() -> void:
+	if patch.doors.is_empty():
+		return
+	var d := patch.doors[0] - patch.origin
+	var f := Vector2i(front.x, front.z)
+	# Inside is against the front: one wall thickness and a little more in.
+	var at := Vector2(d.x + 0.5, d.z + 0.5) - Vector2(f) * (wall_t + 1.6)
+	var base := story_base(0)
+	var pos := Vector3((patch.origin.x + at.x) * V, (patch.origin.y + base + 1) * V,
+		(patch.origin.z + at.y) * V)
+	patch.props.append({"type": "mat", "pos": pos, "yaw": atan2(float(f.x), float(f.y)),
+		"module": "entrance"})
 
 
-## Places one room's worth of furniture, guaranteeing a light.
-##
-## Every room gets something that glows. Without it the interior is lit only by
-## whatever the windows let in, and away from the window wall that is nothing at
-## all — the first interior screenshots were near-black at midday.
-func _furnish(r: Rect2i, base: int, mtype: String, wanted: Array,
-		rng: DetRng) -> void:
-	var lights: Array[String] = []
-	var rest: Array[String] = []
-	for entry: Variant in wanted:
-		var e: Array = entry
-		var ptype := str(e[0])
-		for _k in int(e[1]):
-			if Props.LIGHTS.has(Props.resolve(ptype)):
-				lights.append(ptype)
-			else:
-				rest.append(ptype)
-	if lights.is_empty():
-		lights.append("lantern")
-
-	# Big things first, so a table claims its floor before four stools fill the
-	# room with places it can no longer stand — but the light goes down before
-	# any of them. A room that runs out of floor still has to be a room you can
-	# see, and sorting by size alone put the lantern last and dropped it.
-	rest.sort_custom(func(a: String, b: String) -> bool:
-		return Props.radius(a) > Props.radius(b))
-	var list: Array[String] = lights
-	list.append_array(rest)
-
-	var spots := _prop_spots(r, base, rng)
-	var taken: Array[Vector3] = []      ## x, z, radius
-	for ptype: String in list:
-		var rad := Props.radius(ptype)
-		var at := -1
-		for i in spots.size():
-			var c := Vector2(spots[i])
-			var clear := true
-			for t: Vector3 in taken:
-				if Vector2(t.x, t.y).distance_to(c) < (rad + t.z) / V:
-					clear = false
-					break
-			if clear:
-				at = i
+## What stands outside: a bench by a house door, barrels and crates by a shop,
+## firewood stacked against the side of anything with a hearth, hay by a barn.
+## Against the front wall, either side of the door, clear of the step.
+func _stage_exterior(rng: DetRng) -> void:
+	if patch.doors.is_empty():
+		return
+	var arche := str(spec.get("archetype", "building"))
+	var left: Array[String] = []
+	var right_side: Array[String] = []
+	match arche:
+		"cottage", "hut", "house":
+			left = ["bench"]
+			right_side = ["pot", "basket"]
+		"tavern", "inn":
+			left = ["bench", "barrel"]
+			right_side = ["barrel", "barrel"]
+		"store", "shop", "market_hall":
+			left = ["crate", "barrel"]
+			right_side = ["basket", "flour_sack"]
+		"bakery":
+			left = ["bench"]
+			right_side = ["flour_sack", "flour_sack"]
+		"workshop", "forge":
+			left = ["lumber"]
+			right_side = ["crate", "barrel"]
+		"barn", "stable", "granary":
+			left = ["hay", "hay"]
+			right_side = ["trough"]
+		_:
+			left = ["barrel"]
+	var d := patch.doors[0] - patch.origin
+	var f := Vector2i(front.x, front.z)
+	# The outer face of the front wall, on the axis the front points along.
+	var face: float
+	if f.x < 0:
+		face = float(ox)
+	elif f.x > 0:
+		face = float(ox + W)
+	elif f.y < 0:
+		face = float(oz)
+	else:
+		face = float(oz + D)
+	var door_mid := float(d.z if f.x != 0 else d.x) + 0.5
+	var side_dir := Vector2i(f.y, -f.x)      ## along the wall
+	for k in 2:
+		var list := left if k == 0 else right_side
+		var sgn := -1.0 if k == 0 else 1.0
+		var cursor := door_mid + sgn * (DOOR_W * 0.5 + 3.0)
+		for t: String in list:
+			if not Props.exists(t):
+				continue
+			var e := Props.extent(t)
+			var half_w := (float(e[2]) - float(e[0])) / V * 0.5
+			var back := -float(e[1]) / V
+			var along := cursor + sgn * half_w
+			cursor += sgn * (half_w * 2.0 + 0.6)
+			var out := face + float(f.x if f.x != 0 else f.y) * (back + 0.3)
+			var at := Vector2(out, along) if f.x != 0 else Vector2(along, out)
+			# Stay on the building's own frontage and on level ground.
+			var span_lo := float(oz if f.x != 0 else ox) + 2.0
+			var span_hi := float((oz + D) if f.x != 0 else (ox + W)) - 2.0
+			if along - half_w < span_lo or along + half_w > span_hi:
 				break
-		if at < 0:
-			continue
-		var p: Vector2i = spots[at]
-		spots.remove_at(at)
-		taken.append(Vector3(p.x, p.y, rad))
-		var backed := Props.wall_backed(ptype)
-		var wall: Array = _wall_for(r, p, Props.depth(ptype)) if backed \
-			else _nearest_wall(r, p)
-		var pos := VoxelWorld.centre_metres(
-			patch.local_to_world(p.x, base + 1, p.y)) - Vector3(0, 0.125, 0)
-		if backed:
-			# Set the distance from the wall rather than nudging toward it. A bed
-			# is 2.25 m long; dropped on a grid square half a metre from the wall
-			# it hangs two thirds of a metre through the plaster, and nudging it
-			# closer only makes that worse. Placing its back at a fixed clearance
-			# from the wall puts the whole thing inside the room by construction.
-			#
-			# The clearance is a fifth of a metre because a partition wall is
-			# drawn on the cell edge; against an outside wall the cell edge is
-			# already the inner face, and this still reads as flush.
-			var want := Props.back_extent(ptype) + 0.20
-			pos -= Vector3(wall[0]) * (float(wall[1]) * V - want)
-			pos.y += Props.mount_y(ptype)
-			# And then check, rather than trust the margin. A partition wall is
-			# drawn on the cell edge and an outside wall is not, so no single
-			# clearance is right for both — pushing everything back by a fixed
-			# amount put lanterns inside partitions, and the post-validator
-			# threw out the whole building for it.
-			pos = _backed_off(pos, Vector3(wall[0]))
-			if pos == Vector3.INF:
-				continue
-		patch.props.append({
-			"type": ptype,
-			"pos": pos,
-			"yaw": _facing_yaw(wall[0]),
-			"module": mtype,
-		})
-
-
-## Candidate prop positions: hugging the walls first, then the middle, spaced so
-## furniture does not pile up. Deterministic order, shuffled by the step RNG.
-##
-## Runs after every other stage, so it can reject any spot the geometry has
-## already claimed — a stair flight, a chimney stack, a partition wall. Without
-## that check the post-validator rejects the whole building for prop clipping,
-## which is a nonsense reason to refuse a job.
-func _prop_spots(r: Rect2i, base: int, rng: DetRng) -> Array[Vector2i]:
-	var out: Array = []
-	var step := 3
-	# Two voxels of clearance from the wall line, not one: at one voxel a bench
-	# half a metre deep stands with its back inside the wall.
-	var x0 := r.position.x + 2
-	var z0 := r.position.y + 2
-	var x1 := r.position.x + r.size.x - 3
-	var z1 := r.position.y + r.size.y - 3
-	if x1 < x0 or z1 < z0:
-		x0 = r.position.x + 1
-		z0 = r.position.y + 1
-		x1 = r.position.x + r.size.x - 2
-		z1 = r.position.y + r.size.y - 2
-	for z in range(z0, z1 + 1, step):
-		for x in range(x0, x1 + 1, step):
-			if not _spot_clear(x, z, base):
-				continue
-			var edge := x <= x0 + 1 or z <= z0 + 1 or x >= x1 - 1 or z >= z1 - 1
-			out.append([0 if edge else 1, Vector2i(x, z)])
-	out.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
-	var flat: Array[Vector2i] = []
-	for e: Array in out:
-		flat.append(e[1])
-	if flat.size() > 3:
-		var tail := flat.slice(2)
-		rng.shuffle(tail)
-		flat = flat.slice(0, 2)
-		flat.append_array(tail)
-	if flat.is_empty():
-		# Nothing passed the full test. A hearth room is mostly chimney and a
-		# cupboard is mostly wall, and both were coming out completely bare —
-		# an unlit empty box with a flue in it. So sweep again asking only
-		# that the square itself is free and has headroom.
-		for z in range(r.position.y + 1, r.position.y + r.size.y - 1):
-			for x in range(r.position.x + 1, r.position.x + r.size.x - 1):
-				if _square_free(x, z, base):
-					flat.append(Vector2i(x, z))
-		rng.shuffle(flat)
-	return flat
-
-
-## The relaxed test: this one square, and room to stand a thing on it.
-func _square_free(x: int, z: int, base: int) -> bool:
-	for y in range(base + 1, base + 5):
-		if patch.solid_at(x, y, z):
-			return false
-	return patch.peek(x, base, z) != VoxelPatch.UNTOUCHED
-
-
-## A prop needs its own cell and standing room above it.
-func _spot_clear(x: int, z: int, base: int) -> bool:
-	for y in range(base + 1, base + 5):
-		for dz in range(-1, 2):
-			for dx in range(-1, 2):
-				if patch.solid_at(x + dx, y, z + dz):
-					return false
-	return patch.peek(x, base, z) != VoxelPatch.UNTOUCHED
-
-
-## Which wall a spot belongs to, and how far it is from it in voxels.
-##
-## Returns [outward unit vector toward that wall, distance in voxels].
-static func _nearest_wall(r: Rect2i, p: Vector2i) -> Array:
-	var west := p.x - r.position.x
-	var east := r.position.x + r.size.x - 1 - p.x
-	var north := p.y - r.position.y
-	var south := r.position.y + r.size.y - 1 - p.y
-	var best := mini(mini(west, east), mini(north, south))
-	if best == west:
-		return [Vector3i(-1, 0, 0), west]
-	if best == east:
-		return [Vector3i(1, 0, 0), east]
-	if best == north:
-		return [Vector3i(0, 0, -1), north]
-	return [Vector3i(0, 0, 1), south]
-
-
-## Steps a prop away from its wall until its origin is out of the masonry.
-##
-## Returns Vector3.INF when there is nowhere clear within half a metre, in
-## which case the prop is simply not placed. One missing barrel is a far
-## better outcome than a refused building: the validator rejects the entire
-## plan if a single prop sits inside a wall, and the worker then has to ask
-## the player a question about it, which is a nonsense conversation to have.
-func _backed_off(pos: Vector3, toward_wall: Vector3) -> Vector3:
-	for step in 5:
-		var l := VoxelWorld.to_voxel(pos) - patch.origin
-		if not patch.solid_at(l.x, l.y, l.z):
-			return pos
-		pos -= toward_wall * V
-	return Vector3.INF
-
-
-## The wall a wall-backed prop should stand against.
-##
-## Nearest first, but only if the room is deep enough that way to take the
-## whole prop. A bed against the near wall of a three-metre room sticks out
-## of the far one; against the long wall it fits with room to walk past.
-func _wall_for(r: Rect2i, p: Vector2i, prop_depth: float) -> Array:
-	var options: Array = [
-		[Vector3i(-1, 0, 0), p.x - r.position.x, r.size.x],
-		[Vector3i(1, 0, 0), r.position.x + r.size.x - 1 - p.x, r.size.x],
-		[Vector3i(0, 0, -1), p.y - r.position.y, r.size.y],
-		[Vector3i(0, 0, 1), r.position.y + r.size.y - 1 - p.y, r.size.y],
-	]
-	options.sort_custom(func(a: Array, b: Array) -> bool: return a[1] < b[1])
-	for o: Array in options:
-		if float(o[2]) * V >= prop_depth + 0.4:
-			return [o[0], o[1]]
-	return [options[0][0], options[0][1]]
-
-
-## Facing, snapped to the four walls, always.
-##
-## The old version pointed each prop at the centre of the room, which put
-## every bed and bench at whatever angle its grid position happened to make.
-## A voxel building is axis-aligned and a bed at eleven degrees to the wall
-## reads as a bug, not as character.
-static func _facing_yaw(toward_wall: Vector3i) -> float:
-	# Face away from the wall: local +Z is the front of every prop.
-	return atan2(float(-toward_wall.x), float(-toward_wall.z))
+			if patch.solid_at(int(at.x), gy() + 1, int(at.y)) 					or not patch.solid_at(int(at.x), gy(), int(at.y)):
+				break
+			var pos := Vector3((patch.origin.x + at.x) * V, (patch.origin.y + gy() + 1) * V,
+				(patch.origin.z + at.y) * V)
+			patch.props.append({"type": t, "pos": pos,
+				"yaw": atan2(float(f.x), float(f.y)), "module": "exterior"})
+	if rng == null:
+		return
 
 
 # --------------------------------------------------------------- introspection

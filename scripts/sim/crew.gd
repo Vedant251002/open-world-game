@@ -65,6 +65,60 @@ const ROSTER := [
 	},
 ]
 
+## Who is a man and who a woman. The founding three are fixed; everybody else
+## is dealt one from their id, so the same person is the same every time.
+const GENDER := {"mira": "female", "tobias": "male", "ren": "male"}
+
+## The founding crew's partners. They live in the houses the town is founded
+## with, work at the trade buildings by day, and come home at night. They are
+## not hired (they have lives of their own) but you can talk to them, and
+## offer them work like anybody else.
+const PARTNERS := [
+	{
+		"id": "greta", "name": "Greta", "gender": "female", "partner": "tobias",
+		"role": "cook", "work": "bakery",
+		"traits": {"speed": 0.7, "literalism": 0.5, "initiative": 0.6,
+			"question_threshold": 0.5, "criticism_sensitivity": 0.4},
+		"disposition": {"trust_in_player": 0.6, "morale": 0.85, "confidence": 0.7},
+		"skills": {"carpentry": 0, "masonry": 0, "machining": 0, "piloting": 0},
+	},
+	{
+		"id": "lena", "name": "Lena", "gender": "female", "partner": "ren",
+		"role": "shepherd", "work": "barn",
+		"traits": {"speed": 0.6, "literalism": 0.4, "initiative": 0.7,
+			"question_threshold": 0.6, "criticism_sensitivity": 0.3},
+		"disposition": {"trust_in_player": 0.65, "morale": 0.8, "confidence": 0.75},
+		"skills": {"carpentry": 1, "masonry": 0, "machining": 0, "piloting": 0},
+	},
+	{
+		"id": "anselm", "name": "Anselm", "gender": "male", "partner": "mira",
+		"role": "innkeeper", "work": "tavern",
+		"traits": {"speed": 0.45, "literalism": 0.5, "initiative": 0.5,
+			"question_threshold": 0.5, "criticism_sensitivity": 0.3},
+		"disposition": {"trust_in_player": 0.6, "morale": 0.8, "confidence": 0.8},
+		"skills": {"carpentry": 1, "masonry": 1, "machining": 0, "piloting": 0},
+	},
+]
+
+
+static func gender_of(id: String) -> String:
+	if GENDER.has(id):
+		return GENDER[id]
+	for p: Dictionary in PARTNERS:
+		if str(p["id"]) == id:
+			return str(p["gender"])
+	return "female" if (hash(id) & 2) == 0 else "male"
+
+
+static func partner_of(id: String) -> String:
+	for p: Dictionary in PARTNERS:
+		if str(p["id"]) == id:
+			return str(p["partner"])
+		if str(p["partner"]) == id:
+			return str(p["id"])
+	return ""
+
+
 ## Names for the people in the streets. Drawn in order with the seed, so the
 ## same town has the same neighbours every time it is raised.
 const CITIZEN_NAMES := ["Ada", "Bram", "Cora", "Dov", "Elin", "Faye", "Gil",
@@ -115,6 +169,7 @@ func spawn(world: VoxelWorld, nav: NavGrid, clock: GameClock, town: Town,
 	_town = town
 	_employer = employer
 	_player = employer
+	Worker.player = employer
 	if roles == null:
 		roles = RoleBook.new()
 
@@ -136,6 +191,78 @@ func spawn(world: VoxelWorld, nav: NavGrid, clock: GameClock, town: Town,
 
 ## People in the streets. Scattered over the town's walkable ground rather than
 ## round the well, so the first thing you see on arriving is not a crowd.
+## The partners, each at their own front door, and everybody in a household
+## told which house is theirs. Needs the town founded first: it is the houses
+## that say where everybody lives.
+func spawn_partners(town: Town) -> void:
+	for p: Dictionary in PARTNERS:
+		var pid := str(p["id"])
+		if by_id.has(pid):
+			continue
+		var mem := WorkerMemory.make(pid, str(p["name"]), p["traits"], p["disposition"],
+			p["skills"])
+		var house := _house_of(town, str(p["partner"]))
+		var house_at := _inside_door(house)
+		var work_at := _inside_door(_building(town, str(p["work"])))
+		var start := house_at if house_at != Vector3.INF else _employer.global_position
+		var w := _raise(mem, start)
+		w.role = roles.get_role(str(p["role"]))
+		w.hired = false
+		w.employer = null
+		w.wander_m = 3.5
+		w.house_pos = house_at
+		w.work_pos = work_at
+		w.home = start
+		w.global_position = start + Vector3(0, 0.3, 0)
+		w.roam_rect = Rect2(Vector2(start.x, start.z) - Vector2(60, 60), Vector2(120, 120))
+	# Whose house is whose, both halves of every couple.
+	for rec: Dictionary in town.buildings:
+		var owner := str(rec.get("household", ""))
+		if owner == "":
+			continue
+		for wid: String in [owner, partner_of(owner)]:
+			var who: Worker = by_id.get(wid)
+			if who != null:
+				who.home_building_id = int(rec["id"])
+				who.house_pos = _inside_door(rec)
+				# Where each of the founding crew spends a working day nobody
+				# has given them anything to do.
+				if who.work_pos == Vector3.INF and VillagePlan.WORKPLACE.has(wid):
+					who.work_pos = _inside_door(_building(town, str(VillagePlan.WORKPLACE[wid])))
+	for w2: Worker in workers:
+		w2.partner_id = partner_of(w2.memory.worker_id)
+	roster_changed.emit()
+
+
+func _house_of(town: Town, owner: String) -> Dictionary:
+	for rec: Dictionary in town.buildings:
+		if str(rec.get("household", "")) == owner:
+			return rec
+	return {}
+
+
+func _building(town: Town, archetype: String) -> Dictionary:
+	for rec: Dictionary in town.buildings:
+		if str(rec["archetype"]) == archetype:
+			return rec
+	return {}
+
+
+## A couple of steps in from a building's front door, on the floor.
+func _inside_door(rec: Dictionary) -> Vector3:
+	return inside_door(rec)
+
+
+static func inside_door(rec: Dictionary) -> Vector3:
+	if rec.is_empty():
+		return Vector3.INF
+	var patch: VoxelPatch = rec.get("patch", null)
+	if patch == null or patch.doors.is_empty():
+		return Vector3.INF
+	var at := VoxelWorld.centre_metres(patch.doors[0]) - Vector3(patch.front) * 1.6
+	return Vector3(at.x, at.y - VoxelChunk.VOXEL_M * 0.5, at.z)
+
+
 func spawn_citizens(count: int, seed: int, bounds: Rect2i) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed
@@ -320,7 +447,7 @@ func snapshot() -> Array:
 		out.append({
 			"id": w.memory.worker_id, "name": w.memory.display_name,
 			"hired": w.hired, "role": w.role.id if w.role != null else "citizen",
-			"pos": w.global_position, "home": w.home,
+			"pos": w.outdoor_position(), "home": w.home,
 			"posted": w.hired and w.employer == null,
 			"memory": w.memory.to_dict(), "standing": w.standing, "trades": true,
 			"goal": w.goal.to_dict() if w.goal != null else {},
@@ -382,6 +509,11 @@ func _process(delta: float) -> void:
 		if w.hired:
 			continue
 		var near := w.global_position.distance_to(here) < FAR
+		# Somebody asleep is not simulated near or far; only whether you can
+		# see them changes.
+		if w.sleeping:
+			w.visible = near
+			continue
 		if w.is_physics_processing() != near:
 			w.set_physics_process(near)
 			w.visible = near

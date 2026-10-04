@@ -319,6 +319,144 @@ const DEFS := {
 		[-10, 0, -6, 20, 1, 12, VoxelTypes.THATCH],
 	],
 
+	# --- household ---------------------------------------------------------
+	# The pieces a home is actually furnished with. A couple sleeps in a bed
+	# for two, keeps their clothes in a press, eats at a table on chairs with
+	# backs, and has a dresser of plates against the kitchen wall. All of them
+	# face +Z with their backs at -Z, like everything else here.
+	"bed_double": [
+		[-16, 5, -21, 32, 3, 42, VoxelTypes.TIMBER],
+		[-15, 8, -20, 30, 4, 39, VoxelTypes.PAINTED_WHITE],
+		[-16, 9, -3, 32, 4, 21, VoxelTypes.PAINTED_RED],
+		[-16, 12, 13, 32, 2, 5, VoxelTypes.CLAY],
+		[-13, 12, -19, 12, 3, 7, VoxelTypes.PAINTED_WHITE],
+		[1, 12, -19, 12, 3, 7, VoxelTypes.PAINTED_WHITE],
+		[-17, 0, -22, 34, 24, 2, VoxelTypes.TIMBER],
+		[-17, 16, -22, 34, 2, 3, VoxelTypes.DARK_OAK],
+		[-17, 24, -22, 3, 3, 3, VoxelTypes.DARK_OAK],
+		[14, 24, -22, 3, 3, 3, VoxelTypes.DARK_OAK],
+		[-16, 0, 19, 3, 5, 3, VoxelTypes.TIMBER],
+		[13, 0, 19, 3, 5, 3, VoxelTypes.TIMBER],
+		[-16, 5, 19, 32, 8, 2, VoxelTypes.TIMBER],
+		[-16, 0, -21, 3, 5, 3, VoxelTypes.TIMBER],
+		[13, 0, -21, 3, 5, 3, VoxelTypes.TIMBER],
+	],
+	"nightstand": [
+		[-8, 0, -7, 16, 10, 14, VoxelTypes.TIMBER],
+		[-9, 10, -8, 18, 1, 16, VoxelTypes.PLANK],
+		[-6, 4, 7, 12, 4, 1, VoxelTypes.DARK_OAK],
+		[-1, 5, 8, 2, 2, 1, VoxelTypes.MATTE_BLACK],
+	],
+	"wardrobe": [
+		[-21, 0, -10, 42, 40, 20, VoxelTypes.TIMBER],
+		[-22, 40, -11, 44, 2, 22, VoxelTypes.DARK_OAK],
+		[-21, 0, 10, 42, 2, 1, VoxelTypes.DARK_OAK],
+		[-19, 3, 10, 18, 35, 1, VoxelTypes.PLANK],
+		[1, 3, 10, 18, 35, 1, VoxelTypes.PLANK],
+		[-1, 3, 10, 2, 35, 1, VoxelTypes.DARK_OAK],
+		[-4, 18, 11, 2, 4, 1, VoxelTypes.MATTE_BLACK],
+		[2, 18, 11, 2, 4, 1, VoxelTypes.MATTE_BLACK],
+	],
+	# A chair with a back. A stool at a dinner table reads as a bar.
+	"chair": [
+		[-6, 9, -6, 12, 2, 12, VoxelTypes.PLANK],
+		[-5, 11, -4, 10, 1, 9, VoxelTypes.PAINTED_RED],
+		[-6, 0, -6, 2, 9, 2, VoxelTypes.TIMBER],
+		[4, 0, -6, 2, 9, 2, VoxelTypes.TIMBER],
+		[-6, 0, 4, 2, 9, 2, VoxelTypes.TIMBER],
+		[4, 0, 4, 2, 9, 2, VoxelTypes.TIMBER],
+		[-6, 11, -6, 2, 11, 2, VoxelTypes.TIMBER],
+		[4, 11, -6, 2, 11, 2, VoxelTypes.TIMBER],
+		[-6, 17, -6, 12, 4, 2, VoxelTypes.TIMBER],
+		[-2, 11, -6, 4, 6, 1, VoxelTypes.TIMBER],
+	],
+	# Cupboard below, plate rack above: the thing that says "kitchen".
+	"dresser": [
+		[-22, 0, -9, 44, 17, 18, VoxelTypes.TIMBER],
+		[-23, 17, -10, 46, 2, 20, VoxelTypes.PLANK],
+		[-22, 19, -9, 44, 22, 2, VoxelTypes.TIMBER],
+		[-22, 19, -9, 2, 22, 7, VoxelTypes.TIMBER],
+		[20, 19, -9, 2, 22, 7, VoxelTypes.TIMBER],
+		[-20, 29, -9, 40, 1, 7, VoxelTypes.PLANK],
+		[-23, 41, -10, 46, 2, 9, VoxelTypes.DARK_OAK],
+		[-18, 30, -7, 5, 6, 1, VoxelTypes.PAINTED_WHITE],
+		[-11, 30, -7, 5, 6, 1, VoxelTypes.PAINTED_WHITE],
+		[-4, 30, -7, 5, 6, 1, VoxelTypes.PAINTED_WHITE],
+		[5, 30, -7, 4, 6, 4, VoxelTypes.CLAY_TILE],
+		[12, 30, -7, 4, 5, 4, VoxelTypes.CLAY_TILE],
+		[-17, 19, -6, 6, 4, 5, VoxelTypes.CLAY],
+		[-8, 19, -6, 4, 6, 4, VoxelTypes.CLAY_TILE],
+		[6, 19, -6, 9, 3, 5, VoxelTypes.PAINTED_WHITE],
+		[-20, 2, 9, 19, 13, 1, VoxelTypes.PLANK],
+		[1, 2, 9, 19, 13, 1, VoxelTypes.PLANK],
+		[-3, 8, 10, 2, 3, 1, VoxelTypes.MATTE_BLACK],
+		[1, 8, 10, 2, 3, 1, VoxelTypes.MATTE_BLACK],
+	],
+	"washstand": [
+		[-8, 0, -7, 16, 15, 14, VoxelTypes.TIMBER],
+		[-9, 15, -8, 18, 1, 16, VoxelTypes.PLANK],
+		[-6, 16, -5, 11, 3, 10, VoxelTypes.PAINTED_WHITE],
+		[5, 16, -6, 3, 6, 3, VoxelTypes.CLAY_TILE],
+		[-6, 4, 7, 12, 6, 1, VoxelTypes.DARK_OAK],
+	],
+	# A trestle table for a hall: long enough for a bench a side.
+	"table_long": [
+		[-22, 14, -9, 44, 2, 18, VoxelTypes.PLANK],
+		[-20, 0, -7, 3, 14, 14, VoxelTypes.TIMBER],
+		[17, 0, -7, 3, 14, 14, VoxelTypes.TIMBER],
+		[-17, 6, -1, 34, 2, 2, VoxelTypes.TIMBER],
+		[-14, 16, -4, 4, 5, 4, VoxelTypes.DARK_OAK],
+		[-14, 21, -4, 4, 1, 4, VoxelTypes.PAINTED_WHITE],
+		[6, 16, 1, 4, 5, 4, VoxelTypes.DARK_OAK],
+		[6, 21, 1, 4, 1, 4, VoxelTypes.PAINTED_WHITE],
+		[-4, 16, -3, 7, 2, 6, VoxelTypes.CLAY_TILE],
+		[14, 16, -5, 5, 1, 5, VoxelTypes.CLAY_TILE],
+	],
+	# --- trades --------------------------------------------------------------
+	"workbench": [
+		[-18, 15, -7, 36, 3, 14, VoxelTypes.PLANK],
+		[-17, 0, -6, 3, 15, 3, VoxelTypes.TIMBER],
+		[14, 0, -6, 3, 15, 3, VoxelTypes.TIMBER],
+		[-17, 0, 3, 3, 15, 3, VoxelTypes.TIMBER],
+		[14, 0, 3, 3, 15, 3, VoxelTypes.TIMBER],
+		[-16, 4, -6, 32, 1, 12, VoxelTypes.PLANK],
+		[12, 15, 6, 6, 4, 3, VoxelTypes.MATTE_BLACK],
+		[-13, 18, -3, 8, 2, 3, VoxelTypes.TIMBER],
+		[-3, 18, -4, 1, 1, 8, VoxelTypes.MATTE_BLACK],
+		[2, 18, -2, 9, 2, 4, VoxelTypes.PLANK],
+		[-15, 5, -4, 6, 4, 6, VoxelTypes.BARK],
+	],
+	"lumber": [
+		[-17, 0, -6, 3, 2, 12, VoxelTypes.TIMBER],
+		[14, 0, -6, 3, 2, 12, VoxelTypes.TIMBER],
+		[-18, 2, -6, 36, 2, 12, VoxelTypes.PLANK],
+		[-17, 4, -5, 34, 2, 10, VoxelTypes.PLANK],
+		[-18, 6, -6, 36, 2, 12, VoxelTypes.TIMBER],
+		[-16, 8, -4, 32, 2, 8, VoxelTypes.PLANK],
+	],
+	"sawhorse": [
+		[-10, 10, -2, 20, 2, 4, VoxelTypes.TIMBER],
+		[-9, 0, -4, 2, 10, 2, VoxelTypes.TIMBER],
+		[-9, 0, 2, 2, 10, 2, VoxelTypes.TIMBER],
+		[7, 0, -4, 2, 10, 2, VoxelTypes.TIMBER],
+		[7, 0, 2, 2, 10, 2, VoxelTypes.TIMBER],
+		[-6, 12, -3, 14, 2, 6, VoxelTypes.PLANK],
+	],
+	# The baker's bench: a scrubbed top dusted with flour, dough rising on it.
+	"worktable": [
+		[-17, 14, -9, 34, 2, 18, VoxelTypes.PLANK],
+		[-16, 0, -8, 3, 14, 3, VoxelTypes.TIMBER],
+		[13, 0, -8, 3, 14, 3, VoxelTypes.TIMBER],
+		[-16, 0, 5, 3, 14, 3, VoxelTypes.TIMBER],
+		[13, 0, 5, 3, 14, 3, VoxelTypes.TIMBER],
+		[-15, 4, -7, 30, 1, 14, VoxelTypes.PLANK],
+		[-12, 16, -6, 14, 1, 12, VoxelTypes.PAINTED_WHITE],
+		[-10, 17, -4, 5, 3, 5, VoxelTypes.CLAY],
+		[-3, 17, -2, 5, 3, 5, VoxelTypes.CLAY],
+		[6, 16, -1, 9, 2, 2, VoxelTypes.TIMBER],
+		[-14, 4, -5, 9, 6, 9, VoxelTypes.PAINTED_WHITE],
+	],
+
 	# --- light and warmth ---------------------------------------------------
 	# Interiors were unlit. A voxel room with no light source and no global
 	# illumination is a black box with a bright window in it, which is exactly
@@ -556,6 +694,9 @@ const RADIUS := {
 	"hearth_fire": 0.70, "bread_rack": 0.85, "rug": 0.90, "crate": 0.42, "barrel": 0.38,
 	"chest": 0.48, "anvil": 0.32, "hay": 0.36, "generator_block": 0.75,
 	"pallet": 0.65, "stair": 0.55, "tool_rack": 0.85, "signboard": 0.35,
+	"bed_double": 1.30, "wardrobe": 1.05, "dresser": 1.10, "table_long": 1.15,
+	"workbench": 0.95, "worktable": 0.90, "lumber": 0.90, "nightstand": 0.30,
+	"chair": 0.32, "washstand": 0.32, "sawhorse": 0.45,
 }
 const RADIUS_DEFAULT := 0.28
 
@@ -568,6 +709,8 @@ const WALL_BACKED := {
 	"kiln_block": true, "tool_rack": true, "hearth_fire": true,
 	"rack": true, "bread_rack": true, "trough": true, "millstone": false,
 	"lantern": true, "signboard": true,
+	"bed_double": true, "wardrobe": true, "dresser": true, "nightstand": true,
+	"workbench": true, "washstand": true,
 }
 
 ## Props that hang rather than stand, and how high off the floor in metres.
@@ -620,6 +763,28 @@ static func depth(type_name: String) -> float:
 		hi = maxf(hi, float(b[2]) + float(b[5]))
 	var out := (hi - lo) * U
 	_depth_cache[key] = out
+	return out
+
+
+static var _ext_cache: Dictionary = {}
+
+## The prop's plan and height, in metres and in its own frame (+Z its front):
+## [x0, z0, x1, z1, height]. What the room layout packs furniture with — a
+## bed is a 1.7 m by 2.2 m rectangle, not a circle of radius 1.2.
+static func extent(type_name: String) -> Array:
+	var key := resolve(type_name)
+	if _ext_cache.has(key):
+		return _ext_cache[key]
+	var lo := Vector3(INF, INF, INF)
+	var hi := -lo
+	for b: Array in DEFS.get(key, []):
+		var o := Vector3(float(b[0]), float(b[1]), float(b[2]))
+		lo = lo.min(o)
+		hi = hi.max(o + Vector3(float(b[3]), float(b[4]), float(b[5])))
+	var out: Array = [0.0, 0.0, 0.0, 0.0, 0.0]
+	if lo.x != INF:
+		out = [lo.x * U, lo.z * U, hi.x * U, hi.z * U, maxf(hi.y, 0.0) * U]
+	_ext_cache[key] = out
 	return out
 
 ## Crop stages, in the order they grow. The Farm walks this list; the shapes
@@ -823,7 +988,12 @@ static func _add_box(st: SurfaceTool, o: Vector3, s: Vector3) -> void:
 		o + s,
 		o + Vector3(0, s.y, s.z),
 	]
-	# Faces wound clockwise from outside, which is Godot's front-face order.
+	# Each quad below runs counter-clockwise seen from outside, so the
+	# triangles are emitted in reverse (0-2-1, 0-3-2): Godot's front faces are
+	# clockwise. They used to go in as listed, which made every prop
+	# inside-out — the outer faces culled, the inner back faces drawn, and the
+	# generated normals pointing into the box — so furniture read as hollow
+	# shells with the wrong side lit. BoxKit winds the same way this now does.
 	var faces := [
 		[0, 3, 2, 1],   # -Z
 		[5, 6, 7, 4],   # +Z
@@ -833,8 +1003,8 @@ static func _add_box(st: SurfaceTool, o: Vector3, s: Vector3) -> void:
 		[4, 0, 1, 5],   # -Y
 	]
 	for f: Array in faces:
-		st.add_vertex(p[f[0]]); st.add_vertex(p[f[1]]); st.add_vertex(p[f[2]])
-		st.add_vertex(p[f[0]]); st.add_vertex(p[f[2]]); st.add_vertex(p[f[3]])
+		st.add_vertex(p[f[0]]); st.add_vertex(p[f[2]]); st.add_vertex(p[f[1]])
+		st.add_vertex(p[f[0]]); st.add_vertex(p[f[3]]); st.add_vertex(p[f[2]])
 
 
 ## The physics layer furniture blocks on. Only the player's mask includes it:

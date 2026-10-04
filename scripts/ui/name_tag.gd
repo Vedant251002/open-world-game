@@ -20,6 +20,11 @@ var focused := false                ## the crosshair is on them: brighter, bigge
 
 var _name: Label3D
 var _role: Label3D
+## What a hired hand is doing right now, over their name: "Ploughing — 40%".
+var _task: Label3D
+var _bar_bg: Sprite3D
+var _bar: Sprite3D
+var _task_progress := -1.0
 var _badge: Sprite3D
 var _glyph: Label3D
 var _alpha := 1.0
@@ -56,6 +61,23 @@ func setup(w: Worker) -> void:
 	_role.outline_render_priority = 3
 	add_child(_role)
 
+	_task = _label("", 38, 700, 10)
+	_task.modulate = Color("#b9f0b0")
+	_task.position.y = 0.17
+	_task.render_priority = 4
+	_task.outline_render_priority = 3
+	_task.visible = false
+	add_child(_task)
+	# A thin progress bar under the line, for jobs that have an end.
+	_bar_bg = _bar_sprite(Color(0.10, 0.08, 0.05, 0.9))
+	_bar_bg.position.y = 0.10
+	add_child(_bar_bg)
+	_bar = _bar_sprite(Color("#8fdc7e"))
+	_bar.position.y = 0.10
+	_bar.render_priority = 5
+	_bar.region_enabled = true
+	add_child(_bar)
+
 	_badge = Sprite3D.new()
 	_badge.texture = _disc_texture()
 	_badge.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -72,6 +94,31 @@ func setup(w: Worker) -> void:
 	_glyph.visible = false
 	add_child(_glyph)
 	_refresh_role()
+
+
+## A flat strip BAR_PX wide. Offset rather than centred, in pixels, so that
+## cropping the fill with region_rect shortens it from the right in screen
+## space — a billboard ignores any x offset given to its position.
+const BAR_PX := Vector2(100.0, 9.0)
+static var _white: Texture2D = null
+
+
+func _bar_sprite(c: Color) -> Sprite3D:
+	if _white == null:
+		var img := Image.create(int(BAR_PX.x), int(BAR_PX.y), false, Image.FORMAT_RGBA8)
+		img.fill(Color.WHITE)
+		_white = ImageTexture.create_from_image(img)
+	var sp := Sprite3D.new()
+	sp.texture = _white
+	sp.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sp.centered = false
+	sp.offset = -BAR_PX * 0.5
+	sp.pixel_size = 0.003
+	sp.modulate = c
+	sp.render_priority = 4
+	sp.visible = false
+	sp.set_meta("no_highlight", true)
+	return sp
 
 
 func _label(text: String, size: int, weight: int, outline: int) -> Label3D:
@@ -115,6 +162,19 @@ func _refresh_role() -> void:
 		r = "Builder"
 	_role.text = r.to_lower().capitalize() if r != "" else ""
 	_role.visible = r != ""
+	# Only for people working for you, and only while they are at something:
+	# a line saying "idle" over everyone standing about is just clutter.
+	var t := ""
+	_task_progress = -1.0
+	if worker.sleeping:
+		t = "asleep  z z"
+	elif worker.hired and worker.busy():
+		t = worker.status_text()
+		var cut := t.find(" — ")
+		if cut >= 0:
+			t = t.substr(0, cut)
+			_task_progress = worker.progress()
+	_task.text = t.substr(0, 1).to_upper() + t.substr(1) if t != "" else ""
 
 
 func _process(delta: float) -> void:
@@ -147,6 +207,12 @@ func _process(delta: float) -> void:
 	_role.visible = shown and _role.text != ""
 	var bubble_up: bool = worker.bubble != null and worker.bubble.visible
 	var badge := shown and _status != "" and not bubble_up
+	var task := shown and _task.text != "" and not bubble_up
+	_task.visible = task
+	var bar := task and _task_progress >= 0.0
+	_bar_bg.visible = bar
+	_bar.visible = bar
+	var badge_y := 0.40 if task else 0.23
 	_badge.visible = badge
 	_glyph.visible = badge
 	if not shown:
@@ -160,10 +226,21 @@ func _process(delta: float) -> void:
 	rc.a = 0.95 * a
 	_role.modulate = rc
 	_role.outline_modulate.a = 0.92 * a
+	if task:
+		_task.modulate.a = a
+		_task.outline_modulate.a = 0.92 * a
+		# A slow pulse so a working tag reads as live, not a caption.
+		var glow := 0.85 + 0.15 * sin(Time.get_ticks_msec() * 0.004 + _phase)
+		_task.modulate = Color(Color("#b9f0b0") * glow, a)
+	if bar:
+		var w := maxf(BAR_PX.x * clampf(_task_progress, 0.0, 1.0), 1.0)
+		_bar.region_rect = Rect2(0.0, 0.0, w, BAR_PX.y)
+		_bar_bg.modulate.a = 0.85 * a
+		_bar.modulate.a = a
 	if badge:
 		var bob := sin(Time.get_ticks_msec() * 0.006 + _phase) * 0.018
-		_badge.position.y = 0.23 + bob
-		_glyph.position.y = 0.23 + bob
+		_badge.position.y = badge_y + bob
+		_glyph.position.y = badge_y + bob
 		_badge.modulate = Color(1, 1, 1, a)
 		var gc := Color("#ffe08a") if _status == "?" else Color("#b9f0b0")
 		_glyph.modulate = Color(gc, a)

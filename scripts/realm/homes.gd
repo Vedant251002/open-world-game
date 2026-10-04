@@ -36,6 +36,11 @@ const SCOLD_AGAIN := [
 	"You again? I told you — out, and stay out.",
 	"Back in my house? Have you no manners at all?",
 ]
+const WELCOME := [
+	"Come in, come in. Mind the step.",
+	"Oh, it's you. Make yourself at home.",
+	"Welcome. There's a fire going, sit if you like.",
+]
 const SHOW_OUT := [
 	"Right, that is enough. Out you go.",
 	"I said out. Go on.",
@@ -120,6 +125,23 @@ func _walked_in(rec: Dictionary) -> void:
 			who = w
 	if who == null:
 		return
+	if who.sleeping:
+		var dl: Node = realm.dispatch.get("daily_life") if realm.dispatch != null else null
+		if dl != null and dl.has_method("wake"):
+			dl.call("wake", who)
+		else:
+			who.wake()
+	# The house of somebody who works for you is a house you are welcome in:
+	# your builder's wife does not throw her husband's employer out. A word
+	# of welcome, once in a while, and nobody is shown the door.
+	if _crew_household(rec):
+		_owner = null
+		var t := Time.get_ticks_msec()
+		if not _last_scold.has(bid) or t - int(_last_scold[bid]) > int(REPEAT_S * 2000.0):
+			_last_scold[bid] = t
+			_say(who, "The person your household works for has just stepped into your home, %s. You know them and they are welcome. Greet them warmly in a few words." % _where(rec),
+				_pick(WELCOME))
+		return
 	_owner = who
 	var door := realm.door_of(rec)
 	# Stop what they were doing. A stroll is dropped; somebody on a job for
@@ -151,6 +173,15 @@ func _walked_in(rec: Dictionary) -> void:
 	_last_scold[bid] = Time.get_ticks_msec()
 	if again:
 		_inside_for = SHOW_OUT_AFTER          # no second warning
+
+
+## Whether one of the people who live here is in your crew.
+func _crew_household(rec: Dictionary) -> bool:
+	var owner := str(rec.get("household", ""))
+	if owner == "" or realm.crew == null:
+		return false
+	var w: Worker = realm.crew.get_worker(owner)
+	return w != null and w.hired
 
 
 func _show_out(rec: Dictionary) -> void:

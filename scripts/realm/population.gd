@@ -100,7 +100,19 @@ func _sync() -> void:
 		c.worker_id = wid
 		c.age = 18 + (hash(wid) % 40)
 		c.arrived_day = realm.clock.day if realm.clock != null else 1
+		# Somebody the town was founded with already has a house.
+		if w.home_building_id >= 0:
+			c.home_id = w.home_building_id
 		people.append(c)
+	# Couples where both halves have a record.
+	for c2: Citizen in people:
+		var w2 := c2.worker(realm.crew)
+		if w2 == null or w2.partner_id == "" or c2.spouse_id >= 0:
+			continue
+		for c3: Citizen in people:
+			if c3.worker_id == w2.partner_id:
+				c2.spouse_id = c3.id
+				c3.spouse_id = c2.id
 	_assign_homes()
 
 
@@ -182,11 +194,14 @@ func hungry() -> int:
 func beds() -> int:
 	var n := 0
 	for rec: Dictionary in realm.town.buildings:
-		n += int(BEDS.get(str(rec["archetype"]), 0))
+		n += _beds_in(rec)
 	return n
 
 
+## A household's house sleeps the household, and nobody else moves in on them.
 func _beds_in(rec: Dictionary) -> int:
+	if str(rec.get("household", "")) != "":
+		return 2
 	return int(BEDS.get(str(rec["archetype"]), 0))
 
 
@@ -195,6 +210,12 @@ func _occupants(building_id: int) -> int:
 	for c: Citizen in alive():
 		if c.home_id == building_id:
 			n += 1
+	# The crew are not citizens and have no record here, but the ones with a
+	# house still sleep in it.
+	if realm.crew != null:
+		for w: Worker in realm.crew.hired():
+			if w.home_building_id == building_id:
+				n += 1
 	return n
 
 

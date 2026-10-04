@@ -49,6 +49,19 @@ const FOLLOW_CLOSE := 2.0      ## stop closing in
 const FOLLOW_CHASE := 3.6      ## start closing in
 const FOLLOW_RUN := 9.0        ## far enough behind to break into a run
 const FOLLOW_GIVE_UP := 90.0   ## teleport rather than be lost forever
+## Walk up to somebody you have hired and they notice: the head comes round to
+## you, and if their hands are free they turn and face you. A small circle on
+## purpose — at ten metres the whole crew swivelling to track you across the
+## plaza is surveillance, not attention. The second number is where they let
+## go, so standing on the line does not flicker them on and off.
+const ATTEND_M := 4.0
+const ATTEND_LET_GO_M := 5.0
+
+## The one player, for the attention check. Set by the crew when it spawns.
+static var player: Node3D = null
+
+## How far round their anchor somebody pottering about their day strays.
+const ROUTINE_WANDER_M := 3.5
 
 var memory: WorkerMemory
 var body: Humanoid
@@ -190,6 +203,46 @@ var _employer_heading := Vector3(0.0, 0.0, 1.0)
 ## glance which of the three said it without reading a name.
 var bubble: SpeechBubble
 var nametag: NameTag
+## Whether they are looking at you right now, and how long until they will
+## greet you again — once when you walk up, not every time you step in and out.
+var attending := false
+var _greet_left := 0.0
+var _attend_hold := 0.0
+## How long somebody stops for you before going back to what they were doing.
+const ATTEND_HOLD_S := 8.0
+
+## "male" or "female". Decides the body and how they are spoken of.
+var gender := ""
+## Who they are married to (a worker id), the Town id of the house they share,
+## and the two places their day moves between: a step inside their own front
+## door, and a step inside the door of where they work. INF where there is none.
+var partner_id := ""
+var home_building_id := -1
+var house_pos := Vector3.INF
+var work_pos := Vector3.INF
+## Where their day has them right now — the workplace, home, the tavern —
+## set by DailyLife. They potter about it when nobody needs them. INF leaves
+## them to wander as before.
+var routine_anchor := Vector3.INF
+## In bed. The body lies on the mattress and nothing is simulated until they
+## get up again.
+var sleeping := false
+## Taken up by a conversation the village is having: whoever is talking stays
+## where they are until it is over.
+var engaged := false
+## Inside a building, walking its own small grid rather than the town's (see
+## IndoorNav). Physics, gravity and the town pathfinder are all set aside
+## while this is set: indoors the top of the world is the roof.
+var indoors: IndoorNav = null
+var _in_route := PackedVector3Array()
+var _in_i := 0
+var _in_then := ""
+var _potter_t := 0.0
+const INDOOR_SPEED := 1.6
+## Sent somewhere by you: the routine leaves them be until this game hour
+## (absolute: day * 24 + hour).
+var stay_put_until := -1.0
+const STAY_PUT_HOURS := 3.0
 
 
 func setup(mem: WorkerMemory, n: NavGrid, w: VoxelWorld, c: GameClock, t: Town) -> void:
@@ -215,7 +268,9 @@ func setup(mem: WorkerMemory, n: NavGrid, w: VoxelWorld, c: GameClock, t: Town) 
 	collision_mask = 1
 
 	body = Humanoid.new()
+	gender = Crew.gender_of(mem.worker_id)
 	_style_body()
+	body.gender = gender
 	add_child(body)
 
 	# A talk target on layer 4, which is what the player's look ray reads.
@@ -276,6 +331,29 @@ func _style_body() -> void:
 			body.hair_colour = Color("#22201c")
 			body.body_colour = Color("#7d5638")
 			body.accessory = "brim"
+		"greta":
+			# The baker: a floury apron over russet, a headscarf, sleeves up.
+			body.cloth_colour = Color("#9c4f3a")
+			body.accent_colour = Color("#e6c98a")
+			body.hair_colour = Color("#c8a26a")
+			body.body_colour = Color("#d8b090")
+			body.accessory = "scarf"
+			body.rolled_sleeves = true
+		"lena":
+			# Out with the animals all day: a blue dress and a straw hat.
+			body.cloth_colour = Color("#4a6b9a")
+			body.accent_colour = Color("#d9c27a")
+			body.hair_colour = Color("#3b2a1c")
+			body.body_colour = Color("#a87a58")
+			body.accessory = "brim"
+		"anselm":
+			# The innkeeper: a long coat, a full beard, and no hat indoors.
+			body.cloth_colour = Color("#6e5c8a")
+			body.accent_colour = Color("#c9a38a")
+			body.hair_colour = Color("#9a8a7a")
+			body.body_colour = Color("#c99070")
+			body.accessory = ""
+			body.long_coat = true
 		_:
 			# Everybody else. Dressed from their name, so the same citizen looks
 			# the same every time the town is raised, and no two of a dozen look
@@ -303,6 +381,245 @@ func _style_body() -> void:
 
 func display_name() -> String:
 	return memory.display_name
+
+
+## Free to be taken up by their own day: not on a job, not waiting on a plan
+## or a question, not asleep, not mid-conversation. A stroll counts as free —
+## it is what somebody does with nothing to do.
+func free_for_life() -> bool:
+	if sleeping or engaged or _holding or pondering != "" or pending_question != "":
+		return false
+	if state == State.IDLE:
+		return true
+	return state == State.WALKING and _after_arrival == "idle"
+
+
+## A walk to the nearest ground the crew can stand on by `at`. False when
+## there is none near enough to try.
+func go_near(at: Vector3) -> bool:
+	var cell := nav.nearest_walkable(nav.to_cell(at), 6)
+	if not nav.is_walkable(cell):
+		return false
+	var go := nav.to_world(cell)
+	go.y = world.ground_m(go.x, go.z)
+	return walk_to(go, "idle")
+
+
+## A line out loud in the bubble, and nothing else: talk between villagers,
+## not something said to you, so it does not go in your conversation log.
+func say_aloud(line: String) -> void:
+	if bubble != null:
+		bubble.say(line, "talk", clampf(2.4 + line.length() * 0.045, 3.0, 7.0))
+
+
+func face(at: Vector3) -> void:
+	var to := at - global_position
+	if Vector2(to.x, to.z).length() > 0.3:
+		rotation.y = atan2(to.x, to.z)
+
+
+# --------------------------------------------------------------- indoors
+
+## Step in off the front step: from here the building's own grid has them.
+func enter_building(nav: IndoorNav) -> void:
+	if nav == null or not nav.usable():
+		return
+	stop_wandering()
+	_path = PackedVector3Array()
+	_path_i = 0
+	velocity = Vector3.ZERO
+	indoors = nav
+	_in_route = PackedVector3Array()
+	global_position = nav.exit_point()
+	_potter_t = 0.0
+
+
+## Straight inside, standing at `at` — for somebody who arrives out of sight.
+func appear_inside(nav: IndoorNav, at: Vector3) -> void:
+	enter_building(nav)
+	if indoors != null:
+		global_position = indoors.world_of(indoors.cell_of(at)) if indoors.contains(at) \
+			else indoors.random_spot()
+
+
+## Out onto the step in front of the door, back on the town's ground.
+func leave_building() -> void:
+	if indoors == null:
+		return
+	var out := indoors.exit_point()
+	indoors = null
+	_in_route = PackedVector3Array()
+	_in_then = ""
+	global_position = Vector3(out.x, out.y + 0.1, out.z)
+	velocity = Vector3.ZERO
+	_idle_timer = randf_range(0.5, 2.0)
+
+
+## Walk somewhere inside. `then` is "exit" to step out of the door at the end.
+func indoor_walk_to(at: Vector3, then: String = "") -> bool:
+	if indoors == null:
+		return false
+	var r := indoors.route(global_position, at)
+	if r.is_empty():
+		return false
+	_in_route = r
+	_in_i = 0
+	_in_then = then
+	return true
+
+
+func indoor_walking() -> bool:
+	return indoors != null and not _in_route.is_empty()
+
+
+func _indoor_tick(delta: float) -> void:
+	velocity = Vector3.ZERO
+	var speed := 0.0
+	if not _in_route.is_empty():
+		var goal := _in_route[_in_i]
+		var to := Vector3(goal.x - global_position.x, 0.0, goal.z - global_position.z)
+		var d := to.length()
+		var stepm := INDOOR_SPEED * memory.work_rate() * delta
+		if d <= stepm:
+			global_position = Vector3(goal.x, goal.y, goal.z)
+			_in_i += 1
+			if _in_i >= _in_route.size():
+				_in_route = PackedVector3Array()
+				if _in_then == "exit":
+					_in_then = ""
+					leave_building()
+					return
+				_in_then = ""
+		else:
+			global_position += to / d * stepm
+			global_position.y = goal.y
+			rotation.y = lerp_angle(rotation.y, atan2(to.x, to.z), minf(delta * 10.0, 1.0))
+			speed = INDOOR_SPEED
+	_update_attention(delta)
+	if state == State.BUILDING:
+		body.work(delta, _gesture)
+	else:
+		body.animate(delta, speed, false)
+		if attending and speed == 0.0:
+			var face_to := player.global_position - global_position
+			rotation.y = lerp_angle(rotation.y, atan2(face_to.x, face_to.z), delta * 4.0)
+	var eye := global_position + Vector3(0.0, 1.5, 0.0)
+	if attending:
+		eye = player.global_position + Vector3(0.0, 1.6, 0.0)
+	body.attend(delta, eye, attending)
+
+
+## Somebody at home or at work with nothing on: across the room now and then,
+## and otherwise standing about.
+func _potter(delta: float) -> void:
+	if indoor_walking() or (attending and _attend_hold < ATTEND_HOLD_S):
+		return
+	_potter_t -= delta
+	if _potter_t > 0.0:
+		return
+	_potter_t = randf_range(6.0, 16.0)
+	indoor_walk_to(indoors.random_spot())
+
+
+## Sent to a building by name ("go home"): in through the door rather than
+## stood on the step, and left there a while — the day's routine does not
+## march them straight back out.
+func _go_inside_if_asked(extra: Dictionary) -> void:
+	var bid := int(extra.get("enter", -1))
+	if bid < 0 or town == null:
+		return
+	for rec: Dictionary in town.buildings:
+		if int(rec["id"]) == bid:
+			var nav := IndoorNav.of(rec.get("patch", null))
+			if nav != null and nav.usable():
+				enter_building(nav)
+				indoor_walk_to(nav.random_spot())
+				stay_put_until = clock.day * 24.0 + clock.hour + STAY_PUT_HOURS
+			return
+
+
+## Where they live, in their own words — what they say when asked, and what
+## the planner is told so "go home" means their own front door.
+func home_sentence(town_ref: Town = null) -> String:
+	var t := town_ref if town_ref != null else town
+	if home_building_id < 0 or t == null:
+		return ""
+	for rec: Dictionary in t.buildings:
+		if int(rec["id"]) != home_building_id:
+			continue
+		var with := ""
+		if partner_id != "":
+			var crew_node := get_parent() as Crew
+			var other: Worker = crew_node.get_worker(partner_id) if crew_node != null else null
+			if other != null:
+				with = " with %s" % other.display_name()
+		var walls := str((rec.get("spec", {}) as Dictionary).get("materials", {}).get("walls", ""))
+		var kind := "%s cottage" % ("stone" if walls in ["granite", "sandstone"] else "timber") \
+			if str(rec["archetype"]) == "cottage" else str(rec["archetype"]).replace("_", " ")
+		return "I live in the %s on %s%s." % [kind, str(rec["street"]), with]
+	return ""
+
+
+## Where to put somebody back on a load: indoors and in bed are both under a
+## roof, and a save puts people back on the top of the world.
+func outdoor_position() -> Vector3:
+	if indoors != null:
+		return indoors.exit_point()
+	return global_position
+
+
+## Into bed: feet at `feet`, lying along `yaw` with the head at the
+## headboard. Physics goes off and stays off until wake().
+func lie_down(feet: Vector3, yaw: float) -> void:
+	stop_wandering()
+	_path = PackedVector3Array()
+	_path_i = 0
+	_in_route = PackedVector3Array()
+	velocity = Vector3.ZERO
+	sleeping = true
+	set_physics_process(false)
+	global_position = feet
+	rotation.y = yaw
+	body.lie(true)
+
+
+## Up again, standing at `stand` (beside the bed) or where they are.
+func wake(stand: Vector3 = Vector3.INF) -> void:
+	if not sleeping:
+		return
+	sleeping = false
+	body.lie(false)
+	if stand != Vector3.INF and indoors != null:
+		global_position = indoors.world_of(indoors._nearest_open(indoors.cell_of(stand)))
+	elif stand != Vector3.INF:
+		global_position = stand + Vector3(0, 0.15, 0)
+	else:
+		global_position = Vector3(global_position.x,
+			world.ground_m(global_position.x, global_position.z) + 0.3, global_position.z)
+	set_physics_process(true)
+	_idle_timer = randf_range(1.0, 4.0)
+
+
+## Who they are to the people they live with, in a sentence the model can be
+## given: "You are a woman. You are married to Tobias, the town's builder. You
+## live together in your house on Well Row."
+func family_line(town_ref: Town = null) -> String:
+	var bits: Array[String] = []
+	if gender != "":
+		bits.append("You are a %s." % ("woman" if gender == "female" else "man"))
+	if partner_id != "":
+		var crew_node := get_parent() as Crew
+		var other: Worker = crew_node.get_worker(partner_id) if crew_node != null else null
+		if other != null:
+			var trade := other.role.name if other.role != null and other.role.id != "citizen" else ""
+			bits.append("You are married to %s%s." % [other.display_name(),
+				(", the town's " + trade) if trade != "" else ""])
+	if home_building_id >= 0 and town_ref != null:
+		for rec: Dictionary in town_ref.buildings:
+			if int(rec["id"]) == home_building_id:
+				bits.append("You live together in your house on %s." % str(rec["street"]))
+				break
+	return " ".join(bits)
 
 
 ## The morning's job, if any: the one set on this person, else the role's.
@@ -361,6 +678,10 @@ const STEP_UP_M := 0.7
 
 
 func _physics_process(delta: float) -> void:
+	if indoors != null:
+		_indoor_tick(delta)
+		_tick_state(delta)
+		return
 	# No ground under them is not a fall, it is a chunk that is not loaded.
 	# Stand still until it is. And a body that is somehow well below the
 	# ground that IS loaded has slipped through a seam: put it back on top.
@@ -390,6 +711,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	_note_headway(planar, delta)
 
+	_update_attention(delta)
 	if state == State.BUILDING and _path.is_empty():
 		_face_the_work(delta)
 		body.work(delta, _gesture)
@@ -400,8 +722,46 @@ func _physics_process(delta: float) -> void:
 		# Fetching: bent to the pile, hefting a bundle, rather than standing.
 		if state == State.GATHERING and job_construction != null and planar < 0.1:
 			body.work(delta, "lift")
+		# Nothing in their hands and nowhere to be: turn and face you.
+		elif attending and planar < 0.1 and _path.is_empty():
+			var face := player.global_position - global_position
+			rotation.y = lerp_angle(rotation.y, atan2(face.x, face.z), delta * 4.0)
+	var eye := global_position + Vector3(0.0, 1.5, 0.0)
+	if attending:
+		eye = player.global_position + Vector3(0.0, 1.6, 0.0)
+	body.attend(delta, eye, attending)
 
 	_tick_state(delta)
+
+
+## Whether the player is close enough to have their attention. Hired people
+## only: a citizen has no reason to stop what they are doing for you.
+func _update_attention(delta: float) -> void:
+	_greet_left = maxf(_greet_left - delta, 0.0)
+	var was := attending
+	attending = false
+	if not hired or _down > 0.0 or player == null or not is_instance_valid(player):
+		return
+	var d := Vector2(player.global_position.x - global_position.x,
+		player.global_position.z - global_position.z).length()
+	attending = d < (ATTEND_LET_GO_M if was else ATTEND_M)
+	_attend_hold = _attend_hold + delta if attending else 0.0
+	if attending and not was and _greet_left <= 0.0:
+		_greet_left = 90.0
+		# A word only when it will not talk over something that matters.
+		var quiet: bool = bubble == null or not bubble.visible
+		if quiet and pending_question == "" and state != State.ASKING \
+				and state != State.REPORTING:
+			murmur(_greeting())
+
+
+func _greeting() -> String:
+	if state == State.BUILDING:
+		return _one_of(["Coming along.", "Nearly there.", "Busy, but listening.",
+			"Hands full, ears open."])
+	if busy():
+		return _one_of(["On my way.", "Still on it.", "Won't be long."])
+	return _one_of(["Need something?", "At your service.", "Boss.", "Here."])
 
 
 ## What they are carrying right now, for the picture only: the material of the
@@ -715,6 +1075,10 @@ func _track_employer(delta: float) -> void:
 ## corner — rather than setting off on a new job. Their state is still
 ## BUILDING, so the wall keeps going up while they cross.
 func walk_to(target: Vector3, then: String = "", keep_state: bool = false) -> bool:
+	# Called away from indoors: out of the front door first. A job does not
+	# wait for somebody to finish their walk round the kitchen.
+	if indoors != null:
+		leave_building()
 	_after_arrival = then
 	_path = nav.path(global_position, target)
 	var here := nav.to_cell(global_position)
@@ -851,6 +1215,12 @@ func _tick_state(delta: float) -> void:
 func _tick_idle(delta: float) -> void:
 	if _tags_along():
 		return                        # steering handles it, no wandering
+	if attending and _attend_hold < ATTEND_HOLD_S:
+		# You are stood right here: they stay put and hear you out rather than
+		# strolling off mid-sentence — for a while. Stand there long enough
+		# without saying anything and they get on with their day.
+		_idle_timer = maxf(_idle_timer, 2.0)
+		return
 	if _holding or pondering != "":
 		# Waiting on a plan for an order already given. Standing on the plot
 		# looking at it is the whole point; drifting back to the well is how
@@ -869,7 +1239,23 @@ func _tick_idle(delta: float) -> void:
 	# A citizen roams further, and now and then moves house: the point of
 	# people in the streets is that they are in the streets, not standing in a
 	# knot round one spot for the whole session.
-	if not hired:
+	# Somebody with a day to live (DailyLife sets where it has them now) drifts
+	# round that place, and walks there first when it has moved. A hired hand
+	# you posted somewhere stays posted.
+	if engaged:
+		return
+	if indoors != null:
+		_potter(delta)
+		return
+	if routine_anchor != Vector3.INF and (not hired or employer != null):
+		var want := routine_anchor
+		if Vector2(home.x - want.x, home.z - want.z).length() > 1.0:
+			home = want
+			wander_m = ROUTINE_WANDER_M
+			if global_position.distance_to(want) > 6.0:
+				if go_near(want):
+					return
+	elif not hired:
 		_rehome_left -= delta
 		if _rehome_left <= 0.0:
 			_rehome_left = randf_range(60.0, 140.0)
@@ -984,6 +1370,7 @@ func _arrive_errand() -> void:
 	var extra: Dictionary = job_errand["extra"]
 	match kind:
 		"go":
+			_go_inside_if_asked(extra)
 			_say("Here.", "done")
 			_finish_errand()
 		"wait", "station", "rest":
@@ -991,6 +1378,7 @@ func _arrive_errand() -> void:
 				_finish_errand()
 				return
 			# A shift. Stay here and be seen doing it.
+			_go_inside_if_asked(extra)
 			state = State.BUILDING
 			var default_gesture := "hammer"
 			if kind == "wait":
@@ -1768,6 +2156,10 @@ func debug_state() -> String:
 
 
 func status_text() -> String:
+	if sleeping:
+		return "asleep"
+	if engaged:
+		return "talking"
 	# Said before the state machine gets a look in, because during the wait the
 	# state is IDLE or WALKING and neither of those words is true: they have
 	# your order, they are on it, and the plan is what has not arrived yet.

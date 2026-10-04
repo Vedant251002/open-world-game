@@ -19,7 +19,9 @@ class_name SaveGame
 ## PackedByteArray as they are, so nothing here converts anything by hand,
 ## and a save with five buildings is a few hundred kilobytes.
 
-const VERSION := 1
+## 2: the town is founded with three households and their partners. A town
+## from before has neither, and is founded again.
+const VERSION := 2
 ## A var, not a const, so a test can point it at a scratch file and never
 ## read or overwrite the player's town.
 static var path := "user://save/town.save"

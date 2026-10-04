@@ -127,6 +127,15 @@ static func reply(text: String, worker: Worker, town: Town, village: Village,
 			"what would you", "should we", "should i"]):
 		return ""
 
+	# --- where they live ---
+	if _any(t, ["where do you live", "where's your home", "where is your home",
+			"where is your house", "where's your house", "your home", "your house",
+			"where you live"]):
+		var said := worker.home_sentence(town)
+		if said != "":
+			return said
+		return "I have no house of my own yet."
+
 	# --- about the worker, and what they were told ---
 	if _any(t, ["what are you doing", "what you doing", "what are you up to",
 			"status", "what is your status", "how is it going", "how goes it",

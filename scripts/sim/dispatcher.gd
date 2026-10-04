@@ -216,6 +216,9 @@ func describe_ai() -> String:
 
 
 func instruct(worker: Worker, instruction: String) -> void:
+	# Somebody asleep is woken by being spoken to, whatever it is.
+	if worker != null and worker.sleeping:
+		_wake(worker)
 	# A question is not an order, and it does not matter how busy they are: a
 	# worker halfway up a wall can still tell you what they are doing. This
 	# comes before every guard below for exactly that reason.
@@ -345,6 +348,8 @@ const CHAT_SITUATION := "This is only conversation. Nothing said here starts, st
 func chat(worker: Worker, said: String) -> void:
 	if worker == null or not is_instance_valid(worker) or said.strip_edges() == "":
 		return
+	if worker.sleeping:
+		_wake(worker)
 	var facts := ""
 	if Answers.is_question(said):
 		facts = _answer_about_role(worker, said)
@@ -818,6 +823,8 @@ func _ctx(worker: Worker = null) -> Dictionary:
 	# a plan is never checked against a different job than it was made for.
 	if worker != null and worker.role != null:
 		c["role"] = worker.role
+	if worker != null:
+		c["home"] = worker.home_sentence(town)
 	return c
 
 
@@ -1019,6 +1026,8 @@ func _step_errand(run: Dictionary, step: Dictionary) -> String:
 			target = place["pos"]
 			where = str(place["where"])
 			line = "Off to %s." % where
+			if int(place.get("enter", -1)) >= 0:
+				extra["enter"] = int(place["enter"])
 			_remember_site(run, step, {"centre": target, "spread": 3.0, "where": where})
 		"wait":
 			if step.has("place"):
@@ -1085,6 +1094,10 @@ func _step_errand(run: Dictionary, step: Dictionary) -> String:
 		"rest":
 			target = worker.home
 			where = "home"
+			var house := _house_place(worker)
+			if not house.is_empty():
+				target = house["pos"]
+				extra["enter"] = int(house["enter"])
 			if hours <= 0.0:
 				hours = 4.0
 			line = "I could do with a rest. Back in a few hours."
@@ -1570,12 +1583,34 @@ func _all_fields() -> Rect2i:
 func _resolve_place(name: String, worker: Worker) -> Dictionary:
 	var p := name.strip_edges().to_lower().trim_prefix("the ").trim_prefix("a ")
 	var v := VoxelChunk.VOXEL_M
+	# Somebody's house. "home", "your house", "his place" is the worker's own;
+	# "greta's house" is Greta's. The house is the one the town register
+	# says their household lives in, which is saved with the town — so a
+	# builder told to go home walks to his own front door, not to wherever
+	# he last stood about.
+	var own := p
+	for lead: String in ["your ", "his ", "her ", "their ", "own "]:
+		own = own.trim_prefix(lead)
+	if own in ["home", "house", "place", "cottage", "own house", "bed"]:
+		var mine := _house_place(worker)
+		if not mine.is_empty():
+			return mine
+		if own == "home":
+			return {"pos": worker.home, "where": "home"}
+		return {}
+	var rx := RegEx.create_from_string("^([a-z]+)'?s (home|house|place|cottage)$")
+	var m := rx.search(p)
+	if m != null:
+		var who := _worker_named(m.get_string(1))
+		if who != null:
+			var theirs := _house_place(who)
+			if not theirs.is_empty():
+				theirs["where"] = "%s's house" % who.display_name()
+				return theirs
 	match p:
 		"you", "here", "me", "player":
 			var at := player.global_position if player != null else worker.global_position
 			return {"pos": at, "where": "where you are"}
-		"home":
-			return {"pos": worker.home, "where": "home"}
 		"well":
 			return {"pos": village.well_pos, "where": "the well"}
 		"field", "fields", "farm":
@@ -1617,6 +1652,26 @@ func _resolve_place(name: String, worker: Worker) -> Dictionary:
 			best_d = d
 			best = {"pos": pos, "where": "the " + arch}
 	return best
+
+
+## The step outside somebody's own front door, and which building it is, so
+## arriving there can take them in. Empty for somebody with no house.
+func _house_place(w: Worker) -> Dictionary:
+	var bid := w.home_building_id
+	if bid < 0 and realm != null and realm.get("population") != null:
+		var c: Variant = realm.population.for_worker(w)
+		if c != null:
+			bid = int(c.home_id)
+	if bid < 0:
+		return {}
+	for rec: Dictionary in town.buildings:
+		if int(rec["id"]) != bid:
+			continue
+		var nav := IndoorNav.of(rec.get("patch", null))
+		var pos := nav.exit_point() if nav != null and nav.usable() \
+			else Crew.inside_door(rec)
+		return {"pos": pos, "where": "home", "enter": bid}
+	return {}
 
 
 ## "the bakery" from "bakery" or "the_bakery", for saying out loud.
@@ -2222,6 +2277,50 @@ func take_plan_for_test(worker: Worker, instruction: String, steps: Array,
 	accept_plan_for_test(worker, instruction, plot, {
 		"kind": "plan", "steps": filled, "assumptions": assumptions, "worker_line": "",
 	})
+
+
+## Who is woken, and where they stand: DailyLife knows the beds.
+var daily_life: Node = null
+
+func _wake(worker: Worker) -> void:
+	if daily_life != null and daily_life.has_method("wake"):
+		daily_life.call("wake", worker)
+	else:
+		worker.wake()
+
+
+## A job handed from one villager to another, already decided: the village
+## organising itself (VillageCouncil). The same path as an order you give
+## with its plan settled, so it runs, reports and is remembered exactly like
+## one — but nobody had to be asked to work out what it meant.
+func delegate_plan(worker: Worker, said: String, steps: Array) -> void:
+	if worker.sleeping:
+		_wake(worker)
+	# Not a decision of yours, any more than a morning routine is: no plan
+	# panel, and it does not count as an order you gave.
+	var wid := worker.memory.worker_id
+	_from_morning[wid] = true
+	take_plan_for_test(worker, said, steps)
+	if not _open.has(wid):
+		_from_morning.erase(wid)
+
+
+## Whether somebody is on, or about to start, a job of the dispatcher's.
+func has_job(worker: Worker) -> bool:
+	var wid := worker.memory.worker_id
+	return _open.has(wid) or _running.has(wid)
+
+
+## The verbs of every job running now, so the village does not send a
+## second person to do what somebody is already doing.
+func running_verbs() -> Dictionary:
+	var out := {}
+	for wid: Variant in _running:
+		var run: Dictionary = _running[wid]
+		for st: Variant in run.get("steps", []):
+			if st is Dictionary:
+				out[str((st as Dictionary).get("do", ""))] = true
+	return out
 
 
 ## Run one step for a worker with no plan around it. True if it was taken.

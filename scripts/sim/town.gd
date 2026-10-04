@@ -412,6 +412,7 @@ func snapshot() -> Dictionary:
 			"materials": (b["materials"] as Dictionary).duplicate(),
 			"patch": SaveGame.patch_to_dict(b["patch"]),
 			"spec": b.get("spec", {}), "gen_seed": int(b.get("gen_seed", 0)),
+			"household": str(b.get("household", "")),
 		})
 	return {"tier": tier, "stock": stock.duplicate(), "coins": coins,
 		"buildings": recs, "next_id": _next_id}
@@ -437,6 +438,8 @@ func restore(d: Dictionary, village: Village) -> void:
 			"materials": (r.get("materials", {}) as Dictionary).duplicate(),
 			"spec": r.get("spec", {}), "gen_seed": int(r.get("gen_seed", 0)),
 		}
+		if str(r.get("household", "")) != "":
+			rec["household"] = str(r["household"])
 		buildings.append(rec)
 		occupied_rects.append(patch.footprint)
 		for p: Plot in village.plots:

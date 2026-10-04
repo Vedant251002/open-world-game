@@ -120,6 +120,9 @@ func system_for(w: Worker, town: Town, clock: GameClock, realm: Node) -> String:
 	lines.append("")
 	lines.append("WHO YOU ARE")
 	lines.append(_temperament(mem))
+	var family := w.family_line(town)
+	if family != "":
+		lines.append(family)
 	var home := _home_line(w, realm)
 	if home != "":
 		lines.append(home)
