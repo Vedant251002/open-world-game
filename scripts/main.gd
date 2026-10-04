@@ -904,7 +904,7 @@ func _raise_crew() -> void:
 		for mat: String in missing:
 			lines.append("Short %d %s." % [int(missing[mat]),
 				mat.replace("_", " ")])
-		lines.append("%s is holding the plan until it is in."
+		lines.append("%s is getting it fetched, and builds once it is in."
 			% w.display_name())
 		hud.show_assumptions(w, lines))
 	crew.job_done.connect(_on_job_done)

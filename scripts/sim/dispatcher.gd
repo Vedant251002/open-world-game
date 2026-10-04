@@ -996,10 +996,8 @@ func _run_step(run: Dictionary, step: Dictionary) -> String:
 		"recruit":    return _step_recruit(run, step)
 		"report":     return _step_report(run, step)
 		"follow":
-			var w: Worker = run["worker"]
-			if player != null:
-				w.employer = player
-			w.speak("Right behind you.", "talk")
+			# Nobody trails the player any more; a summons is a walk over.
+			_come_to_player(run["worker"])
 			return "done"
 	return "failed"
 
@@ -1979,8 +1977,8 @@ func _begin(job: Dictionary) -> bool:
 		var already := worker.waiting_for == wanted
 		worker.waiting_for = wanted
 		if not already:
-			worker.speak("We have not got the material — I am short %s. "
-				% wanted + "I will hold here until it comes in.", "refuse")
+			worker.speak("We are short %s. I will see it fetched, and build once it is in."
+				% wanted, "talk")
 			short_of.emit(worker, missing)
 		# Sent every time, though. The first errand can come up short — a seam
 		# runs out, the only free hand was already busy — and a town that asked
@@ -2024,11 +2022,13 @@ func _begin(job: Dictionary) -> bool:
 
 ## Send somebody out for what is missing.
 ##
-## One errand at a time, and never the worker who is waiting on the delivery:
-## the point of having three of them is that one can stand at the plot with the
-## plan while another walks to the hillside, which is the shape of delegation
-## the whole game is about.
+## A free hand goes first, so one can stand at the plot with the plan while
+## another walks to the hillside. When nobody else is free, the worker holding
+## the plan goes for it themselves rather than standing about waiting: the held
+## plan retries once they are back and idle, and sends them out again for
+## whatever is still short.
 func _send_for(missing: Dictionary, asker: Worker, announce: bool) -> void:
+	var self_sent := false
 	for mat: String in missing:
 		if not Resources.gatherable(mat):
 			continue
@@ -2036,9 +2036,10 @@ func _send_for(missing: Dictionary, asker: Worker, announce: bool) -> void:
 			continue
 		var hand := _free_hand(asker)
 		if hand == null:
-			if announce:
-				status.emit("Nobody free to fetch %s yet." % mat.replace("_", " "))
-			return
+			if self_sent or asker == null or asker.busy():
+				return
+			hand = asker
+			self_sent = true
 		_dig(hand, mat, int(missing[mat]), announce)
 
 
@@ -2929,9 +2930,11 @@ func _any_hired() -> Worker:
 
 const STAY_WORDS := ["wait", "stay", "stop", "hold"]
 const COME_WORDS := ["follow", "come"]
+## How long somebody called over stays by you before their day takes them back.
+const COME_STAY_HOURS := 1.0
 
 
-## Posting a worker: stand there, or come along. Returns true if that is what
+## Posting a worker: stand there, or come over. Returns true if that is what
 ## the instruction was.
 func _try_posting(worker: Worker, instruction: String) -> bool:
 	var text := instruction.to_lower()
@@ -2943,11 +2946,32 @@ func _try_posting(worker: Worker, instruction: String) -> bool:
 	# "with" alone is "build a bakery with a chimney"; only "with me" is a summons.
 	if (_has_word(text, COME_WORDS) or text.find("with me") >= 0
 			or text.find("with us") >= 0) and text.length() < 40:
-		if player != null:
-			worker.employer = player
-		worker.speak("Right behind you.", "talk")
+		_come_to_player(worker)
 		return true
 	return false
+
+
+## "Come here": one walk to where the player stands, a short stay, then back to
+## their own day. Villagers do not trail the player, so this is never a follow.
+func _come_to_player(worker: Worker) -> void:
+	worker.employer = null
+	if player == null:
+		worker.speak("Where are you?", "refuse")
+		return
+	var at: Vector3 = player.global_position
+	if worker.global_position.distance_to(at) < 3.0:
+		worker.face(at)
+		worker.speak("I am right here.", "talk")
+		return
+	# Set before the walk: free_for_life() is true on an idle walk, and the
+	# daily routine would otherwise send them straight back to work.
+	worker.stay_put_until = clock.day * 24.0 + clock.hour + COME_STAY_HOURS
+	worker.home = at
+	if worker.go_near(at):
+		worker.speak("Coming.", "talk")
+	else:
+		worker.stay_put_until = -1.0
+		worker.speak("I cannot find a way to you from here.", "refuse")
 
 
 # ------------------------------------------------------------------ fetching
