@@ -56,6 +56,10 @@ func _build(p: VoxelPatch) -> void:
 	astar.default_compute_heuristic = AStarGrid2D.HEURISTIC_OCTILE
 	astar.default_estimate_heuristic = AStarGrid2D.HEURISTIC_OCTILE
 	astar.update()
+	# A flat patch (a field, a yard) has no ground floor to walk about on;
+	# leave it unusable rather than read past the end of its bytes.
+	if base >= p.size.y or p.data.size() < sx * sz * p.size.y:
+		return
 	# Open floor first, read straight off the patch's bytes: a call per voxel
 	# was most of the cost of building one of these. A cell is open with floor
 	# under it and nothing written in its headroom.
