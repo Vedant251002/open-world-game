@@ -75,6 +75,12 @@ func run() -> void:
 	pause.set_open(true)
 	await _frames(8)
 	await _save("07_pause")
+	# The graphics row unfolded (desktop builds only; see GraphicsPanel).
+	var gfx := _find_button(pause, "Graphics")
+	if gfx != null:
+		gfx.pressed.emit()
+		await _frames(8)
+		await _save("08_pause_graphics")
 	pause.set_open(false)
 
 	print("[uishot] done -> %s" % ProjectSettings.globalize_path(out_dir))
@@ -90,6 +96,16 @@ func run_title() -> void:
 	await _frames(40)
 	await _save("00_title")
 	get_tree().quit()
+
+
+func _find_button(root: Node, prefix: String) -> Button:
+	for c in root.get_children():
+		if c is Button and (c as Button).text.begins_with(prefix):
+			return c
+		var found := _find_button(c, prefix)
+		if found != null:
+			return found
+	return null
 
 
 func _frames(n: int) -> void:

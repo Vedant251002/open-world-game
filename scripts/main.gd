@@ -159,6 +159,8 @@ func _ready() -> void:
 	# of columns is queued, or the handheld build pays for the wide load once
 	# regardless and only saves on every load after it.
 	Quality.apply(get_viewport(), player, streamer)
+	# The player's own graphics choices on top of the platform profile.
+	GraphicsSettings.attach(get_viewport(), sky, streamer)
 
 	if "--nofar" not in args:
 		far = FarTerrain.new()
@@ -243,9 +245,9 @@ func _ready() -> void:
 
 
 ## How often the nav grid is asked whether any more of the world has arrived.
-## Twice a second: the streamer cannot load faster than that in any case, and a
-## pass that finds nothing new costs a dictionary lookup per column.
-const NAV_CATCH_UP := 0.5
+## Five times a second, each pass held to a few milliseconds by its own budget;
+## a pass that finds nothing new costs a dictionary lookup per column.
+const NAV_CATCH_UP := 0.2
 var _nav_due := 0.0
 
 
@@ -275,31 +277,36 @@ func _physics_process(_delta: float) -> void:
 		# the army, the raiders, and the animals out past the streets. The
 		# world only carries collision near the player otherwise, and a body
 		# stood on ground with no collision under it falls out of the game.
-		var here: Array[Vector3] = []
+		var agents: Array[CharacterBody3D] = []
 		for w: Worker in crew.workers:
-			here.append(w.global_position)
+			agents.append(w)
 		if warfare != null:
 			for f: Fighter in warfare.soldiers:
 				if is_instance_valid(f):
-					here.append(f.global_position)
+					agents.append(f)
 			for f: Fighter in warfare.raiders:
 				if is_instance_valid(f):
-					here.append(f.global_position)
+					agents.append(f)
 		if wildlife != null:
 			for a: Animal in wildlife.beasts:
 				if is_instance_valid(a) and a.is_physics_processing():
-					here.append(a.global_position)
+					agents.append(a)
 		if livestock != null:
 			for a: Animal in livestock.animals:
 				if is_instance_valid(a) and a.is_physics_processing():
-					here.append(a.global_position)
+					agents.append(a)
+		var here: Array[Vector3] = []
+		for a: CharacterBody3D in agents:
+			here.append(a.global_position)
 		world.set_agents(here)
-		# And the same guarantee the player gets: a chunk whose collision has
-		# not been baked yet is built on the spot. set_agents only attaches
-		# shapes that already exist, which out past the streets is none of
-		# them, and a raider stood on an unbaked chunk fell out of the game.
-		for p: Vector3 in here:
-			world.ensure_support(p)
+		# And a floor under each of them before they move. set_agents only
+		# attaches shapes that already exist, and a raider stood on an unbaked
+		# chunk once fell out of the game. Unlike the player's, theirs is not
+		# built on the spot: that was a 12-30 ms main-thread mesh per chunk and
+		# most of the hitching left. The chunk jumps the queue instead, and
+		# whoever is stood over it waits a frame or two (ground_wait).
+		for a: CharacterBody3D in agents:
+			a.set("ground_wait", not world.request_support(a.global_position))
 
 
 ## True for a normal player launch. Any flag other than the harmless ones
@@ -1394,6 +1401,16 @@ func _arm_saving() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST and SaveGame.enabled:
 		_save_now("quit")
+
+
+## Static listeners hold lambdas that capture this scene. GDScript releases
+## static variables only at engine shutdown, after the scene tree is gone, and
+## destroying a lambda whose captures were already freed corrupted the heap:
+## every quit ended in "double free or corruption" (a crash on exit on
+## Windows). Let go of them while the scene is still alive; this also covers
+## "start over", which reloads the scene.
+func _exit_tree() -> void:
+	Relationships.tier_listener = Callable()
 
 
 ## Stands the founding buildings on the plots nearest the well.

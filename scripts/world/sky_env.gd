@@ -36,6 +36,9 @@ var _no_sea := false
 var _no_gi := false
 var _no_clouds := false
 var _no_shadow_moon := false
+## Off on the two lowest graphics presets (apply_quality). Like the debug
+## flags, it only ever takes the moon's shadow away.
+var _moon_shadow_quality := true
 var _vignette_mat: ShaderMaterial
 var _clock: Node = null
 var _clock_synced := true
@@ -431,6 +434,41 @@ func _build_environment() -> void:
 	add_child(world_env)
 
 
+## Graphics preset from GraphicsSettings, applied live. High is the look the
+## rest of this file was tuned for; the others trade effects for frames in
+## the order they cost: SSR and volumetric fog first, then SSAO, then shadow
+## cascades. Ultra adds back the SSIL bounce the default leaves off.
+func apply_quality(q: int) -> void:
+	if env == null or sun == null:
+		return
+	var low := q <= 0
+	var med := q == 1
+	env.ssr_enabled = q >= 2 and not _no_ssr and not _compat
+	env.volumetric_fog_enabled = q >= 2 and not _no_vol and not _compat
+	env.ssao_enabled = q >= 1 and not _no_ssao
+	env.ssil_enabled = (q >= 3 or "--ssil" in OS.get_cmdline_user_args()) \
+		and not _no_ssao and not _compat
+	if not _compat:
+		RenderingServer.environment_set_ssao_quality(
+			RenderingServer.ENV_SSAO_QUALITY_LOW if med
+				else RenderingServer.ENV_SSAO_QUALITY_MEDIUM,
+			true, 0.9, 2, 0.0, 30.0)
+	env.glow_enabled = not low
+	if low:
+		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		sun.directional_shadow_max_distance = 60.0
+	elif med:
+		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		sun.directional_shadow_max_distance = 85.0
+	else:
+		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+		sun.directional_shadow_max_distance = 110.0 if q == 2 else 150.0
+	# The moon's shadow is a second full shadow pass for a light that is
+	# mostly a blue fill. Only the top two presets pay for it.
+	_moon_shadow_quality = q >= 2
+	moon.shadow_enabled = moon.visible and not _no_shadow_moon and _moon_shadow_quality
+
+
 func _build_lights() -> void:
 	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true
@@ -576,7 +614,7 @@ func _apply_time() -> void:
 	moon.global_transform = Transform3D(Basis.looking_at(to_sun, Vector3.UP), Vector3.ZERO)
 	moon.light_energy = night * MOON_ENERGY * clampf(to_moon.y * 3.0 + 0.4, 0.0, 1.0)
 	moon.visible = moon.light_energy > 0.02
-	moon.shadow_enabled = moon.visible and not _no_shadow_moon
+	moon.shadow_enabled = moon.visible and not _no_shadow_moon and _moon_shadow_quality
 
 	# Ambient (the sky's fill light), and why it is an explicit colour.
 	#

@@ -78,6 +78,9 @@ var stat_worst_catch_ms := 0.0
 ## caller runs often enough that the grid still fills in faster than anyone can
 ## walk across it.
 const MAX_COLUMNS_PER_PASS := 4
+## Main-thread time one catch_up() pass may spend before leaving the rest for
+## the next one.
+const CATCH_UP_BUDGET_US := 3000
 
 
 ## The grid covers the town and a walkable margin around it. The world beyond is
@@ -209,21 +212,30 @@ func catch_up(centre_m: Vector3, radius_v: int = 400) -> int:
 	# anyway, and the next full rebuild picks that up. A stutter every time the
 	# streamer delivers is a worse bug than a pocket of grass the crew declines
 	# to stand on.
-	var taken: Array[Rect2i] = []
+	#
+	# Each column is finished — surface, reach, commit — before the next is
+	# started, and the pass stops as soon as it has used its time. A batch of
+	# four done in three sweeps measured up to 46 ms in one frame while the
+	# player walked; whatever is left over is simply not marked seen, so the
+	# next pass (a fifth of a second later) picks it up nearest first. Growing
+	# reach one column at a time loses nothing: _grow_reach seeds from every
+	# reachable cell around the new column, including the ones the previous
+	# column has just opened.
+	var taken := 0
 	for key: Vector2i in waiting:
 		_seen[key] = true
 		var cells := _cells_of(Rect2i(key.x << 5, key.y << 5, 32, 32))
 		_surface_pass(cells)
-		taken.append(cells)
-	for cells: Rect2i in taken:
 		_grow_reach(cells)
-	for cells: Rect2i in taken:
 		_commit(Rect2i(cells.position - Vector2i(CLEARANCE, CLEARANCE),
 			cells.size + Vector2i(CLEARANCE * 2, CLEARANCE * 2)))
+		taken += 1
+		if Time.get_ticks_usec() - t0 >= CATCH_UP_BUDGET_US:
+			break
 
 	stat_worst_catch_ms = maxf(stat_worst_catch_ms,
 		float(Time.get_ticks_usec() - t0) / 1000.0)
-	return taken.size()
+	return taken
 
 
 ## Voxel rectangle to the cells it touches. Rounded outward, and floored rather

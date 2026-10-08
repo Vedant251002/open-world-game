@@ -63,6 +63,9 @@ static var player: Node3D = null
 ## How far round their anchor somebody pottering about their day strays.
 const ROUTINE_WANDER_M := 3.5
 
+## Set by main each physics tick: the ground under this body has no collision
+## yet. Stand still until it does rather than fall into it.
+var ground_wait := false
 var memory: WorkerMemory
 var body: Humanoid
 var nav: NavGrid
@@ -686,7 +689,7 @@ func _physics_process(delta: float) -> void:
 	# Stand still until it is. And a body that is somehow well below the
 	# ground that IS loaded has slipped through a seam: put it back on top.
 	var col := VoxelWorld.to_voxel(global_position)
-	if world.height_at(col.x, col.z) < 0:
+	if ground_wait or world.height_at(col.x, col.z) < 0:
 		velocity = Vector3.ZERO
 		return
 	var floor_m := world.ground_m(global_position.x, global_position.z)

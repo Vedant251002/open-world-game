@@ -90,6 +90,9 @@ var _collision_column := Vector2i(1 << 30, 1 << 30)
 ## stands in mid-air with is_on_floor() false, forever.
 var _agents: Array[Vector3] = []
 var _agent_columns: Array[Vector2i] = []
+## Chunks somebody other than the player is standing on, still waiting for
+## their collision. Dispatched ahead of everything else; see request_support().
+var _urgent: Dictionary = {}
 
 
 func _ready() -> void:
@@ -372,6 +375,7 @@ func unload_column(cx: int, cz: int) -> void:
 			_stash[cpos] = c.serialize()
 		chunks.erase(cpos)
 		_dirty.erase(cpos)
+		_urgent.erase(cpos)
 		_meshed.erase(cpos)
 		_clear_chunk_node(cpos)
 	_htiles.erase(Vector2i(cx, cz))
@@ -514,7 +518,7 @@ func _dispatch() -> void:
 		if not column_meshable(cpos.x, cpos.z):
 			continue
 
-		var d := _focus_dist2(cpos)
+		var d := -1.0 if _urgent.has(cpos) else _focus_dist2(cpos)
 		if pick.size() >= budget and d >= pick_d[pick.size() - 1]:
 			continue
 		var at := pick_d.bsearch(d)
@@ -527,12 +531,21 @@ func _dispatch() -> void:
 	for cpos: Vector3i in pick:
 		_dirty.erase(cpos)
 		if not _needs_mesh(cpos):
+			_urgent.erase(cpos)
+			_meshed[cpos] = true
 			_clear_chunk_node(cpos)
 			continue
 		var neighbourhood := _snapshot(cpos)
 		_in_flight[cpos] = true
+		# Low priority, like generation. High-priority tasks may take every
+		# core in the pool, and on a machine with few of them add_task itself
+		# then blocked the main thread for 3-8 ms per chunk while the scheduler
+		# woke a worker. Low-priority work is capped at
+		# threading/worker_pool/low_priority_thread_ratio of the pool (raised
+		# to 0.75 in project.godot), which always leaves the main and render
+		# threads a core.
 		_tasks.append(WorkerThreadPool.add_task(
-			_mesh_job.bind(cpos, neighbourhood), true, "voxel_mesh"))
+			_mesh_job.bind(cpos, neighbourhood), false, "voxel_mesh"))
 
 
 ## Runs on a worker thread. Pure: reads only its arguments and the immutable
@@ -627,6 +640,7 @@ func finish_loading() -> void:
 func _apply(res: Dictionary) -> void:
 	var cpos: Vector3i = res["cpos"]
 	_in_flight.erase(cpos)
+	_urgent.erase(cpos)
 	_meshed[cpos] = true
 	_completed += 1
 	stat_quads += int(res["quads"])
@@ -743,6 +757,26 @@ func _sync_body(cpos: Vector3i) -> void:
 ## because the streaming path is what stops it being needed; stat_rescues says
 ## how often "almost" was.
 func ensure_support(world_m: Vector3) -> void:
+	_support(world_m, true)
+
+
+## The same check for everyone who is not the player, without the guarantee.
+##
+## ensure_support() meshes the missing chunk on the main thread, and that is
+## 12-30 ms of greedy meshing in GDScript. For the player it is worth it. For
+## the crew, the citizens, the soldiers and the animals it was not: measured on
+## a bench walk, 19 of 21 rescues were for somebody 40-55 m away, two chunks at
+## a time, and they were most of the hitches left in the game. Here the chunk
+## jumps the mesh queue instead and the caller is told to wait where it stands;
+## a worker thread has it ready a frame or two later.
+##
+## Returns true when there is a floor to walk on.
+func request_support(world_m: Vector3) -> bool:
+	return _support(world_m, false)
+
+
+func _support(world_m: Vector3, now: bool) -> bool:
+	var ok := true
 	var here := to_voxel(world_m)
 	var cy := here.y >> 5
 	for dz in [-1, 0, 1]:
@@ -766,7 +800,18 @@ func ensure_support(world_m: Vector3) -> void:
 					continue
 				if _meshed.has(cpos) or not column_meshable(cpos.x, cpos.z):
 					continue           # nothing to build, or not buildable yet
-				_build_now(cpos)
+				if now:
+					_build_now(cpos)
+					continue
+				if not _needs_mesh(cpos):
+					_meshed[cpos] = true
+					continue
+				ok = false
+				if not _urgent.has(cpos):
+					_urgent[cpos] = true
+					if not _in_flight.has(cpos):
+						_dirty[cpos] = true
+	return ok
 
 
 ## Meshes one chunk synchronously and installs it, jumping the queue.

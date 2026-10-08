@@ -17,6 +17,9 @@ signal produced(kind: String, at: Vector3)
 
 const GRAVITY := 22.0
 
+## Set by main each physics tick: the ground under this body has no collision
+## yet. Stand still until it does rather than fall into it.
+var ground_wait := false
 var kind := "hen"
 var world: VoxelWorld
 var clock: GameClock
@@ -128,6 +131,9 @@ func take_hit(dmg: float, _from: Vector3, _who: Node3D) -> void:
 # ------------------------------------------------------------------ movement
 
 func _physics_process(delta: float) -> void:
+	if ground_wait:
+		velocity = Vector3.ZERO
+		return
 	if not is_on_floor():
 		# Terminal velocity is the whole of the difference between a hen and a
 		# cow falling off a wall.

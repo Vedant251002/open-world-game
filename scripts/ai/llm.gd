@@ -252,13 +252,13 @@ func _ready() -> void:
 	var key_env := str(AIProvider.of(provider)["key_env"])
 	api_key = OS.get_environment(key_env)
 	if api_key == "":
-		api_key = _read_env("res://.env", key_env)
+		api_key = _env_file(key_env)
 
 	# A local override beats the compiled-in one, so the Worker can be tested
 	# against a dev deployment without editing and rebuilding the game.
 	proxy_url = OS.get_environment("OPENCODE_PROXY_URL")
 	if proxy_url == "":
-		proxy_url = _read_env("res://.env", "OPENCODE_PROXY_URL")
+		proxy_url = _env_file("OPENCODE_PROXY_URL")
 	# The compiled-in Worker only answers a browser's origin: a native build with
 	# no key would get a 403 on every call and only then fall back to the plan
 	# library, so it goes offline at once instead.
@@ -271,7 +271,7 @@ func _ready() -> void:
 	var model_env := str(AIProvider.of(provider)["model_env"])
 	model = OS.get_environment(model_env)
 	if model == "":
-		model = _read_env("res://.env", model_env)
+		model = _env_file(model_env)
 	if model == "":
 		model = str(AIProvider.of(provider)["default_model"])
 	# A flag beats the file, so a single run can try another model without
@@ -292,7 +292,7 @@ func _ready() -> void:
 func _pick_provider() -> void:
 	var named := OS.get_environment("AI_PROVIDER")
 	if named == "":
-		named = _read_env("res://.env", "AI_PROVIDER")
+		named = _env_file("AI_PROVIDER")
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--provider="):
 			named = arg.substr(11)
@@ -303,7 +303,7 @@ func _pick_provider() -> void:
 	for name: String in AIProvider.PREFERENCE:
 		var env_name := str(AIProvider.of(name)["key_env"])
 		if OS.get_environment(env_name) != "" \
-				or _read_env("res://.env", env_name) != "":
+				or _env_file(env_name) != "":
 			provider = name
 			return
 	provider = "opencode"
@@ -349,6 +349,29 @@ func _route() -> Dictionary:
 		# The Worker forces its own model, but it cannot guess which gateway a
 		# build meant. Saying so costs nothing and is not a secret.
 		"X-Provider: " + provider])}
+
+
+## A key from whichever .env file has it. In order: beside the executable
+## (where somebody who downloaded the game drops one), the user data folder
+## (%APPDATA%\Godot\app_userdata\DELEGATE on Windows), and the project root,
+## which is only there when running from source. The exported game packs
+## nothing from res://.env — a key compiled into the exe would be a key given
+## to everyone who has it.
+func _env_file(key_name: String) -> String:
+	for path: String in _env_paths():
+		var v := _read_env(path, key_name)
+		if v != "":
+			return v
+	return ""
+
+
+func _env_paths() -> Array[String]:
+	var out: Array[String] = []
+	if not OS.has_feature("web") and not OS.has_feature("editor"):
+		out.append(OS.get_executable_path().get_base_dir().path_join(".env"))
+	out.append("user://.env")
+	out.append("res://.env")
+	return out
 
 
 func _read_env(path: String, key_name: String) -> String:

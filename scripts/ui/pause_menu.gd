@@ -49,6 +49,10 @@ var _crier_button: Button
 var _share_button: Button
 var _ready_ms := 0
 var _village: VBoxContainer
+## The menu column scrolls once the Sound or Graphics rows are unfolded on a
+## screen too short to hold it all; see _fit_scroll().
+var _scroll: ScrollContainer
+var _col: VBoxContainer
 
 
 ## `on_focus_loss` false for tests and benches, which must not freeze because
@@ -123,7 +127,13 @@ func _build() -> void:
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", int(UiTheme.px(10)))
 	col.custom_minimum_size = Vector2(UiTheme.px(340), 0)
-	panel.add_child(col)
+	_scroll = ScrollContainer.new()
+	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(_scroll)
+	_scroll.add_child(col)
+	_col = col
+	col.minimum_size_changed.connect(_fit_scroll)
+	get_viewport().size_changed.connect(_fit_scroll)
 
 	var title := UiTheme.title("PAUSED", 30, UiTheme.ACCENT)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -142,6 +152,9 @@ func _build() -> void:
 
 	# Sound: volume sliders and mute (scripts/audio/sound_panel.gd).
 	col.add_child(SoundPanel.build())
+	# Graphics: quality preset, render scale, view distance (graphics_panel.gd).
+	if GraphicsSettings.applies():
+		col.add_child(GraphicsPanel.build())
 	# Feature entries: photo mode and the weekly challenge.
 	var extra := HBoxContainer.new()
 	extra.add_theme_constant_override("separation", int(UiTheme.px(8)))
@@ -238,6 +251,20 @@ func _label_screen_button() -> void:
 		return
 	var full := DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_WINDOWED
 	_screen_button.text = "Windowed   [F11]" if full else "Fullscreen   [F11]"
+
+
+## As tall as the menu wants, but never taller than the screen: the panel is
+## centred, so anything past the bottom edge (Save and quit, first of all)
+## would otherwise be unreachable.
+func _fit_scroll() -> void:
+	if _scroll == null or _col == null:
+		return
+	var want := _col.get_combined_minimum_size()
+	var room := get_viewport().get_visible_rect().size.y - UiTheme.px(72)
+	var bar := 0.0
+	if want.y > room:
+		bar = _scroll.get_v_scroll_bar().get_combined_minimum_size().x + UiTheme.px(6)
+	_scroll.custom_minimum_size = Vector2(want.x + bar, minf(want.y, maxf(room, 200.0)))
 
 
 func set_open(v: bool) -> void:

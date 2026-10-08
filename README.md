@@ -29,6 +29,35 @@ it to stutter while the world streams in.
 Desktop builds for Windows, Linux and macOS are attached to every tagged
 [release](https://github.com/Vedant251002/open-world-game/releases).
 
+### On Windows
+
+Download `Delegate.exe` from the latest release and double-click it. It is a
+single file with the whole game inside; there is nothing to install. The build
+is not code-signed, so the first launch may show a SmartScreen warning: choose
+**More info → Run anyway**.
+
+To give the villagers a model to think with, put a `.env` file with your key
+(see `.env.example`) **in the same folder as `Delegate.exe`**. Without one the
+game runs offline on the built-in plan library. Saves and settings live in
+`%APPDATA%\Godot\app_userdata\DELEGATE`; a `.env` placed there works too.
+
+## Graphics settings
+
+Esc → **Graphics** sets the quality preset (Low, Medium, High, Ultra), render
+scale, view distance, VSync and a frame limit. Changes apply at once and are
+remembered. On the first launch the preset is picked from the GPU: Medium on an
+integrated GPU, Low on a software renderer, High otherwise.
+
+| Preset | What it turns down |
+| ------ | ------------------ |
+| Ultra  | nothing; adds screen-space indirect light and longer shadows |
+| High   | the look the game was tuned for |
+| Medium | 85% render scale (FSR), no reflections or volumetric fog, lighter AO, two shadow cascades |
+| Low    | 67% render scale (FSR), FXAA instead of TAA, no AO or bloom, hard shadows, short view distance |
+
+If the game is too slow to reach the menu, start it with
+`Delegate.exe -- --quality=low`.
+
 ## Controls
 
 |            | Desktop           | Touch                          |
@@ -178,6 +207,7 @@ Pass these after `--`, e.g. `godot4 --path . -- --seed=7 --nofar`:
 | -------------- | --------------------------------------------------- |
 | `--seed=N`     | fix the world seed                                   |
 | `--windowed`   | start in a window instead of fullscreen              |
+| `--quality=X`  | `low`, `medium`, `high` or `ultra` for one run       |
 | `--provider=X` | force `groq` or `opencode` for one run               |
 | `--fresh`      | ignore the save and start a new town                 |
 | `--nosave`     | never write the save                                 |

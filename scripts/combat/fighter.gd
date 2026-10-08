@@ -22,6 +22,9 @@ const RUN := 4.6
 const SIGHT := 48.0
 const STEP_UP_M := 0.7
 
+## Set by main each physics tick: the ground under this body has no collision
+## yet. Stand still until it does rather than fall into it.
+var ground_wait := false
 var side := "town"                  ## "town" or "raider"
 var weapon := ""                    ## Arsenal.WEAPONS key, or "" for unarmed
 var health := 100.0
@@ -188,6 +191,9 @@ func _die() -> void:
 func _physics_process(delta: float) -> void:
 	if _mode == Mode.DEAD:
 		_lie_down(delta)
+		return
+	if ground_wait:
+		velocity = Vector3.ZERO
 		return
 	if not is_on_floor():
 		velocity.y -= 22.0 * delta
