@@ -99,11 +99,15 @@ jobs:
       # The bare .exe as well, because that is what somebody on Windows
       # actually wants to double-click. binary_format/embed_pck is true for
       # this preset, so the one file is the whole game — no .pck beside it.
+      # Beside it, the console wrapper: the same game, with a console window
+      # that shows its log. It is what to run when the game will not open.
       - name: Upload the bare exe
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: build/windows/${{ env.EXPORT_NAME }}.exe
+          path: |
+            build/windows/${{ env.EXPORT_NAME }}.exe
+            build/windows/${{ env.EXPORT_NAME }}.console.exe
 
   export-linux:
     name: Export Linux
