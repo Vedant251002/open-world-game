@@ -1,0 +1,77 @@
+name: Windows smoke test
+
+# Builds Delegate.exe the way the release does, then starts it on a real
+# Windows machine and keeps its log. A game that will not open on somebody's
+# PC leaves nothing to read on a Linux build box; this does.
+
+on:
+  push:
+    branches: ["claude/**"]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.7.2
+  EXPORT_NAME: Delegate
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Move export templates into place
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/ ~/.config/
+          mv /root/.config/godot ~/.config/godot
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+      - name: Export
+        run: |
+          mkdir -v -p build/windows
+          godot --headless --export-release "Windows Desktop" "$(pwd)/build/windows/${EXPORT_NAME}.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-exe
+          path: build/windows/
+
+  run:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: smoke-exe
+          path: game
+      - name: Headless start (engine and scripts, no GPU)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          cd game
+          $p = Start-Process -FilePath .\Delegate.console.exe -ArgumentList '--headless','--','--gentest','--nosave' -NoNewWindow -PassThru -RedirectStandardOutput ..\headless.out -RedirectStandardError ..\headless.err
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); "TIMEOUT" }
+          "exit code: $($p.ExitCode)"
+          Get-Content ..\headless.out -Tail 60
+          Get-Content ..\headless.err -Tail 60
+      - name: Windowed start, default renderer
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          cd game
+          $p = Start-Process -FilePath .\Delegate.console.exe -ArgumentList '--','--windowed','--nosave','--fresh' -NoNewWindow -PassThru -RedirectStandardOutput ..\window.out -RedirectStandardError ..\window.err
+          if (-not $p.WaitForExit(120000)) { "still running after 120 s (did not crash)"; $p.Kill() } else { "exit code: $($p.ExitCode)" }
+          Get-Content ..\window.out -Tail 80
+          Get-Content ..\window.err -Tail 80
+      - name: Collect logs
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          Copy-Item *.out,*.err logs -ErrorAction SilentlyContinue
+          Copy-Item "$env:APPDATA\Godot\app_userdata\DELEGATE\logs\*" logs -ErrorAction SilentlyContinue
+          Get-ChildItem logs
+          foreach ($f in Get-ChildItem logs\godot*.log) { "===== $f"; Get-Content $f -Tail 80 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-logs
+          path: logs
