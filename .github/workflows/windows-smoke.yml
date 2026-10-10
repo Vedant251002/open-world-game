@@ -61,6 +61,15 @@ jobs:
           if (-not $p.WaitForExit(120000)) { "still running after 120 s (did not crash)"; $p.Kill() } else { "exit code: $($p.ExitCode)" }
           Get-Content ..\window.out -Tail 80
           Get-Content ..\window.err -Tail 80
+      - name: Windowed start, safe mode (OpenGL)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          cd game
+          $p = Start-Process -FilePath .\Delegate.console.exe -ArgumentList '--rendering-method','gl_compatibility','--','--windowed','--nosave','--fresh' -NoNewWindow -PassThru -RedirectStandardOutput ..\safe.out -RedirectStandardError ..\safe.err
+          if (-not $p.WaitForExit(120000)) { "still running after 120 s (did not crash)"; $p.Kill() } else { "exit code: $($p.ExitCode)" }
+          Get-Content ..\safe.out -Tail 40
+          Get-Content ..\safe.err -Tail 40
       - name: Collect logs
         if: always()
         shell: pwsh
